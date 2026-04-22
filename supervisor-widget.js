@@ -15,6 +15,12 @@ class SupervisorAccessWidget extends HTMLElement {
     this.resolvedIdentity = null;
     this.identitySource = "none";
     this.storeSnapshot = null;
+
+    this.lastBootstrapResponse = null;
+    this.lastEntryPointResponse = null;
+    this.lastUpdateResponse = null;
+    this.lastError = null;
+    this.lastStatus = null;
   }
 
   connectedCallback() {
@@ -228,9 +234,11 @@ class SupervisorAccessWidget extends HTMLElement {
       await this.loadEntryPoint(true);
       this.startPolling();
     } catch (err) {
-      this.renderDebugInfo({
-        initError: err.message
-      });
+      this.lastError = {
+        stage: "init",
+        message: err.message
+      };
+      this.renderDebugInfo();
     }
   }
 
@@ -258,6 +266,11 @@ class SupervisorAccessWidget extends HTMLElement {
       storeSnapshot: this.storeSnapshot || null,
       currentRole: this.currentRole,
       hasSessionToken: Boolean(this.sessionToken),
+      lastStatus: this.lastStatus,
+      lastError: this.lastError,
+      bootstrapResponse: this.lastBootstrapResponse,
+      entryPointResponse: this.lastEntryPointResponse,
+      updateResponse: this.lastUpdateResponse,
       ...extra
     });
   }
@@ -342,6 +355,11 @@ class SupervisorAccessWidget extends HTMLElement {
 
     try {
       const identity = await this.resolveDesktopIdentity();
+      this.lastStatus = {
+        stage: "bootstrap",
+        message: "Bootstrapping session"
+      };
+      this.renderDebugInfo();
 
       const res = await fetch(`${this.API_URL}/api/session/bootstrap`, {
         method: "POST",
@@ -354,29 +372,39 @@ class SupervisorAccessWidget extends HTMLElement {
       const data = await this.readJsonResponse(res);
 
       if (!res.ok) {
-        this.renderDebugInfo({
-          bootstrapHttpStatus: res.status,
-          bootstrapError: data
-        });
+        this.lastError = {
+          stage: "bootstrap",
+          httpStatus: res.status,
+          data
+        };
+        this.renderDebugInfo();
         throw new Error(data.error || "Session bootstrap failed");
       }
 
       if (!data.sessionToken) {
+        this.lastError = {
+          stage: "bootstrap",
+          message: "Bootstrap response did not include a session token"
+        };
+        this.renderDebugInfo();
         throw new Error("Bootstrap response did not include a session token");
       }
 
       this.sessionToken = data.sessionToken;
       this.currentRole = data.role || "viewer";
+      this.lastBootstrapResponse = data;
+      this.lastError = null;
+      this.lastStatus = {
+        stage: "bootstrap",
+        message: "Session bootstrapped"
+      };
 
       this.$userInfo().textContent =
         `${data.user?.displayName || "Unknown User"}${data.user?.email ? " (" + data.user.email + ")" : ""}`;
       this.$roleBadge().textContent = this.currentRole.toUpperCase();
 
       this.applyRoleState();
-
-      this.renderDebugInfo({
-        bootstrapResponse: data
-      });
+      this.renderDebugInfo();
     } finally {
       this.isBootstrapping = false;
     }
@@ -416,14 +444,24 @@ class SupervisorAccessWidget extends HTMLElement {
 
   async loadEntryPoint(updateOutput = true) {
     try {
+      this.lastStatus = {
+        stage: "loadEntryPoint",
+        message: "Loading entry point"
+      };
+      if (updateOutput) {
+        this.renderDebugInfo();
+      }
+
       const res = await this.authorizedFetch(`/api/entrypoint/${this.ENTRY_POINT_ID}`);
       const data = await this.readJsonResponse(res);
 
       if (!res.ok) {
-        this.renderDebugInfo({
-          loadHttpStatus: res.status,
-          loadError: data
-        });
+        this.lastError = {
+          stage: "loadEntryPoint",
+          httpStatus: res.status,
+          data
+        };
+        this.renderDebugInfo();
         throw new Error(data.error || "Load failed");
       }
 
@@ -434,18 +472,24 @@ class SupervisorAccessWidget extends HTMLElement {
 
       this.$toggle().checked = emergencyCase;
       this.updateLabel();
-
       this.$prompt().value = emergencyPrompt;
 
+      this.lastEntryPointResponse = data;
+      this.lastError = null;
+      this.lastStatus = {
+        stage: "loadEntryPoint",
+        message: "Entry point loaded"
+      };
+
       if (updateOutput) {
-        this.renderDebugInfo({
-          entryPointResponse: data
-        });
+        this.renderDebugInfo();
       }
     } catch (err) {
-      this.renderDebugInfo({
-        loadException: err.message
-      });
+      this.lastError = {
+        stage: "loadEntryPoint",
+        message: err.message
+      };
+      this.renderDebugInfo();
     }
   }
 
@@ -460,14 +504,15 @@ class SupervisorAccessWidget extends HTMLElement {
 
     try {
       this.isUpdating = true;
-
-      this.renderDebugInfo({
-        status: statusText,
-        pendingPayload: {
+      this.lastStatus = {
+        stage: "saveState",
+        message: statusText,
+        payload: {
           EmergencyCase,
           EmergencyPrompt
         }
-      });
+      };
+      this.renderDebugInfo();
 
       const res = await this.authorizedFetch(`/api/entrypoint/${this.ENTRY_POINT_ID}`, {
         method: "PUT",
@@ -480,30 +525,43 @@ class SupervisorAccessWidget extends HTMLElement {
       const data = await this.readJsonResponse(res);
 
       if (!res.ok) {
-        this.renderDebugInfo({
-          updateHttpStatus: res.status,
-          updateError: data,
-          attemptedPayload: {
+        this.lastError = {
+          stage: "saveState",
+          httpStatus: res.status,
+          data,
+          payload: {
             EmergencyCase,
             EmergencyPrompt
           }
-        });
+        };
+        this.renderDebugInfo();
         throw new Error(data.error || "Update failed");
       }
 
-      this.renderDebugInfo({
-        updateResponse: data
-      });
-
-      await this.loadEntryPoint(false);
-    } catch (err) {
-      this.renderDebugInfo({
-        updateException: err.message,
-        attemptedPayload: {
+      this.lastUpdateResponse = data;
+      this.lastError = null;
+      this.lastStatus = {
+        stage: "saveState",
+        message: "Update successful",
+        payload: {
           EmergencyCase,
           EmergencyPrompt
         }
-      });
+      };
+      this.renderDebugInfo();
+
+      await this.loadEntryPoint(false);
+      this.renderDebugInfo();
+    } catch (err) {
+      this.lastError = {
+        stage: "saveState",
+        message: err.message,
+        payload: {
+          EmergencyCase,
+          EmergencyPrompt
+        }
+      };
+      this.renderDebugInfo();
     } finally {
       this.isUpdating = false;
     }

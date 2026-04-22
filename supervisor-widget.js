@@ -579,4 +579,4 @@ class SupervisorAccessWidget extends HTMLElement {
   }
 }
 
-customElements.define("supervisor-access-widget", SupervisorAccessWidget);
+customElements.define("supervisor-access-widget-v2", SupervisorAccessWidget);

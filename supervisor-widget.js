@@ -186,8 +186,8 @@ class SupervisorAccessWidget extends HTMLElement {
       </style>
 
       <div class="card">
-        <h2>Supervisor Access Control</h2>
-        <p>Conscia Support Demo</p>
+        <h2>Supervisor Access Control DEBUG 101</h2>
+        <p>Conscia Support Demo DEBUG 101</p>
 
         <div class="info-row">
           <span id="userInfo">Loading user context...</span>

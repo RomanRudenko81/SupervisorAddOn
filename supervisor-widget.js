@@ -275,67 +275,19 @@ class SupervisorAccessWidget extends HTMLElement {
     });
   }
 
-  async resolveDesktopIdentity() {
-    try {
-      const store = window?.$STORE || {};
+async resolveDesktopIdentity() {
+  const identity = {
+    email: this.email || "",
+    userId: this.userId || "",
+    teamId: this.teamId || "",
+    displayName: this.displayName || "Unknown User"
+  };
 
-      const snapshot = {
-        topLevelKeys: Object.keys(store || {}),
-        agent: store?.agent || null,
-        app: store?.app || null,
-        userProfile: store?.userProfile || null,
-        agentProfile: store?.agentProfile || null
-      };
+  this.identitySource = "layout-properties";
+  this.resolvedIdentity = identity;
 
-      const identity = {
-        email:
-          store?.agent?.agentProfile?.email ||
-          store?.agentProfile?.email ||
-          store?.app?.userProfile?.email ||
-          store?.userProfile?.email ||
-          store?.agent?.email ||
-          "",
-        userId:
-          store?.agent?.agentProfile?.id ||
-          store?.agentProfile?.id ||
-          store?.app?.userProfile?.id ||
-          store?.userProfile?.id ||
-          store?.agent?.id ||
-          "",
-        teamId:
-          store?.agent?.agentProfile?.teamId ||
-          store?.agentProfile?.teamId ||
-          store?.agent?.teamId ||
-          "",
-        displayName:
-          store?.agent?.agentProfile?.displayName ||
-          store?.agentProfile?.displayName ||
-          store?.app?.userProfile?.displayName ||
-          store?.userProfile?.displayName ||
-          store?.agent?.agentName ||
-          store?.agent?.name ||
-          ""
-      };
-
-      this.resolvedIdentity = identity;
-      this.identitySource = "wxcc-store";
-      this.storeSnapshot = snapshot;
-
-      return identity;
-    } catch (error) {
-      this.identitySource = "wxcc-store-failed";
-      this.resolvedIdentity = {
-        email: "",
-        userId: "",
-        teamId: "",
-        displayName: ""
-      };
-      this.storeSnapshot = {
-        storeError: error.message
-      };
-      return this.resolvedIdentity;
-    }
-  }
+  return identity;
+}
 
   async readJsonResponse(res) {
     const text = await res.text();

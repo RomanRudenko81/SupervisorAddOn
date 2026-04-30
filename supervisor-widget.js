@@ -14,13 +14,6 @@ class SupervisorAccessWidget extends HTMLElement {
     this.pollHandle = null;
     this.resolvedIdentity = null;
     this.identitySource = "none";
-    this.storeSnapshot = null;
-
-    this.lastBootstrapResponse = null;
-    this.lastEntryPointResponse = null;
-    this.lastUpdateResponse = null;
-    this.lastError = null;
-    this.lastStatus = null;
   }
 
   connectedCallback() {
@@ -30,9 +23,7 @@ class SupervisorAccessWidget extends HTMLElement {
   }
 
   disconnectedCallback() {
-    if (this.pollHandle) {
-      clearInterval(this.pollHandle);
-    }
+    if (this.pollHandle) clearInterval(this.pollHandle);
   }
 
   render() {
@@ -71,18 +62,15 @@ class SupervisorAccessWidget extends HTMLElement {
         .info-row {
           display: flex;
           justify-content: space-between;
-          gap: 12px;
           margin-bottom: 16px;
           font-size: 13px;
           color: #c9d1d9;
-          flex-wrap: wrap;
         }
 
         .role-badge {
           padding: 4px 10px;
           border-radius: 999px;
           background: rgba(255,255,255,0.1);
-          color: #fff;
           font-weight: bold;
         }
 
@@ -95,33 +83,30 @@ class SupervisorAccessWidget extends HTMLElement {
 
         .switch input {
           opacity: 0;
-          width: 0;
-          height: 0;
         }
 
         .slider {
           position: absolute;
-          cursor: pointer;
           inset: 0;
-          background-color: #3a3f4b;
-          transition: .3s;
+          background: #3a3f4b;
           border-radius: 26px;
+          cursor: pointer;
         }
 
         .slider:before {
-          position: absolute;
           content: "";
+          position: absolute;
           height: 18px;
           width: 18px;
           left: 4px;
           bottom: 4px;
-          background-color: white;
-          transition: .3s;
+          background: white;
           border-radius: 50%;
+          transition: .3s;
         }
 
         input:checked + .slider {
-          background-color: #22c55e;
+          background: #22c55e;
         }
 
         input:checked + .slider:before {
@@ -135,63 +120,42 @@ class SupervisorAccessWidget extends HTMLElement {
           margin-top: 15px;
         }
 
-        .input-group {
-          display: flex;
-          gap: 8px;
-          flex: 1;
-        }
-
-        input[type="text"] {
+        input {
           flex: 1;
           padding: 12px;
           border-radius: 10px;
           border: 1px solid rgba(255,255,255,0.15);
           background: rgba(0,0,0,0.35);
           color: white;
-          outline: none;
         }
 
-        .small-btn {
+        button {
           padding: 10px 14px;
           border: none;
           border-radius: 10px;
           background: #0078d4;
           color: white;
-          font-size: 13px;
           cursor: pointer;
-          width: auto;
         }
 
-        .small-btn:hover {
-          background: #0a5ea8;
+        button:disabled {
+          opacity: 0.5;
         }
 
-        .small-btn[disabled],
-        input[disabled] {
-          opacity: 0.55;
-          cursor: not-allowed;
-        }
-
-        pre {
-          margin-top: 20px;
-          background: #0a0f1a;
-          padding: 12px;
-          border-radius: 10px;
-          border: 1px solid rgba(255,255,255,0.1);
-          color: #00ff88;
-          overflow-x: auto;
-          white-space: pre-wrap;
-          word-break: break-word;
+        #status {
+          margin-top: 12px;
+          font-size: 13px;
+          color: #c9d1d9;
         }
       </style>
 
       <div class="card">
-        <h2>Supervisor Access Control DEBUG 101</h2>
-        <p>Conscia Support Demo DEBUG 101</p>
+        <h2>Supervisor Access Control</h2>
+        <p>Conscia Support Demo</p>
 
         <div class="info-row">
-          <span id="userInfo">Loading user context...</span>
-          <span id="roleBadge" class="role-badge">...</span>
+          <span id="userInfo">Loading...</span>
+          <span id="roleBadge">...</span>
         </div>
 
         <div class="row">
@@ -199,47 +163,45 @@ class SupervisorAccessWidget extends HTMLElement {
             <input type="checkbox" id="emergencyToggle">
             <span class="slider"></span>
           </label>
-
-          <span>
-            Emergency Case: <span id="stateLabel">OFF</span>
-          </span>
+          <span>Emergency Case: <span id="stateLabel">OFF</span></span>
         </div>
 
         <div class="row">
-          <div class="input-group">
-            <input id="prompt" type="text" placeholder="Enter emergency prompt...">
-            <button class="small-btn" id="saveBtn">Save</button>
-          </div>
+          <input id="prompt" placeholder="Enter emergency prompt...">
+          <button id="saveBtn">Save</button>
         </div>
 
-        <pre id="output">Loading...</pre>
+        <div id="status"></div>
       </div>
     `;
   }
 
   bindEvents() {
-    this.$toggle().addEventListener("change", async () => {
+    this.$toggle().addEventListener("change", () => {
       this.updateLabel();
-      await this.saveState("Updating toggle...");
+      this.saveState();
     });
 
-    this.$saveBtn().addEventListener("click", async () => {
-      await this.saveState("Saving prompt...");
+    this.$saveBtn().addEventListener("click", () => {
+      this.saveState();
     });
   }
 
   async init() {
-    try {
-      await this.bootstrapSession();
-      await this.loadEntryPoint(true);
-      this.startPolling();
-    } catch (err) {
-      this.lastError = {
-        stage: "init",
-        message: err.message
-      };
-      this.renderDebugInfo();
-    }
+    await this.bootstrapSession();
+    await this.loadEntryPoint();
+    this.startPolling();
+  }
+
+  setStatus(msg, type = "info") {
+    const el = this.shadowRoot.getElementById("status");
+    const colors = {
+      info: "#c9d1d9",
+      success: "#22c55e",
+      error: "#ef4444"
+    };
+    el.style.color = colors[type];
+    el.textContent = msg;
   }
 
   $userInfo() { return this.shadowRoot.getElementById("userInfo"); }
@@ -248,285 +210,89 @@ class SupervisorAccessWidget extends HTMLElement {
   $prompt() { return this.shadowRoot.getElementById("prompt"); }
   $saveBtn() { return this.shadowRoot.getElementById("saveBtn"); }
   $stateLabel() { return this.shadowRoot.getElementById("stateLabel"); }
-  $output() { return this.shadowRoot.getElementById("output"); }
 
-  setOutput(payload) {
-    this.$output().textContent = JSON.stringify(payload, null, 2);
-  }
-
-  renderDebugInfo(extra = {}) {
-    this.setOutput({
-      identitySource: this.identitySource,
-      localIdentity: this.resolvedIdentity || {
-        email: "",
-        userId: "",
-        teamId: "",
-        displayName: ""
-      },
-      storeSnapshot: this.storeSnapshot || null,
-      currentRole: this.currentRole,
-      hasSessionToken: Boolean(this.sessionToken),
-      lastStatus: this.lastStatus,
-      lastError: this.lastError,
-      bootstrapResponse: this.lastBootstrapResponse,
-      entryPointResponse: this.lastEntryPointResponse,
-      updateResponse: this.lastUpdateResponse,
-      ...extra
-    });
-  }
-
-async resolveDesktopIdentity() {
-  const identity = {
-    email: this.email || "",
-    userId: this.userId || "",
-    teamId: this.teamId || "",
-    displayName: this.displayName || "Unknown User"
-  };
-
-  this.identitySource = "layout-properties";
-  this.resolvedIdentity = identity;
-
-  return identity;
-}
-
-  async readJsonResponse(res) {
-    const text = await res.text();
-
-    if (!text) return {};
-
-    try {
-      return JSON.parse(text);
-    } catch {
-      return { error: text };
-    }
+  async resolveDesktopIdentity() {
+    return {
+      email: this.email || "",
+      userId: this.userId || "",
+      teamId: this.teamId || "",
+      displayName: this.displayName || "Unknown User"
+    };
   }
 
   async bootstrapSession() {
-    if (this.isBootstrapping) return;
-    this.isBootstrapping = true;
+    const identity = await this.resolveDesktopIdentity();
 
-    try {
-      const identity = await this.resolveDesktopIdentity();
-      this.lastStatus = {
-        stage: "bootstrap",
-        message: "Bootstrapping session"
-      };
-      this.renderDebugInfo();
+    const res = await fetch(`${this.API_URL}/api/session/bootstrap`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(identity)
+    });
 
-      const res = await fetch(`${this.API_URL}/api/session/bootstrap`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(identity)
-      });
+    const data = await res.json();
 
-      const data = await this.readJsonResponse(res);
+    this.sessionToken = data.sessionToken;
+    this.currentRole = data.role;
 
-      if (!res.ok) {
-        this.lastError = {
-          stage: "bootstrap",
-          httpStatus: res.status,
-          data
-        };
-        this.renderDebugInfo();
-        throw new Error(data.error || "Session bootstrap failed");
-      }
+    this.$userInfo().textContent = data.user.displayName;
+    this.$roleBadge().textContent = this.currentRole.toUpperCase();
 
-      if (!data.sessionToken) {
-        this.lastError = {
-          stage: "bootstrap",
-          message: "Bootstrap response did not include a session token"
-        };
-        this.renderDebugInfo();
-        throw new Error("Bootstrap response did not include a session token");
-      }
-
-      this.sessionToken = data.sessionToken;
-      this.currentRole = data.role || "viewer";
-      this.lastBootstrapResponse = data;
-      this.lastError = null;
-      this.lastStatus = {
-        stage: "bootstrap",
-        message: "Session bootstrapped"
-      };
-
-      this.$userInfo().textContent =
-        `${data.user?.displayName || "Unknown User"}${data.user?.email ? " (" + data.user.email + ")" : ""}`;
-      this.$roleBadge().textContent = this.currentRole.toUpperCase();
-
-      this.applyRoleState();
-      this.renderDebugInfo();
-    } finally {
-      this.isBootstrapping = false;
-    }
-  }
-
-  applyRoleState() {
-    const writable = this.currentRole === "supervisor" || this.currentRole === "admin";
-
+    const writable = ["supervisor", "admin"].includes(this.currentRole);
     this.$toggle().disabled = !writable;
     this.$prompt().disabled = !writable;
     this.$saveBtn().disabled = !writable;
   }
 
-  async authorizedFetch(path, options = {}, retryOn401 = true) {
-    if (!this.sessionToken) {
-      await this.bootstrapSession();
-    }
-
-    const makeRequest = async () =>
-      fetch(`${this.API_URL}${path}`, {
-        ...options,
-        headers: {
-          ...(options.headers || {}),
-          Authorization: `Bearer ${this.sessionToken}`
-        }
-      });
-
-    let res = await makeRequest();
-
-    if (res.status === 401 && retryOn401) {
-      await this.bootstrapSession();
-      res = await makeRequest();
-    }
-
-    return res;
+  async authorizedFetch(path, options = {}) {
+    return fetch(`${this.API_URL}${path}`, {
+      ...options,
+      headers: {
+        ...(options.headers || {}),
+        Authorization: `Bearer ${this.sessionToken}`
+      }
+    });
   }
 
-  async loadEntryPoint(updateOutput = true) {
-    try {
-      this.lastStatus = {
-        stage: "loadEntryPoint",
-        message: "Loading entry point"
-      };
-      if (updateOutput) {
-        this.renderDebugInfo();
-      }
+  async loadEntryPoint() {
+    const res = await this.authorizedFetch(`/api/entrypoint/${this.ENTRY_POINT_ID}`);
+    const data = await res.json();
 
-      const res = await this.authorizedFetch(`/api/entrypoint/${this.ENTRY_POINT_ID}`);
-      const data = await this.readJsonResponse(res);
-
-      if (!res.ok) {
-        this.lastError = {
-          stage: "loadEntryPoint",
-          httpStatus: res.status,
-          data
-        };
-        this.renderDebugInfo();
-        throw new Error(data.error || "Load failed");
-      }
-
-      const emergencyCase =
-        typeof data.emergencyCase === "boolean" ? data.emergencyCase : false;
-      const emergencyPrompt =
-        typeof data.emergencyPrompt === "string" ? data.emergencyPrompt : "";
-
-      this.$toggle().checked = emergencyCase;
-      this.updateLabel();
-      this.$prompt().value = emergencyPrompt;
-
-      this.lastEntryPointResponse = data;
-      this.lastError = null;
-      this.lastStatus = {
-        stage: "loadEntryPoint",
-        message: "Entry point loaded"
-      };
-
-      if (updateOutput) {
-        this.renderDebugInfo();
-      }
-    } catch (err) {
-      this.lastError = {
-        stage: "loadEntryPoint",
-        message: err.message
-      };
-      this.renderDebugInfo();
-    }
+    this.$toggle().checked = data.emergencyCase;
+    this.$prompt().value = data.emergencyPrompt;
+    this.updateLabel();
   }
 
   updateLabel() {
-    const state = this.$toggle().checked;
-    this.$stateLabel().innerText = state ? "ON" : "OFF";
+    this.$stateLabel().innerText = this.$toggle().checked ? "ON" : "OFF";
   }
 
-  async saveState(statusText) {
-    const EmergencyCase = this.$toggle().checked;
-    const EmergencyPrompt = this.$prompt().value;
+  async saveState() {
+    this.setStatus("Saving...", "info");
+    this.$saveBtn().disabled = true;
 
     try {
-      this.isUpdating = true;
-      this.lastStatus = {
-        stage: "saveState",
-        message: statusText,
-        payload: {
-          EmergencyCase,
-          EmergencyPrompt
-        }
-      };
-      this.renderDebugInfo();
-
       const res = await this.authorizedFetch(`/api/entrypoint/${this.ENTRY_POINT_ID}`, {
         method: "PUT",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ EmergencyCase, EmergencyPrompt })
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          EmergencyCase: this.$toggle().checked,
+          EmergencyPrompt: this.$prompt().value
+        })
       });
 
-      const data = await this.readJsonResponse(res);
+      if (!res.ok) throw new Error();
 
-      if (!res.ok) {
-        this.lastError = {
-          stage: "saveState",
-          httpStatus: res.status,
-          data,
-          payload: {
-            EmergencyCase,
-            EmergencyPrompt
-          }
-        };
-        this.renderDebugInfo();
-        throw new Error(data.error || "Update failed");
-      }
-
-      this.lastUpdateResponse = data;
-      this.lastError = null;
-      this.lastStatus = {
-        stage: "saveState",
-        message: "Update successful",
-        payload: {
-          EmergencyCase,
-          EmergencyPrompt
-        }
-      };
-      this.renderDebugInfo();
-
-      await this.loadEntryPoint(false);
-      this.renderDebugInfo();
-    } catch (err) {
-      this.lastError = {
-        stage: "saveState",
-        message: err.message,
-        payload: {
-          EmergencyCase,
-          EmergencyPrompt
-        }
-      };
-      this.renderDebugInfo();
+      this.setStatus("Saved successfully", "success");
+    } catch {
+      this.setStatus("Update failed", "error");
     } finally {
-      this.isUpdating = false;
+      this.$saveBtn().disabled = false;
     }
   }
 
   startPolling() {
-    if (this.pollHandle) {
-      clearInterval(this.pollHandle);
-    }
-
-    this.pollHandle = setInterval(async () => {
-      if (this.isUpdating || this.isBootstrapping) return;
-      await this.loadEntryPoint(false);
+    this.pollHandle = setInterval(() => {
+      if (!this.isUpdating) this.loadEntryPoint();
     }, this.POLL_INTERVAL_MS);
   }
 }

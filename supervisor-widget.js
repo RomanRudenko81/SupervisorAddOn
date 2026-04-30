@@ -41,7 +41,30 @@ class SupervisorAccessWidget extends HTMLElement {
           box-sizing: border-box;
           padding: clamp(8px, 2vw, 24px);
           font-family: inherit, Arial, sans-serif;
-          color: #ffffff;
+
+          --widget-bg: rgba(255,255,255,0.75);
+          --widget-border: rgba(0,0,0,0.12);
+          --widget-text: #111827;
+          --widget-muted: #4b5563;
+          --widget-input-bg: rgba(255,255,255,0.9);
+          --widget-input-border: rgba(0,0,0,0.2);
+          --widget-badge-bg: rgba(0,0,0,0.08);
+          --widget-switch-bg: #6b7280;
+
+          color: var(--widget-text);
+        }
+
+        @media (prefers-color-scheme: dark) {
+          :host {
+            --widget-bg: rgba(255,255,255,0.06);
+            --widget-border: rgba(255,255,255,0.1);
+            --widget-text: #ffffff;
+            --widget-muted: #c9d1d9;
+            --widget-input-bg: rgba(0,0,0,0.35);
+            --widget-input-border: rgba(255,255,255,0.15);
+            --widget-badge-bg: rgba(255,255,255,0.1);
+            --widget-switch-bg: #3a3f4b;
+          }
         }
 
         * {
@@ -53,11 +76,12 @@ class SupervisorAccessWidget extends HTMLElement {
           width: clamp(360px, 52vw, 900px);
           max-width: calc(100vw - 32px);
           margin: 0 auto;
-          background: rgba(255,255,255,0.06);
-          border: 1px solid rgba(255,255,255,0.1);
+          background: var(--widget-bg);
+          border: 1px solid var(--widget-border);
           border-radius: 14px;
           padding: clamp(16px, 2vw, 25px);
           backdrop-filter: blur(10px);
+          color: var(--widget-text);
         }
 
         h2 {
@@ -68,7 +92,7 @@ class SupervisorAccessWidget extends HTMLElement {
         }
 
         p {
-          color: #c9d1d9;
+          color: var(--widget-muted);
           margin: 0 0 20px 0;
         }
 
@@ -78,15 +102,15 @@ class SupervisorAccessWidget extends HTMLElement {
           gap: 12px;
           margin-bottom: 16px;
           font-size: 13px;
-          color: #c9d1d9;
+          color: var(--widget-muted);
           flex-wrap: wrap;
         }
 
         .role-badge {
           padding: 4px 10px;
           border-radius: 999px;
-          background: rgba(255,255,255,0.1);
-          color: #fff;
+          background: var(--widget-badge-bg);
+          color: var(--widget-text);
           font-weight: bold;
         }
 
@@ -95,38 +119,34 @@ class SupervisorAccessWidget extends HTMLElement {
           display: inline-block;
           width: 48px;
           height: 26px;
-          flex: 0 0 auto;
         }
 
         .switch input {
           opacity: 0;
-          width: 0;
-          height: 0;
         }
 
         .slider {
           position: absolute;
-          cursor: pointer;
           inset: 0;
-          background-color: #3a3f4b;
-          transition: .3s;
+          background: var(--widget-switch-bg);
           border-radius: 26px;
+          cursor: pointer;
         }
 
         .slider:before {
-          position: absolute;
           content: "";
+          position: absolute;
           height: 18px;
           width: 18px;
           left: 4px;
           bottom: 4px;
-          background-color: white;
-          transition: .3s;
+          background: white;
           border-radius: 50%;
+          transition: .3s;
         }
 
         input:checked + .slider {
-          background-color: #22c55e;
+          background: #22c55e;
         }
 
         input:checked + .slider:before {
@@ -144,66 +164,38 @@ class SupervisorAccessWidget extends HTMLElement {
           display: flex;
           gap: 8px;
           flex: 1;
-          min-width: 0;
         }
 
         input[type="text"] {
           flex: 1;
-          min-width: 0;
           padding: 12px;
           border-radius: 10px;
-          border: 1px solid rgba(255,255,255,0.15);
-          background: rgba(0,0,0,0.35);
-          color: white;
-          outline: none;
+          border: 1px solid var(--widget-input-border);
+          background: var(--widget-input-bg);
+          color: var(--widget-text);
         }
 
-        .small-btn {
+        input::placeholder {
+          color: var(--widget-muted);
+        }
+
+        button {
           padding: 10px 14px;
           border: none;
           border-radius: 10px;
           background: #0078d4;
           color: white;
-          font-size: 13px;
           cursor: pointer;
-          width: auto;
-          flex: 0 0 auto;
         }
 
-        .small-btn:hover {
-          background: #0a5ea8;
-        }
-
-        .small-btn[disabled],
-        input[disabled] {
-          opacity: 0.55;
-          cursor: not-allowed;
+        button:disabled {
+          opacity: 0.5;
         }
 
         #status {
           margin-top: 12px;
           font-size: 13px;
-          color: #c9d1d9;
-          min-height: 18px;
-        }
-
-        @media (max-width: 640px) {
-          :host {
-            padding: 8px;
-          }
-
-          .card {
-            width: 100%;
-            max-width: 100%;
-          }
-
-          .input-group {
-            flex-direction: column;
-          }
-
-          .small-btn {
-            width: 100%;
-          }
+          color: var(--widget-muted);
         }
       </style>
 
@@ -212,8 +204,8 @@ class SupervisorAccessWidget extends HTMLElement {
         <p>Conscia Support Demo</p>
 
         <div class="info-row">
-          <span id="userInfo">Loading user context...</span>
-          <span id="roleBadge" class="role-badge">...</span>
+          <span id="userInfo">Loading...</span>
+          <span id="roleBadge">...</span>
         </div>
 
         <div class="row">
@@ -221,16 +213,13 @@ class SupervisorAccessWidget extends HTMLElement {
             <input type="checkbox" id="emergencyToggle">
             <span class="slider"></span>
           </label>
-
-          <span>
-            Emergency Mode: <span id="stateLabel">OFF</span>
-          </span>
+          <span>Emergency Mode: <span id="stateLabel">OFF</span></span>
         </div>
 
         <div class="row">
           <div class="input-group">
-            <input id="prompt" type="text" placeholder="Enter emergency prompt...">
-            <button class="small-btn" id="saveBtn">Save</button>
+            <input id="prompt" placeholder="Enter emergency prompt...">
+            <button id="saveBtn">Save</button>
           </div>
         </div>
 
@@ -277,136 +266,66 @@ class SupervisorAccessWidget extends HTMLElement {
 
   setStatus(message, type = "info") {
     const colors = {
-      info: "#c9d1d9",
+      info: "var(--widget-muted)",
       success: "#22c55e",
       error: "#ef4444"
     };
 
     const el = this.$status();
-    el.style.color = colors[type] || colors.info;
+    el.style.color = colors[type];
     el.textContent = message || "";
   }
 
   async resolveDesktopIdentity() {
-    const identity = {
+    return {
       email: this.email || "",
       userId: this.userId || "",
       teamId: this.teamId || "",
       displayName: this.displayName || "Unknown User"
     };
-
-    this.identitySource = "layout-properties";
-    this.resolvedIdentity = identity;
-
-    return identity;
-  }
-
-  async readJsonResponse(res) {
-    const text = await res.text();
-
-    if (!text) return {};
-
-    try {
-      return JSON.parse(text);
-    } catch {
-      return { error: text };
-    }
   }
 
   async bootstrapSession() {
-    if (this.isBootstrapping) return;
-    this.isBootstrapping = true;
+    const identity = await this.resolveDesktopIdentity();
 
-    try {
-      const identity = await this.resolveDesktopIdentity();
+    const res = await fetch(`${this.API_URL}/api/session/bootstrap`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(identity)
+    });
 
-      const res = await fetch(`${this.API_URL}/api/session/bootstrap`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(identity)
-      });
+    const data = await res.json();
 
-      const data = await this.readJsonResponse(res);
+    this.sessionToken = data.sessionToken;
+    this.currentRole = data.role;
 
-      if (!res.ok) {
-        throw new Error(data.error || `HTTP ${res.status}`);
-      }
+    this.$userInfo().textContent = data.user.displayName;
+    this.$roleBadge().textContent = this.currentRole.toUpperCase();
 
-      if (!data.sessionToken) {
-        throw new Error("Bootstrap response did not include a session token");
-      }
-
-      this.sessionToken = data.sessionToken;
-      this.currentRole = data.role || "viewer";
-
-      this.$userInfo().textContent = data.user?.displayName || "Unknown User";
-      this.$userInfo().title = data.user?.email || data.user?.userId || "";
-
-      const roleMap = {
-        admin: "Admin",
-        supervisor: "Supervisor",
-        viewer: "Viewer"
-      };
-
-      this.$roleBadge().textContent = roleMap[this.currentRole] || "Viewer";
-
-      this.applyRoleState();
-    } finally {
-      this.isBootstrapping = false;
-    }
-  }
-
-  applyRoleState() {
     const writable = ["supervisor", "admin"].includes(this.currentRole);
-
     this.$toggle().disabled = !writable;
     this.$prompt().disabled = !writable;
     this.$saveBtn().disabled = !writable;
   }
 
-  async authorizedFetch(path, options = {}, retryOn401 = true) {
-    if (!this.sessionToken) {
-      await this.bootstrapSession();
-    }
-
-    const makeRequest = async () =>
-      fetch(`${this.API_URL}${path}`, {
-        ...options,
-        headers: {
-          ...(options.headers || {}),
-          Authorization: `Bearer ${this.sessionToken}`
-        }
-      });
-
-    let res = await makeRequest();
-
-    if (res.status === 401 && retryOn401) {
-      await this.bootstrapSession();
-      res = await makeRequest();
-    }
-
-    return res;
+  async authorizedFetch(path, options = {}) {
+    return fetch(`${this.API_URL}${path}`, {
+      ...options,
+      headers: {
+        ...(options.headers || {}),
+        Authorization: \`Bearer \${this.sessionToken}\`
+      }
+    });
   }
 
   async loadEntryPoint(force = false) {
-    if (!force && (this.isUpdating || this.hasUnsavedChanges || this.shadowRoot.activeElement === this.$prompt())) {
-      return;
-    }
+    if (!force && (this.isUpdating || this.hasUnsavedChanges)) return;
 
-    const res = await this.authorizedFetch(`/api/entrypoint/${this.ENTRY_POINT_ID}`);
-    const data = await this.readJsonResponse(res);
+    const res = await this.authorizedFetch(\`/api/entrypoint/\${this.ENTRY_POINT_ID}\`);
+    const data = await res.json();
 
-    if (!res.ok) {
-      throw new Error(data.error || `HTTP ${res.status}`);
-    }
-
-    const emergencyCase = typeof data.emergencyCase === "boolean" ? data.emergencyCase : false;
-    const emergencyPrompt = typeof data.emergencyPrompt === "string" ? data.emergencyPrompt : "";
-
-    this.$toggle().checked = emergencyCase;
-    this.$prompt().value = emergencyPrompt;
+    this.$toggle().checked = data.emergencyCase;
+    this.$prompt().value = data.emergencyPrompt;
     this.updateLabel();
 
     this.hasUnsavedChanges = false;
@@ -417,55 +336,32 @@ class SupervisorAccessWidget extends HTMLElement {
   }
 
   async saveState() {
-    if (!["supervisor", "admin"].includes(this.currentRole)) {
-      this.setStatus("No write permission", "error");
-      return;
-    }
-
-    const EmergencyCase = this.$toggle().checked;
-    const EmergencyPrompt = this.$prompt().value;
+    this.setStatus("Saving...", "info");
+    this.$saveBtn().disabled = true;
 
     try {
-      this.isUpdating = true;
-      this.$saveBtn().disabled = true;
-      this.setStatus("Saving...", "info");
-
-      const res = await this.authorizedFetch(`/api/entrypoint/${this.ENTRY_POINT_ID}`, {
+      const res = await this.authorizedFetch(\`/api/entrypoint/\${this.ENTRY_POINT_ID}\`, {
         method: "PUT",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ EmergencyCase, EmergencyPrompt })
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          EmergencyCase: this.$toggle().checked,
+          EmergencyPrompt: this.$prompt().value
+        })
       });
 
-      const data = await this.readJsonResponse(res);
+      if (!res.ok) throw new Error();
 
-      if (!res.ok) {
-        throw new Error(data.error || `HTTP ${res.status}`);
-      }
-
-      this.hasUnsavedChanges = false;
-      await this.loadEntryPoint(true);
       this.setStatus("Saved successfully ✔", "success");
-    } catch (err) {
-      this.setStatus(`Update failed ❌ ${err.message || ""}`.trim(), "error");
+    } catch {
+      this.setStatus("Update failed ❌", "error");
     } finally {
-      this.isUpdating = false;
-      this.applyRoleState();
+      this.$saveBtn().disabled = false;
     }
   }
 
   startPolling() {
-    if (this.pollHandle) {
-      clearInterval(this.pollHandle);
-    }
-
-    this.pollHandle = setInterval(async () => {
-      try {
-        await this.loadEntryPoint(false);
-      } catch {
-        this.setStatus("Refresh failed", "error");
-      }
+    this.pollHandle = setInterval(() => {
+      if (!this.isUpdating) this.loadEntryPoint();
     }, this.POLL_INTERVAL_MS);
   }
 }

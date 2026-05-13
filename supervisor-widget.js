@@ -19,6 +19,7 @@ class SupervisorAccessWidget extends HTMLElement {
 
   connectedCallback() {
     this.render();
+    this.populateStaticOptions();
     this.bindEvents();
     this.init();
   }
@@ -178,16 +179,9 @@ class SupervisorAccessWidget extends HTMLElement {
           color: var(--widget-muted);
         }
 
-        .input-group {
-          display: flex;
-          gap: 8px;
-          flex: 1;
-          min-width: 0;
-        }
-
         input[type="text"],
         select {
-          flex: 1;
+          width: 100%;
           min-width: 0;
           padding: 12px;
           border-radius: 10px;
@@ -241,10 +235,6 @@ class SupervisorAccessWidget extends HTMLElement {
             max-width: 100%;
           }
 
-          .input-group {
-            flex-direction: column;
-          }
-
           .small-btn {
             width: 100%;
           }
@@ -262,9 +252,7 @@ class SupervisorAccessWidget extends HTMLElement {
 
         <div class="field">
           <label for="priorityQueue">Priority Queue</label>
-          <select id="priorityQueue">
-            ${Array.from({ length: 10 }, (_, i) => `<option value="${i + 1}">${i + 1}</option>`).join("")}
-          </select>
+          <select id="priorityQueue"></select>
         </div>
 
         <div class="row">
@@ -290,10 +278,7 @@ class SupervisorAccessWidget extends HTMLElement {
 
         <div class="field">
           <label for="globalLanguage">Global Language</label>
-          <select id="globalLanguage">
-            <option value="de-DE">de-DE</option>
-            <option value="en-US">en-US</option>
-          </select>
+          <select id="globalLanguage"></select>
         </div>
 
         <div class="field">
@@ -313,6 +298,27 @@ class SupervisorAccessWidget extends HTMLElement {
         <div id="status"></div>
       </div>
     `;
+  }
+
+  populateStaticOptions() {
+    this.setSelectOptions(
+      this.$priorityQueue(),
+      Array.from({ length: 10 }, (_, i) => String(i + 1))
+    );
+
+    this.setSelectOptions(this.$globalLanguage(), ["de-DE", "en-US"]);
+    this.updateVoiceOptions();
+  }
+
+  setSelectOptions(selectElement, values) {
+    selectElement.innerHTML = "";
+
+    values.forEach(value => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = value;
+      selectElement.appendChild(option);
+    });
   }
 
   bindEvents() {
@@ -406,13 +412,12 @@ class SupervisorAccessWidget extends HTMLElement {
     const language = this.$globalLanguage().value || "de-DE";
     const options = this.getVoiceOptions(language);
     const voiceSelect = this.$globalVoiceName();
+    const currentValue = selectedVoice || voiceSelect.value;
 
-    voiceSelect.innerHTML = options
-      .map(value => `<option value="${value}">${value}</option>`)
-      .join("");
+    this.setSelectOptions(voiceSelect, options);
 
-    if (selectedVoice && options.includes(selectedVoice)) {
-      voiceSelect.value = selectedVoice;
+    if (currentValue && options.includes(currentValue)) {
+      voiceSelect.value = currentValue;
     } else {
       voiceSelect.value = options[0];
     }

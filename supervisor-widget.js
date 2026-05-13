@@ -15,27 +15,37 @@ class SupervisorAccessWidget extends HTMLElement {
     this.resolvedIdentity = null;
     this.identitySource = "none";
     this.hasUnsavedChanges = false;
+    this.themeObserver = null;
   }
 
   connectedCallback() {
-    this.applyDetectedTheme();
     this.render();
     this.populateStaticOptions();
     this.bindEvents();
     this.init();
 
-    setTimeout(() => this.applyDetectedTheme(), 500);
-    setTimeout(() => this.applyDetectedTheme(), 1500);
+    this.applyDetectedTheme();
+    setTimeout(() => this.applyDetectedTheme(), 250);
+    setTimeout(() => this.applyDetectedTheme(), 1000);
+    setTimeout(() => this.applyDetectedTheme(), 2500);
+
+    this.startThemeObserver();
   }
 
   disconnectedCallback() {
     if (this.pollHandle) {
       clearInterval(this.pollHandle);
     }
+
+    if (this.themeObserver) {
+      this.themeObserver.disconnect();
+    }
   }
 
   parseRgb(color) {
-    const match = String(color || "").match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+    const match = String(color || "").match(
+      /rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/
+    );
 
     if (!match) return null;
 
@@ -47,31 +57,108 @@ class SupervisorAccessWidget extends HTMLElement {
     };
   }
 
-  getEffectiveBackgroundColor() {
-    let element = this.parentElement;
+  getLuminance(rgb) {
+    return (0.299 * rgb.r) + (0.587 * rgb.g) + (0.114 * rgb.b);
+  }
 
-    while (element) {
-      const color = getComputedStyle(element).backgroundColor;
-      const rgb = this.parseRgb(color);
+  getComposedParent(element) {
+    if (!element) return null;
 
-      if (rgb && rgb.a > 0.2) {
-        return rgb;
-      }
-
-      element = element.parentElement;
+    if (element.parentElement) {
+      return element.parentElement;
     }
 
-    const bodyColor = getComputedStyle(document.body).backgroundColor;
-    return this.parseRgb(bodyColor) || { r: 255, g: 255, b: 255, a: 1 };
+    const root = element.getRootNode?.();
+
+    if (root && root.host) {
+      return root.host;
+    }
+
+    return null;
+  }
+
+  getCandidateBackgrounds() {
+    const candidates = [];
+
+    let element = this;
+
+    while (element) {
+      const style = getComputedStyle(element);
+      const bg = this.parseRgb(style.backgroundColor);
+
+      if (bg && bg.a > 0.05) {
+        candidates.push(bg);
+      }
+
+      element = this.getComposedParent(element);
+    }
+
+    const rect = this.getBoundingClientRect();
+
+    if (rect.width > 0 && rect.height > 0) {
+      const x = Math.round(rect.left + rect.width / 2);
+      const y = Math.round(rect.top + rect.height / 2);
+
+      const elements = document.elementsFromPoint(x, y);
+
+      elements.forEach(item => {
+        const style = getComputedStyle(item);
+        const bg = this.parseRgb(style.backgroundColor);
+
+        if (bg && bg.a > 0.05) {
+          candidates.push(bg);
+        }
+      });
+    }
+
+    const bodyBg = this.parseRgb(getComputedStyle(document.body).backgroundColor);
+    const htmlBg = this.parseRgb(getComputedStyle(document.documentElement).backgroundColor);
+
+    if (bodyBg && bodyBg.a > 0.05) candidates.push(bodyBg);
+    if (htmlBg && htmlBg.a > 0.05) candidates.push(htmlBg);
+
+    return candidates;
+  }
+
+  detectDarkTheme() {
+    const candidates = this.getCandidateBackgrounds();
+
+    if (candidates.length > 0) {
+      const darkest = candidates.reduce((best, current) => {
+        return this.getLuminance(current) < this.getLuminance(best)
+          ? current
+          : best;
+      });
+
+      return this.getLuminance(darkest) < 145;
+    }
+
+    return window.matchMedia?.("(prefers-color-scheme: dark)")?.matches || false;
   }
 
   applyDetectedTheme() {
-    const bg = this.getEffectiveBackgroundColor();
-    const luminance = (0.299 * bg.r) + (0.587 * bg.g) + (0.114 * bg.b);
-    const isDark = luminance < 128;
+    const isDark = this.detectDarkTheme();
 
     this.classList.toggle("theme-dark", isDark);
     this.classList.toggle("theme-light", !isDark);
+  }
+
+  startThemeObserver() {
+    this.themeObserver = new MutationObserver(() => {
+      this.applyDetectedTheme();
+    });
+
+    this.themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class", "style", "data-theme"]
+    });
+
+    if (document.body) {
+      this.themeObserver.observe(document.body, {
+        attributes: true,
+        attributeFilter: ["class", "style", "data-theme"]
+      });
+    }
   }
 
   render() {
@@ -100,18 +187,6 @@ class SupervisorAccessWidget extends HTMLElement {
           color: var(--widget-text);
         }
 
-        :host(.theme-dark) {
-          --widget-bg: rgba(8,12,20,0.24);
-          --widget-border: rgba(255,255,255,0.065);
-          --widget-text: #ffffff;
-          --widget-muted: rgba(255,255,255,0.86);
-          --widget-input-bg: rgba(255,255,255,0.12);
-          --widget-input-border: rgba(255,255,255,0.18);
-          --widget-badge-bg: rgba(255,255,255,0.14);
-          --widget-switch-bg: #3a3f4b;
-          --widget-blur: blur(10px);
-        }
-
         :host(.theme-light) {
           --widget-bg: rgba(255,255,255,0.18);
           --widget-border: rgba(0,0,0,0.055);
@@ -122,6 +197,18 @@ class SupervisorAccessWidget extends HTMLElement {
           --widget-badge-bg: rgba(0,0,0,0.08);
           --widget-switch-bg: #6b7280;
           --widget-blur: blur(8px);
+        }
+
+        :host(.theme-dark) {
+          --widget-bg: rgba(8,12,20,0.24);
+          --widget-border: rgba(255,255,255,0.065);
+          --widget-text: #ffffff;
+          --widget-muted: rgba(255,255,255,0.86);
+          --widget-input-bg: rgba(255,255,255,0.12);
+          --widget-input-border: rgba(255,255,255,0.18);
+          --widget-badge-bg: rgba(255,255,255,0.14);
+          --widget-switch-bg: #3a3f4b;
+          --widget-blur: blur(10px);
         }
 
         * {

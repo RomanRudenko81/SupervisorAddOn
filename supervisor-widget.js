@@ -45,12 +45,16 @@ class SupervisorAccessWidget extends HTMLElement {
 
           --widget-bg: rgba(255,255,255,0.18);
           --widget-border: rgba(0,0,0,0.055);
-          --widget-text: #111827;
+
+          --widget-text: #1f2937;
           --widget-muted: #4b5563;
+
           --widget-input-bg: rgba(255,255,255,0.72);
           --widget-input-border: rgba(0,0,0,0.16);
+
           --widget-badge-bg: rgba(0,0,0,0.08);
           --widget-switch-bg: #6b7280;
+
           --widget-blur: blur(8px);
 
           color: var(--widget-text);
@@ -60,12 +64,16 @@ class SupervisorAccessWidget extends HTMLElement {
           :host {
             --widget-bg: rgba(8,12,20,0.24);
             --widget-border: rgba(255,255,255,0.065);
-            --widget-text: #f3f4f6;
-            --widget-muted: #c9d1d9;
+
+            --widget-text: #ffffff;
+            --widget-muted: rgba(255,255,255,0.82);
+
             --widget-input-bg: rgba(255,255,255,0.08);
             --widget-input-border: rgba(255,255,255,0.14);
+
             --widget-badge-bg: rgba(255,255,255,0.1);
             --widget-switch-bg: #3a3f4b;
+
             --widget-blur: blur(10px);
           }
         }
@@ -79,12 +87,16 @@ class SupervisorAccessWidget extends HTMLElement {
           width: clamp(360px, 72vw, 1100px);
           max-width: calc(100vw - 32px);
           margin: 0 auto;
+
           background: var(--widget-bg);
           border: 1px solid var(--widget-border);
           border-radius: 14px;
+
           padding: clamp(16px, 2vw, 25px);
+
           backdrop-filter: var(--widget-blur);
           -webkit-backdrop-filter: var(--widget-blur);
+
           color: var(--widget-text);
         }
 
@@ -109,7 +121,7 @@ class SupervisorAccessWidget extends HTMLElement {
 
         h2 {
           margin: 0;
-          font-size: clamp(18px, 1.6vw, 24px);
+          font-size: clamp(20px, 1.8vw, 28px);
           font-weight: 700;
           text-transform: uppercase;
           color: var(--widget-text);
@@ -193,7 +205,8 @@ class SupervisorAccessWidget extends HTMLElement {
 
         .category h3 {
           margin: 0 0 16px 0;
-          font-size: 18px;
+          font-size: 21px;
+          font-weight: 700;
           color: var(--widget-text);
         }
 
@@ -213,11 +226,15 @@ class SupervisorAccessWidget extends HTMLElement {
         select {
           width: 100%;
           min-width: 0;
+
           padding: 12px;
+
           border-radius: 10px;
           border: 1px solid var(--widget-input-border);
+
           background: var(--widget-input-bg);
           color: var(--widget-text);
+
           outline: none;
         }
 
@@ -229,10 +246,13 @@ class SupervisorAccessWidget extends HTMLElement {
           padding: 10px 14px;
           border: none;
           border-radius: 10px;
+
           background: #0078d4;
           color: white;
+
           font-size: 13px;
           cursor: pointer;
+
           width: auto;
           flex: 0 0 auto;
         }
@@ -290,7 +310,9 @@ class SupervisorAccessWidget extends HTMLElement {
         <div class="header">
           <div class="header-left">
             <h2>Supervisor Access Control</h2>
-            <span id="userInfo" class="subtext">Loading user context...</span>
+            <span id="userInfo" class="subtext">
+              Loading user context...
+            </span>
           </div>
 
           <div class="header-right">
@@ -306,7 +328,8 @@ class SupervisorAccessWidget extends HTMLElement {
           </label>
 
           <span>
-            Emergency Mode: <span id="stateLabel">OFF</span>
+            Emergency Mode:
+            <span id="stateLabel">OFF</span>
           </span>
         </div>
 
@@ -315,13 +338,27 @@ class SupervisorAccessWidget extends HTMLElement {
             <h3>Prompts</h3>
 
             <div class="field">
-              <label for="emergencyPrompt">Emergency Prompt</label>
-              <input id="emergencyPrompt" type="text" placeholder="Enter emergency prompt...">
+              <label for="emergencyPrompt">
+                Emergency Prompt
+              </label>
+
+              <input
+                id="emergencyPrompt"
+                type="text"
+                placeholder="Enter emergency prompt..."
+              >
             </div>
 
             <div class="field">
-              <label for="holidayPrompt">Holiday Prompt</label>
-              <input id="holidayPrompt" type="text" placeholder="Enter holiday prompt...">
+              <label for="holidayPrompt">
+                Holiday Prompt
+              </label>
+
+              <input
+                id="holidayPrompt"
+                type="text"
+                placeholder="Enter holiday prompt..."
+              >
             </div>
           </div>
 
@@ -329,12 +366,18 @@ class SupervisorAccessWidget extends HTMLElement {
             <h3>Language Settings</h3>
 
             <div class="field">
-              <label for="globalLanguage">Global Language</label>
+              <label for="globalLanguage">
+                Global Language
+              </label>
+
               <select id="globalLanguage"></select>
             </div>
 
             <div class="field">
-              <label for="globalVoiceName">Global Voice Name</label>
+              <label for="globalVoiceName">
+                Global Voice Name
+              </label>
+
               <select id="globalVoiceName"></select>
             </div>
           </div>
@@ -343,19 +386,31 @@ class SupervisorAccessWidget extends HTMLElement {
             <h3>Queue Settings</h3>
 
             <div class="field">
-              <label for="priorityQueue">Prio Queue</label>
+              <label for="priorityQueue">
+                Prio Queue
+              </label>
+
               <select id="priorityQueue"></select>
             </div>
 
             <div class="field">
-              <label for="mohSalesQueue">MoH Sales Queue</label>
-              <input id="mohSalesQueue" type="text" placeholder="Enter MoH Sales Queue text...">
+              <label for="mohSalesQueue">
+                MoH Sales Queue
+              </label>
+
+              <input
+                id="mohSalesQueue"
+                type="text"
+                placeholder="Enter MoH Sales Queue text..."
+              >
             </div>
           </div>
         </div>
 
         <div class="row">
-          <button class="small-btn" id="saveBtn">Save</button>
+          <button class="small-btn" id="saveBtn">
+            Save
+          </button>
         </div>
 
         <div id="status"></div>
@@ -369,7 +424,11 @@ class SupervisorAccessWidget extends HTMLElement {
       Array.from({ length: 10 }, (_, i) => String(i + 1))
     );
 
-    this.setSelectOptions(this.$globalLanguage(), ["de-DE", "en-US"]);
+    this.setSelectOptions(
+      this.$globalLanguage(),
+      ["de-DE", "en-US"]
+    );
+
     this.updateVoiceOptions();
   }
 
@@ -440,16 +499,42 @@ class SupervisorAccessWidget extends HTMLElement {
 
   $userInfo() { return this.shadowRoot.getElementById("userInfo"); }
   $roleBadge() { return this.shadowRoot.getElementById("roleBadge"); }
+
   $toggle() { return this.shadowRoot.getElementById("emergencyToggle"); }
+
   $priorityQueue() { return this.shadowRoot.getElementById("priorityQueue"); }
-  $emergencyPrompt() { return this.shadowRoot.getElementById("emergencyPrompt"); }
-  $holidayPrompt() { return this.shadowRoot.getElementById("holidayPrompt"); }
-  $globalLanguage() { return this.shadowRoot.getElementById("globalLanguage"); }
-  $globalVoiceName() { return this.shadowRoot.getElementById("globalVoiceName"); }
-  $mohSalesQueue() { return this.shadowRoot.getElementById("mohSalesQueue"); }
-  $saveBtn() { return this.shadowRoot.getElementById("saveBtn"); }
-  $stateLabel() { return this.shadowRoot.getElementById("stateLabel"); }
-  $status() { return this.shadowRoot.getElementById("status"); }
+
+  $emergencyPrompt() {
+    return this.shadowRoot.getElementById("emergencyPrompt");
+  }
+
+  $holidayPrompt() {
+    return this.shadowRoot.getElementById("holidayPrompt");
+  }
+
+  $globalLanguage() {
+    return this.shadowRoot.getElementById("globalLanguage");
+  }
+
+  $globalVoiceName() {
+    return this.shadowRoot.getElementById("globalVoiceName");
+  }
+
+  $mohSalesQueue() {
+    return this.shadowRoot.getElementById("mohSalesQueue");
+  }
+
+  $saveBtn() {
+    return this.shadowRoot.getElementById("saveBtn");
+  }
+
+  $stateLabel() {
+    return this.shadowRoot.getElementById("stateLabel");
+  }
+
+  $status() {
+    return this.shadowRoot.getElementById("status");
+  }
 
   setStatus(message, type = "info") {
     const colors = {
@@ -459,6 +544,7 @@ class SupervisorAccessWidget extends HTMLElement {
     };
 
     const el = this.$status();
+
     el.style.color = colors[type] || colors.info;
     el.textContent = message || "";
   }
@@ -472,10 +558,15 @@ class SupervisorAccessWidget extends HTMLElement {
   }
 
   updateVoiceOptions(selectedVoice = "") {
-    const language = this.$globalLanguage().value || "de-DE";
+    const language =
+      this.$globalLanguage().value || "de-DE";
+
     const options = this.getVoiceOptions(language);
+
     const voiceSelect = this.$globalVoiceName();
-    const currentValue = selectedVoice || voiceSelect.value;
+
+    const currentValue =
+      selectedVoice || voiceSelect.value;
 
     this.setSelectOptions(voiceSelect, options);
 
@@ -519,34 +610,49 @@ class SupervisorAccessWidget extends HTMLElement {
 
   async bootstrapSession() {
     if (this.isBootstrapping) return;
+
     this.isBootstrapping = true;
 
     try {
-      const identity = await this.resolveDesktopIdentity();
+      const identity =
+        await this.resolveDesktopIdentity();
 
-      const res = await fetch(`${this.API_URL}/api/session/bootstrap`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(identity)
-      });
+      const res = await fetch(
+        `${this.API_URL}/api/session/bootstrap`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(identity)
+        }
+      );
 
-      const data = await this.readJsonResponse(res);
+      const data =
+        await this.readJsonResponse(res);
 
       if (!res.ok) {
-        throw new Error(data.error || `HTTP ${res.status}`);
+        throw new Error(
+          data.error || `HTTP ${res.status}`
+        );
       }
 
       if (!data.sessionToken) {
-        throw new Error("Bootstrap response did not include a session token");
+        throw new Error(
+          "Bootstrap response did not include a session token"
+        );
       }
 
       this.sessionToken = data.sessionToken;
       this.currentRole = data.role || "viewer";
 
-      this.$userInfo().textContent = data.user?.displayName || "Unknown User";
-      this.$userInfo().title = data.user?.email || data.user?.userId || "";
+      this.$userInfo().textContent =
+        data.user?.displayName || "Unknown User";
+
+      this.$userInfo().title =
+        data.user?.email ||
+        data.user?.userId ||
+        "";
 
       const roleMap = {
         admin: "Admin",
@@ -554,7 +660,8 @@ class SupervisorAccessWidget extends HTMLElement {
         viewer: "Viewer"
       };
 
-      this.$roleBadge().textContent = roleMap[this.currentRole] || "Viewer";
+      this.$roleBadge().textContent =
+        roleMap[this.currentRole] || "Viewer";
 
       this.applyRoleState();
     } finally {
@@ -563,7 +670,9 @@ class SupervisorAccessWidget extends HTMLElement {
   }
 
   applyRoleState() {
-    const writable = ["supervisor", "admin"].includes(this.currentRole);
+    const writable =
+      ["supervisor", "admin"]
+      .includes(this.currentRole);
 
     this.$toggle().disabled = !writable;
     this.$priorityQueue().disabled = !writable;
@@ -575,7 +684,11 @@ class SupervisorAccessWidget extends HTMLElement {
     this.$saveBtn().disabled = !writable;
   }
 
-  async authorizedFetch(path, options = {}, retryOn401 = true) {
+  async authorizedFetch(
+    path,
+    options = {},
+    retryOn401 = true
+  ) {
     if (!this.sessionToken) {
       await this.bootstrapSession();
     }
@@ -585,7 +698,8 @@ class SupervisorAccessWidget extends HTMLElement {
         ...options,
         headers: {
           ...(options.headers || {}),
-          Authorization: `Bearer ${this.sessionToken}`
+          Authorization:
+            `Bearer ${this.sessionToken}`
         }
       });
 
@@ -600,89 +714,196 @@ class SupervisorAccessWidget extends HTMLElement {
   }
 
   async loadEntryPoint(force = false) {
-    if (!force && (
-      this.isUpdating ||
-      this.hasUnsavedChanges ||
-      this.shadowRoot.activeElement === this.$emergencyPrompt() ||
-      this.shadowRoot.activeElement === this.$holidayPrompt() ||
-      this.shadowRoot.activeElement === this.$mohSalesQueue()
-    )) {
+    if (
+      !force &&
+      (
+        this.isUpdating ||
+        this.hasUnsavedChanges ||
+        this.shadowRoot.activeElement === this.$emergencyPrompt() ||
+        this.shadowRoot.activeElement === this.$holidayPrompt() ||
+        this.shadowRoot.activeElement === this.$mohSalesQueue()
+      )
+    ) {
       return;
     }
 
-    const res = await this.authorizedFetch(`/api/entrypoint/${this.ENTRY_POINT_ID}`);
-    const data = await this.readJsonResponse(res);
+    const res =
+      await this.authorizedFetch(
+        `/api/entrypoint/${this.ENTRY_POINT_ID}`
+      );
+
+    const data =
+      await this.readJsonResponse(res);
 
     if (!res.ok) {
-      throw new Error(data.error || `HTTP ${res.status}`);
+      throw new Error(
+        data.error || `HTTP ${res.status}`
+      );
     }
 
-    const overrides = Array.isArray(data.flowOverrideSettings) ? data.flowOverrideSettings : [];
+    const overrides =
+      Array.isArray(data.flowOverrideSettings)
+        ? data.flowOverrideSettings
+        : [];
 
-    const priorityQueue = this.getOverrideValue(overrides, "Priority_Queue", "2");
-    const emergencyCase = this.getOverrideValue(overrides, "EmergencyCase", "false") === "true";
-    const emergencyPrompt = this.getOverrideValue(overrides, "EmergencyPrompt", "");
-    const holidayPrompt = this.getOverrideValue(overrides, "HolidayPrompt", "");
-    const globalLanguage = this.getOverrideValue(overrides, "Global_Language", "de-DE");
-    const globalVoiceName = this.getOverrideValue(overrides, "Global_VoiceName", "");
-    const mohSalesQueue = this.getOverrideValue(overrides, "Moh_Sales_Queue", "");
+    const priorityQueue =
+      this.getOverrideValue(
+        overrides,
+        "Priority_Queue",
+        "2"
+      );
+
+    const emergencyCase =
+      this.getOverrideValue(
+        overrides,
+        "EmergencyCase",
+        "false"
+      ) === "true";
+
+    const emergencyPrompt =
+      this.getOverrideValue(
+        overrides,
+        "EmergencyPrompt",
+        ""
+      );
+
+    const holidayPrompt =
+      this.getOverrideValue(
+        overrides,
+        "HolidayPrompt",
+        ""
+      );
+
+    const globalLanguage =
+      this.getOverrideValue(
+        overrides,
+        "Global_Language",
+        "de-DE"
+      );
+
+    const globalVoiceName =
+      this.getOverrideValue(
+        overrides,
+        "Global_VoiceName",
+        ""
+      );
+
+    const mohSalesQueue =
+      this.getOverrideValue(
+        overrides,
+        "Moh_Sales_Queue",
+        ""
+      );
 
     this.$priorityQueue().value = priorityQueue;
     this.$toggle().checked = emergencyCase;
-    this.$emergencyPrompt().value = emergencyPrompt;
-    this.$holidayPrompt().value = holidayPrompt;
-    this.$globalLanguage().value = ["de-DE", "en-US"].includes(globalLanguage) ? globalLanguage : "de-DE";
+
+    this.$emergencyPrompt().value =
+      emergencyPrompt;
+
+    this.$holidayPrompt().value =
+      holidayPrompt;
+
+    this.$globalLanguage().value =
+      ["de-DE", "en-US"]
+      .includes(globalLanguage)
+        ? globalLanguage
+        : "de-DE";
+
     this.updateVoiceOptions(globalVoiceName);
-    this.$mohSalesQueue().value = mohSalesQueue;
+
+    this.$mohSalesQueue().value =
+      mohSalesQueue;
 
     this.updateLabel();
+
     this.hasUnsavedChanges = false;
   }
 
   updateLabel() {
-    this.$stateLabel().innerText = this.$toggle().checked ? "ON" : "OFF";
+    this.$stateLabel().innerText =
+      this.$toggle().checked
+        ? "ON"
+        : "OFF";
   }
 
   async saveState() {
-    if (!["supervisor", "admin"].includes(this.currentRole)) {
-      this.setStatus("No write permission", "error");
+    if (
+      !["supervisor", "admin"]
+      .includes(this.currentRole)
+    ) {
+      this.setStatus(
+        "No write permission",
+        "error"
+      );
+
       return;
     }
 
     const payload = {
-      Priority_Queue: Number(this.$priorityQueue().value),
-      EmergencyCase: this.$toggle().checked,
-      HolidayPrompt: this.$holidayPrompt().value,
-      Global_VoiceName: this.$globalVoiceName().value,
-      EmergencyPrompt: this.$emergencyPrompt().value,
-      Global_Language: this.$globalLanguage().value,
-      Moh_Sales_Queue: this.$mohSalesQueue().value
+      Priority_Queue:
+        Number(this.$priorityQueue().value),
+
+      EmergencyCase:
+        this.$toggle().checked,
+
+      HolidayPrompt:
+        this.$holidayPrompt().value,
+
+      Global_VoiceName:
+        this.$globalVoiceName().value,
+
+      EmergencyPrompt:
+        this.$emergencyPrompt().value,
+
+      Global_Language:
+        this.$globalLanguage().value,
+
+      Moh_Sales_Queue:
+        this.$mohSalesQueue().value
     };
 
     try {
       this.isUpdating = true;
+
       this.$saveBtn().disabled = true;
+
       this.setStatus("Saving...", "info");
 
-      const res = await this.authorizedFetch(`/api/entrypoint/${this.ENTRY_POINT_ID}`, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(payload)
-      });
+      const res =
+        await this.authorizedFetch(
+          `/api/entrypoint/${this.ENTRY_POINT_ID}`,
+          {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify(payload)
+          }
+        );
 
-      const data = await this.readJsonResponse(res);
+      const data =
+        await this.readJsonResponse(res);
 
       if (!res.ok) {
-        throw new Error(data.error || `HTTP ${res.status}`);
+        throw new Error(
+          data.error || `HTTP ${res.status}`
+        );
       }
 
       this.hasUnsavedChanges = false;
+
       await this.loadEntryPoint(true);
-      this.setStatus("Saved successfully ✔", "success");
+
+      this.setStatus(
+        "Saved successfully ✔",
+        "success"
+      );
     } catch (err) {
-      this.setStatus(`Update failed ❌ ${err.message || ""}`.trim(), "error");
+      this.setStatus(
+        `Update failed ❌ ${err.message || ""}`.trim(),
+        "error"
+      );
     } finally {
       this.isUpdating = false;
       this.applyRoleState();
@@ -694,14 +915,23 @@ class SupervisorAccessWidget extends HTMLElement {
       clearInterval(this.pollHandle);
     }
 
-    this.pollHandle = setInterval(async () => {
-      try {
-        await this.loadEntryPoint(false);
-      } catch {
-        this.setStatus("Refresh failed", "error");
-      }
-    }, this.POLL_INTERVAL_MS);
+    this.pollHandle = setInterval(
+      async () => {
+        try {
+          await this.loadEntryPoint(false);
+        } catch {
+          this.setStatus(
+            "Refresh failed",
+            "error"
+          );
+        }
+      },
+      this.POLL_INTERVAL_MS
+    );
   }
 }
 
-customElements.define("supervisor-access-widget-v2", SupervisorAccessWidget);
+customElements.define(
+  "supervisor-access-widget-v2",
+  SupervisorAccessWidget
+);

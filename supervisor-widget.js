@@ -43,28 +43,30 @@ class SupervisorAccessWidget extends HTMLElement {
           padding: clamp(8px, 2vw, 24px);
           font-family: inherit, Arial, sans-serif;
 
-          --widget-bg: rgba(255,255,255,0.72);
-          --widget-border: rgba(0,0,0,0.12);
+          --widget-bg: rgba(255,255,255,0.18);
+          --widget-border: rgba(0,0,0,0.055);
           --widget-text: #111827;
           --widget-muted: #4b5563;
-          --widget-input-bg: rgba(255,255,255,0.88);
-          --widget-input-border: rgba(0,0,0,0.18);
+          --widget-input-bg: rgba(255,255,255,0.72);
+          --widget-input-border: rgba(0,0,0,0.16);
           --widget-badge-bg: rgba(0,0,0,0.08);
           --widget-switch-bg: #6b7280;
+          --widget-blur: blur(8px);
 
           color: var(--widget-text);
         }
 
         @media (prefers-color-scheme: dark) {
           :host {
-            --widget-bg: rgba(255,255,255,0.06);
-            --widget-border: rgba(255,255,255,0.1);
-            --widget-text: #ffffff;
+            --widget-bg: rgba(8,12,20,0.24);
+            --widget-border: rgba(255,255,255,0.065);
+            --widget-text: #f3f4f6;
             --widget-muted: #c9d1d9;
-            --widget-input-bg: rgba(0,0,0,0.35);
-            --widget-input-border: rgba(255,255,255,0.15);
+            --widget-input-bg: rgba(255,255,255,0.08);
+            --widget-input-border: rgba(255,255,255,0.14);
             --widget-badge-bg: rgba(255,255,255,0.1);
             --widget-switch-bg: #3a3f4b;
+            --widget-blur: blur(10px);
           }
         }
 
@@ -81,7 +83,8 @@ class SupervisorAccessWidget extends HTMLElement {
           border: 1px solid var(--widget-border);
           border-radius: 14px;
           padding: clamp(16px, 2vw, 25px);
-          backdrop-filter: blur(10px);
+          backdrop-filter: var(--widget-blur);
+          -webkit-backdrop-filter: var(--widget-blur);
           color: var(--widget-text);
         }
 

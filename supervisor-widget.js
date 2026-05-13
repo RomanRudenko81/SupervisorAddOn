@@ -74,7 +74,7 @@ class SupervisorAccessWidget extends HTMLElement {
         }
 
         .card {
-          width: clamp(360px, 52vw, 900px);
+          width: clamp(360px, 72vw, 1100px);
           max-width: calc(100vw - 32px);
           margin: 0 auto;
           background: var(--widget-bg);
@@ -85,27 +85,36 @@ class SupervisorAccessWidget extends HTMLElement {
           color: var(--widget-text);
         }
 
+        .header {
+          display: flex;
+          justify-content: space-between;
+          gap: 24px;
+          margin-bottom: 24px;
+        }
+
+        .header-left,
+        .header-right {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+
+        .header-right {
+          align-items: flex-end;
+          text-align: right;
+        }
+
         h2 {
-          margin: 0 0 10px 0;
+          margin: 0;
           font-size: clamp(18px, 1.6vw, 24px);
           font-weight: 700;
           text-transform: uppercase;
           color: var(--widget-text);
         }
 
-        p {
+        .subtext {
           color: var(--widget-muted);
-          margin: 0 0 20px 0;
-        }
-
-        .info-row {
-          display: flex;
-          justify-content: space-between;
-          gap: 12px;
-          margin-bottom: 16px;
           font-size: 13px;
-          color: var(--widget-muted);
-          flex-wrap: wrap;
         }
 
         .role-badge {
@@ -114,6 +123,7 @@ class SupervisorAccessWidget extends HTMLElement {
           background: var(--widget-badge-bg);
           color: var(--widget-text);
           font-weight: bold;
+          font-size: 13px;
         }
 
         .switch {
@@ -164,6 +174,23 @@ class SupervisorAccessWidget extends HTMLElement {
           align-items: center;
           gap: 12px;
           margin-top: 15px;
+          color: var(--widget-text);
+        }
+
+        .categories {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: clamp(20px, 3vw, 48px);
+          margin-top: 24px;
+        }
+
+        .category {
+          min-width: 0;
+        }
+
+        .category h3 {
+          margin: 0 0 16px 0;
+          font-size: 18px;
           color: var(--widget-text);
         }
 
@@ -225,6 +252,12 @@ class SupervisorAccessWidget extends HTMLElement {
           min-height: 18px;
         }
 
+        @media (max-width: 900px) {
+          .categories {
+            grid-template-columns: 1fr;
+          }
+        }
+
         @media (max-width: 640px) {
           :host {
             padding: 8px;
@@ -235,6 +268,15 @@ class SupervisorAccessWidget extends HTMLElement {
             max-width: 100%;
           }
 
+          .header {
+            flex-direction: column;
+          }
+
+          .header-right {
+            align-items: flex-start;
+            text-align: left;
+          }
+
           .small-btn {
             width: 100%;
           }
@@ -242,17 +284,16 @@ class SupervisorAccessWidget extends HTMLElement {
       </style>
 
       <div class="card">
-        <h2>Supervisor Access Control</h2>
-        <p>Conscia Support Demo</p>
+        <div class="header">
+          <div class="header-left">
+            <h2>Supervisor Access Control</h2>
+            <span id="userInfo" class="subtext">Loading user context...</span>
+          </div>
 
-        <div class="info-row">
-          <span id="userInfo">Loading user context...</span>
-          <span id="roleBadge" class="role-badge">...</span>
-        </div>
-
-        <div class="field">
-          <label for="priorityQueue">Priority Queue</label>
-          <select id="priorityQueue"></select>
+          <div class="header-right">
+            <h2>Conscia Demo Support</h2>
+            <span id="roleBadge" class="role-badge">...</span>
+          </div>
         </div>
 
         <div class="row">
@@ -266,29 +307,48 @@ class SupervisorAccessWidget extends HTMLElement {
           </span>
         </div>
 
-        <div class="field">
-          <label for="emergencyPrompt">Emergency Prompt</label>
-          <input id="emergencyPrompt" type="text" placeholder="Enter emergency prompt...">
-        </div>
+        <div class="categories">
+          <div class="category">
+            <h3>Prompts</h3>
 
-        <div class="field">
-          <label for="holidayPrompt">Holiday Prompt</label>
-          <input id="holidayPrompt" type="text" placeholder="Enter holiday prompt...">
-        </div>
+            <div class="field">
+              <label for="emergencyPrompt">Emergency Prompt</label>
+              <input id="emergencyPrompt" type="text" placeholder="Enter emergency prompt...">
+            </div>
 
-        <div class="field">
-          <label for="globalLanguage">Global Language</label>
-          <select id="globalLanguage"></select>
-        </div>
+            <div class="field">
+              <label for="holidayPrompt">Holiday Prompt</label>
+              <input id="holidayPrompt" type="text" placeholder="Enter holiday prompt...">
+            </div>
+          </div>
 
-        <div class="field">
-          <label for="globalVoiceName">Global Voice Name</label>
-          <select id="globalVoiceName"></select>
-        </div>
+          <div class="category">
+            <h3>Language Settings</h3>
 
-        <div class="field">
-          <label for="mohSalesQueue">MOH Sales Queue</label>
-          <input id="mohSalesQueue" type="text" placeholder="Enter MOH Sales Queue text...">
+            <div class="field">
+              <label for="globalLanguage">Global Language</label>
+              <select id="globalLanguage"></select>
+            </div>
+
+            <div class="field">
+              <label for="globalVoiceName">Global Voice Name</label>
+              <select id="globalVoiceName"></select>
+            </div>
+          </div>
+
+          <div class="category">
+            <h3>Queue Settings</h3>
+
+            <div class="field">
+              <label for="priorityQueue">Prio Queue</label>
+              <select id="priorityQueue"></select>
+            </div>
+
+            <div class="field">
+              <label for="mohSalesQueue">MoH Sales Queue</label>
+              <input id="mohSalesQueue" type="text" placeholder="Enter MoH Sales Queue text...">
+            </div>
+          </div>
         </div>
 
         <div class="row">

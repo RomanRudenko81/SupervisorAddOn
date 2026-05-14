@@ -6,7 +6,7 @@ class SupervisorAccessWidget extends HTMLElement {
     this.API_URL = "https://wxcc-backend.onrender.com";
     this.ENTRY_POINT_ID = "284cd09a-eef4-40a2-82c6-53d08705e3e3";
     this.POLL_INTERVAL_MS = 5000;
-    this.WALLBOARD_POLL_INTERVAL_MS = 10000;
+    this.WALLBOARD_POLL_INTERVAL_MS = 5000;
 
     this.sessionToken = null;
     this.currentRole = "viewer";

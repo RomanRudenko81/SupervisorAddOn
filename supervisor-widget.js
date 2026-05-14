@@ -33,22 +33,6 @@ class SupervisorAccessWidget extends HTMLElement {
     if (this.wallboardPollHandle) clearInterval(this.wallboardPollHandle);
   }
 
-  applyTheme() {
-    this.classList.toggle("theme-dark", this.themeMode === "dark");
-    this.classList.toggle("theme-light", this.themeMode !== "dark");
-
-    const themeBtn = this.shadowRoot.getElementById("themeToggleBtn");
-    if (themeBtn) {
-      themeBtn.textContent = this.themeMode === "dark" ? "Theme: Dark" : "Theme: Light";
-    }
-  }
-
-  toggleTheme() {
-    this.themeMode = this.themeMode === "dark" ? "light" : "dark";
-    localStorage.setItem("supervisorWidgetTheme", this.themeMode);
-    this.applyTheme();
-  }
-
   render() {
     this.shadowRoot.innerHTML = `
       <style>
@@ -61,7 +45,6 @@ class SupervisorAccessWidget extends HTMLElement {
           box-sizing: border-box;
           padding: clamp(8px, 2vw, 24px);
           font-family: inherit, Arial, sans-serif;
-
           --widget-bg: rgba(255,255,255,0.18);
           --widget-border: rgba(0,0,0,0.055);
           --widget-text: #1f2937;
@@ -92,7 +75,7 @@ class SupervisorAccessWidget extends HTMLElement {
         }
 
         .card {
-          width: clamp(360px, 72vw, 1200px);
+          width: clamp(360px, 78vw, 1300px);
           max-width: calc(100vw - 32px);
           margin: 0 auto;
           background: var(--widget-bg);
@@ -104,21 +87,15 @@ class SupervisorAccessWidget extends HTMLElement {
           color: var(--widget-text);
         }
 
-        .card,
-        .card * {
+        .card, .card * {
           color: var(--widget-text);
         }
 
-        .field label,
-        .subtext,
-        #status,
-        #wallboardStatus,
-        .kpi-label {
+        .field label, .subtext, #status, #wallboardStatus, .kpi-label, .table-head {
           color: var(--widget-muted);
         }
 
-        input[type="text"],
-        select {
+        input[type="text"], select {
           color: var(--widget-text) !important;
         }
 
@@ -129,8 +106,7 @@ class SupervisorAccessWidget extends HTMLElement {
           margin-bottom: 24px;
         }
 
-        .header-left,
-        .header-right {
+        .header-left, .header-right {
           display: flex;
           flex-direction: column;
           gap: 8px;
@@ -156,12 +132,23 @@ class SupervisorAccessWidget extends HTMLElement {
           text-transform: uppercase;
         }
 
+        h3 {
+          margin: 0 0 16px 0;
+          font-size: 21px;
+          font-weight: 700;
+        }
+
+        h4 {
+          margin: 24px 0 10px 0;
+          font-size: 16px;
+          font-weight: 700;
+        }
+
         .subtext {
           font-size: 13px;
         }
 
-        .role-badge,
-        .theme-btn {
+        .role-badge, .theme-btn {
           padding: 4px 10px;
           border-radius: 999px;
           background: var(--widget-badge-bg);
@@ -235,17 +222,6 @@ class SupervisorAccessWidget extends HTMLElement {
           margin-top: 24px;
         }
 
-        .category {
-          min-width: 0;
-        }
-
-        .category h3,
-        .wallboard h3 {
-          margin: 0 0 16px 0;
-          font-size: 21px;
-          font-weight: 700;
-        }
-
         .field {
           display: flex;
           flex-direction: column;
@@ -257,8 +233,7 @@ class SupervisorAccessWidget extends HTMLElement {
           font-size: 13px;
         }
 
-        input[type="text"],
-        select {
+        input[type="text"], select {
           width: 100%;
           min-width: 0;
           padding: 12px;
@@ -288,9 +263,7 @@ class SupervisorAccessWidget extends HTMLElement {
           background: #0a5ea8;
         }
 
-        .small-btn[disabled],
-        input[disabled],
-        select[disabled] {
+        .small-btn[disabled], input[disabled], select[disabled] {
           opacity: 0.55;
           cursor: not-allowed;
         }
@@ -321,8 +294,8 @@ class SupervisorAccessWidget extends HTMLElement {
           font-weight: 700;
         }
 
-        .agent-list {
-          margin-top: 18px;
+        .agent-list, .call-list {
+          margin-top: 12px;
           display: flex;
           flex-direction: column;
           gap: 8px;
@@ -338,13 +311,22 @@ class SupervisorAccessWidget extends HTMLElement {
           font-size: 13px;
         }
 
-        .agent-row.header-row {
+        .call-row {
+          display: grid;
+          grid-template-columns: 1fr 1.3fr 1.2fr 1fr 1fr;
+          gap: 10px;
+          align-items: center;
+          padding: 10px 0;
+          border-bottom: 1px solid var(--widget-border);
+          font-size: 13px;
+        }
+
+        .header-row {
           color: var(--widget-muted);
           font-weight: 700;
         }
 
-        #status,
-        #wallboardStatus {
+        #status, #wallboardStatus {
           margin-top: 12px;
           font-size: 13px;
           min-height: 18px;
@@ -361,7 +343,7 @@ class SupervisorAccessWidget extends HTMLElement {
             grid-template-columns: 1fr;
           }
 
-          .agent-row {
+          .agent-row, .call-row {
             grid-template-columns: 1fr;
           }
 
@@ -430,12 +412,10 @@ class SupervisorAccessWidget extends HTMLElement {
         <div class="categories">
           <div class="category">
             <h3>Prompts</h3>
-
             <div class="field">
               <label for="emergencyPrompt">Emergency Prompt</label>
               <input id="emergencyPrompt" type="text" placeholder="Enter emergency prompt...">
             </div>
-
             <div class="field">
               <label for="holidayPrompt">Holiday Prompt</label>
               <input id="holidayPrompt" type="text" placeholder="Enter holiday prompt...">
@@ -444,12 +424,10 @@ class SupervisorAccessWidget extends HTMLElement {
 
           <div class="category">
             <h3>Language Settings</h3>
-
             <div class="field">
               <label for="globalLanguage">Global Language</label>
               <select id="globalLanguage"></select>
             </div>
-
             <div class="field">
               <label for="globalVoiceName">Global Voice Name</label>
               <select id="globalVoiceName"></select>
@@ -458,12 +436,10 @@ class SupervisorAccessWidget extends HTMLElement {
 
           <div class="category">
             <h3>Queue Settings</h3>
-
             <div class="field">
               <label for="priorityQueue">Prio Queue</label>
               <select id="priorityQueue"></select>
             </div>
-
             <div class="field">
               <label for="mohSalesQueue">MoH Sales Queue</label>
               <input id="mohSalesQueue" type="text" placeholder="Enter MoH Sales Queue text...">
@@ -485,38 +461,55 @@ class SupervisorAccessWidget extends HTMLElement {
               <div class="kpi-label">Calls in Queue</div>
               <div class="kpi-value" id="kpiCallsInQueue">0</div>
             </div>
-
             <div class="kpi">
               <div class="kpi-label">Active Calls</div>
               <div class="kpi-value" id="kpiActiveCalls">0</div>
             </div>
-
             <div class="kpi">
               <div class="kpi-label">Longest Waiting</div>
               <div class="kpi-value" id="kpiLongestWaiting">0s</div>
             </div>
-
             <div class="kpi">
               <div class="kpi-label">Avg Wait</div>
               <div class="kpi-value" id="kpiAvgWait">0s</div>
             </div>
-
             <div class="kpi">
               <div class="kpi-label">Avg Handle</div>
               <div class="kpi-value" id="kpiAvgHandle">0s</div>
             </div>
-
             <div class="kpi">
               <div class="kpi-label">Logged-in Agents</div>
               <div class="kpi-value" id="kpiLoggedIn">0</div>
             </div>
-
             <div class="kpi">
               <div class="kpi-label">Available Agents</div>
               <div class="kpi-value" id="kpiAvailable">0</div>
             </div>
           </div>
 
+          <h4>Waiting Calls</h4>
+          <div class="call-list" id="waitingCallList">
+            <div class="call-row header-row">
+              <div>Status</div>
+              <div>Queue</div>
+              <div>Entry Point</div>
+              <div>Waiting</div>
+              <div>Task</div>
+            </div>
+          </div>
+
+          <h4>Active Calls</h4>
+          <div class="call-list" id="activeCallList">
+            <div class="call-row header-row">
+              <div>Status</div>
+              <div>Queue</div>
+              <div>Agent</div>
+              <div>Handle</div>
+              <div>Task</div>
+            </div>
+          </div>
+
+          <h4>Agents</h4>
           <div class="agent-list" id="agentList">
             <div class="agent-row header-row">
               <div>Name</div>
@@ -532,12 +525,24 @@ class SupervisorAccessWidget extends HTMLElement {
     `;
   }
 
-  populateStaticOptions() {
-    this.setSelectOptions(
-      this.$priorityQueue(),
-      Array.from({ length: 10 }, (_, i) => String(i + 1))
-    );
+  applyTheme() {
+    this.classList.toggle("theme-dark", this.themeMode === "dark");
+    this.classList.toggle("theme-light", this.themeMode !== "dark");
 
+    const themeBtn = this.shadowRoot.getElementById("themeToggleBtn");
+    if (themeBtn) {
+      themeBtn.textContent = this.themeMode === "dark" ? "Theme: Dark" : "Theme: Light";
+    }
+  }
+
+  toggleTheme() {
+    this.themeMode = this.themeMode === "dark" ? "light" : "dark";
+    localStorage.setItem("supervisorWidgetTheme", this.themeMode);
+    this.applyTheme();
+  }
+
+  populateStaticOptions() {
+    this.setSelectOptions(this.$priorityQueue(), Array.from({ length: 10 }, (_, i) => String(i + 1)));
     this.setSelectOptions(this.$globalLanguage(), ["de-DE", "en-US"]);
     this.updateVoiceOptions();
   }
@@ -562,38 +567,23 @@ class SupervisorAccessWidget extends HTMLElement {
       this.setStatus("Unsaved changes", "info");
     });
 
-    this.$priorityQueue().addEventListener("change", () => {
-      this.hasUnsavedChanges = true;
-      this.setStatus("Unsaved changes", "info");
-    });
-
-    this.$emergencyPrompt().addEventListener("input", () => {
-      this.hasUnsavedChanges = true;
-      this.setStatus("Unsaved changes", "info");
-    });
-
-    this.$holidayPrompt().addEventListener("input", () => {
-      this.hasUnsavedChanges = true;
-      this.setStatus("Unsaved changes", "info");
-    });
+    this.$priorityQueue().addEventListener("change", () => this.markDirty());
+    this.$emergencyPrompt().addEventListener("input", () => this.markDirty());
+    this.$holidayPrompt().addEventListener("input", () => this.markDirty());
 
     this.$globalLanguage().addEventListener("change", () => {
       this.updateVoiceOptions();
-      this.hasUnsavedChanges = true;
-      this.setStatus("Unsaved changes", "info");
+      this.markDirty();
     });
 
-    this.$globalVoiceName().addEventListener("change", () => {
-      this.hasUnsavedChanges = true;
-      this.setStatus("Unsaved changes", "info");
-    });
-
-    this.$mohSalesQueue().addEventListener("input", () => {
-      this.hasUnsavedChanges = true;
-      this.setStatus("Unsaved changes", "info");
-    });
-
+    this.$globalVoiceName().addEventListener("change", () => this.markDirty());
+    this.$mohSalesQueue().addEventListener("input", () => this.markDirty());
     this.$saveBtn().addEventListener("click", async () => await this.saveState());
+  }
+
+  markDirty() {
+    this.hasUnsavedChanges = true;
+    this.setStatus("Unsaved changes", "info");
   }
 
   async init() {
@@ -780,21 +770,17 @@ class SupervisorAccessWidget extends HTMLElement {
 
     const overrides = Array.isArray(data.flowOverrideSettings) ? data.flowOverrideSettings : [];
 
-    const priorityQueue = this.getOverrideValue(overrides, "Priority_Queue", "2");
-    const emergencyCase = this.getOverrideValue(overrides, "EmergencyCase", "false") === "true";
-    const emergencyPrompt = this.getOverrideValue(overrides, "EmergencyPrompt", "");
-    const holidayPrompt = this.getOverrideValue(overrides, "HolidayPrompt", "");
+    this.$priorityQueue().value = this.getOverrideValue(overrides, "Priority_Queue", "2");
+    this.$toggle().checked = this.getOverrideValue(overrides, "EmergencyCase", "false") === "true";
+    this.$emergencyPrompt().value = this.getOverrideValue(overrides, "EmergencyPrompt", "");
+    this.$holidayPrompt().value = this.getOverrideValue(overrides, "HolidayPrompt", "");
+
     const globalLanguage = this.getOverrideValue(overrides, "Global_Language", "de-DE");
     const globalVoiceName = this.getOverrideValue(overrides, "Global_VoiceName", "");
-    const mohSalesQueue = this.getOverrideValue(overrides, "Moh_Sales_Queue", "");
 
-    this.$priorityQueue().value = priorityQueue;
-    this.$toggle().checked = emergencyCase;
-    this.$emergencyPrompt().value = emergencyPrompt;
-    this.$holidayPrompt().value = holidayPrompt;
     this.$globalLanguage().value = ["de-DE", "en-US"].includes(globalLanguage) ? globalLanguage : "de-DE";
     this.updateVoiceOptions(globalVoiceName);
-    this.$mohSalesQueue().value = mohSalesQueue;
+    this.$mohSalesQueue().value = this.getOverrideValue(overrides, "Moh_Sales_Queue", "");
 
     this.updateLabel();
     this.hasUnsavedChanges = false;
@@ -819,18 +805,87 @@ class SupervisorAccessWidget extends HTMLElement {
     return `${hours}h ${remainingMinutes}m`;
   }
 
+  shortId(id) {
+    if (!id) return "-";
+    return String(id).slice(0, 8);
+  }
+
   getAgentDuration(agent) {
-    if (typeof agent.activeSinceSeconds === "number") {
-      return agent.activeSinceSeconds;
-    }
-
     const base = Number(agent.lastActivityTime || agent.startTime || 0);
-
     if (base > 0) {
       return Math.max(0, Math.floor((Date.now() - base) / 1000));
     }
-
     return 0;
+  }
+
+  renderWaitingCalls(waitingCalls) {
+    const list = this.shadowRoot.getElementById("waitingCallList");
+
+    list.innerHTML = `
+      <div class="call-row header-row">
+        <div>Status</div>
+        <div>Queue</div>
+        <div>Entry Point</div>
+        <div>Waiting</div>
+        <div>Task</div>
+      </div>
+    `;
+
+    if (!waitingCalls.length) {
+      const row = document.createElement("div");
+      row.className = "call-row";
+      row.innerHTML = `<div>No waiting calls</div><div></div><div></div><div></div><div></div>`;
+      list.appendChild(row);
+      return;
+    }
+
+    waitingCalls.forEach(call => {
+      const row = document.createElement("div");
+      row.className = "call-row";
+      row.innerHTML = `
+        <div>${call.status || "-"}</div>
+        <div>${call.queue || call.firstQueue || "-"}</div>
+        <div>${call.entryPoint || "-"}</div>
+        <div>${this.formatDuration(call.waitingSeconds)}</div>
+        <div>${this.shortId(call.id)}</div>
+      `;
+      list.appendChild(row);
+    });
+  }
+
+  renderActiveCalls(activeCalls) {
+    const list = this.shadowRoot.getElementById("activeCallList");
+
+    list.innerHTML = `
+      <div class="call-row header-row">
+        <div>Status</div>
+        <div>Queue</div>
+        <div>Agent</div>
+        <div>Handle</div>
+        <div>Task</div>
+      </div>
+    `;
+
+    if (!activeCalls.length) {
+      const row = document.createElement("div");
+      row.className = "call-row";
+      row.innerHTML = `<div>No active calls</div><div></div><div></div><div></div><div></div>`;
+      list.appendChild(row);
+      return;
+    }
+
+    activeCalls.forEach(call => {
+      const row = document.createElement("div");
+      row.className = "call-row";
+      row.innerHTML = `
+        <div>${call.status || "-"}</div>
+        <div>${call.queue || call.firstQueue || "-"}</div>
+        <div>${call.agent || "-"}</div>
+        <div>${this.formatDuration(Math.round(Number(call.connectedDuration || 0) / 1000))}</div>
+        <div>${this.shortId(call.id)}</div>
+      `;
+      list.appendChild(row);
+    });
   }
 
   async loadWallboard() {
@@ -850,6 +905,14 @@ class SupervisorAccessWidget extends HTMLElement {
       this.shadowRoot.getElementById("kpiLoggedIn").textContent = data.agents?.loggedIn ?? 0;
       this.shadowRoot.getElementById("kpiAvailable").textContent = data.agents?.available ?? 0;
 
+      this.renderWaitingCalls(Array.isArray(data.waitingTaskList) ? data.waitingTaskList : []);
+
+      const activeCalls = Array.isArray(data.taskList)
+        ? data.taskList.filter(task => String(task.status || "").toLowerCase() === "connected")
+        : [];
+
+      this.renderActiveCalls(activeCalls);
+
       const agentList = this.shadowRoot.getElementById("agentList");
       agentList.innerHTML = `
         <div class="agent-row header-row">
@@ -862,7 +925,7 @@ class SupervisorAccessWidget extends HTMLElement {
 
       const agents = Array.isArray(data.agentList) ? data.agentList : [];
 
-      if (agents.length === 0) {
+      if (!agents.length) {
         const empty = document.createElement("div");
         empty.className = "agent-row";
         empty.innerHTML = `<div>No active agents</div><div></div><div></div><div></div>`;
@@ -894,41 +957,13 @@ class SupervisorAccessWidget extends HTMLElement {
     }
 
     const flowOverrideSettings = [
-      {
-        name: "Priority_Queue",
-        type: "INTEGER",
-        value: String(Number(this.$priorityQueue().value))
-      },
-      {
-        name: "EmergencyCase",
-        type: "BOOLEAN",
-        value: this.$toggle().checked ? "true" : "false"
-      },
-      {
-        name: "HolidayPrompt",
-        type: "STRING",
-        value: this.$holidayPrompt().value
-      },
-      {
-        name: "Global_VoiceName",
-        type: "STRING",
-        value: this.$globalVoiceName().value
-      },
-      {
-        name: "EmergencyPrompt",
-        type: "STRING",
-        value: this.$emergencyPrompt().value
-      },
-      {
-        name: "Global_Language",
-        type: "STRING",
-        value: this.$globalLanguage().value
-      },
-      {
-        name: "Moh_Sales_Queue",
-        type: "STRING",
-        value: this.$mohSalesQueue().value
-      }
+      { name: "Priority_Queue", type: "INTEGER", value: String(Number(this.$priorityQueue().value)) },
+      { name: "EmergencyCase", type: "BOOLEAN", value: this.$toggle().checked ? "true" : "false" },
+      { name: "HolidayPrompt", type: "STRING", value: this.$holidayPrompt().value },
+      { name: "Global_VoiceName", type: "STRING", value: this.$globalVoiceName().value },
+      { name: "EmergencyPrompt", type: "STRING", value: this.$emergencyPrompt().value },
+      { name: "Global_Language", type: "STRING", value: this.$globalLanguage().value },
+      { name: "Moh_Sales_Queue", type: "STRING", value: this.$mohSalesQueue().value }
     ];
 
     try {

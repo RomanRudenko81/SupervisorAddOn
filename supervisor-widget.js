@@ -92,7 +92,7 @@ class SupervisorAccessWidget extends HTMLElement {
         }
 
         .card {
-          width: clamp(360px, 72vw, 1100px);
+          width: clamp(360px, 72vw, 1200px);
           max-width: calc(100vw - 32px);
           margin: 0 auto;
           background: var(--widget-bg);
@@ -301,7 +301,7 @@ class SupervisorAccessWidget extends HTMLElement {
 
         .kpis {
           display: grid;
-          grid-template-columns: repeat(6, minmax(0, 1fr));
+          grid-template-columns: repeat(7, minmax(0, 1fr));
           gap: 12px;
         }
 
@@ -350,9 +350,9 @@ class SupervisorAccessWidget extends HTMLElement {
           min-height: 18px;
         }
 
-        @media (max-width: 1000px) {
+        @media (max-width: 1100px) {
           .kpis {
-            grid-template-columns: repeat(3, minmax(0, 1fr));
+            grid-template-columns: repeat(4, minmax(0, 1fr));
           }
         }
 
@@ -363,6 +363,10 @@ class SupervisorAccessWidget extends HTMLElement {
 
           .agent-row {
             grid-template-columns: 1fr;
+          }
+
+          .kpis {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
           }
         }
 
@@ -481,22 +485,32 @@ class SupervisorAccessWidget extends HTMLElement {
               <div class="kpi-label">Calls in Queue</div>
               <div class="kpi-value" id="kpiCallsInQueue">0</div>
             </div>
+
+            <div class="kpi">
+              <div class="kpi-label">Active Calls</div>
+              <div class="kpi-value" id="kpiActiveCalls">0</div>
+            </div>
+
             <div class="kpi">
               <div class="kpi-label">Longest Waiting</div>
               <div class="kpi-value" id="kpiLongestWaiting">0s</div>
             </div>
+
             <div class="kpi">
               <div class="kpi-label">Avg Wait</div>
               <div class="kpi-value" id="kpiAvgWait">0s</div>
             </div>
+
             <div class="kpi">
               <div class="kpi-label">Avg Handle</div>
               <div class="kpi-value" id="kpiAvgHandle">0s</div>
             </div>
+
             <div class="kpi">
               <div class="kpi-label">Logged-in Agents</div>
               <div class="kpi-value" id="kpiLoggedIn">0</div>
             </div>
+
             <div class="kpi">
               <div class="kpi-label">Available Agents</div>
               <div class="kpi-value" id="kpiAvailable">0</div>
@@ -829,6 +843,7 @@ class SupervisorAccessWidget extends HTMLElement {
       }
 
       this.shadowRoot.getElementById("kpiCallsInQueue").textContent = data.queue?.callsInQueue ?? 0;
+      this.shadowRoot.getElementById("kpiActiveCalls").textContent = data.queue?.activeCalls ?? 0;
       this.shadowRoot.getElementById("kpiLongestWaiting").textContent = this.formatDuration(data.queue?.longestWaitingSeconds);
       this.shadowRoot.getElementById("kpiAvgWait").textContent = this.formatDuration(data.queue?.avgWaitSeconds);
       this.shadowRoot.getElementById("kpiAvgHandle").textContent = this.formatDuration(data.queue?.avgHandleSeconds);

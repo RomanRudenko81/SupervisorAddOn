@@ -14,8 +14,6 @@ class SupervisorAccessWidget extends HTMLElement {
     this.isBootstrapping = false;
     this.pollHandle = null;
     this.wallboardPollHandle = null;
-    this.resolvedIdentity = null;
-    this.identitySource = "none";
     this.hasUnsavedChanges = false;
     this.themeMode = localStorage.getItem("supervisorWidgetTheme") || "light";
   }
@@ -44,7 +42,7 @@ class SupervisorAccessWidget extends HTMLElement {
           min-height: 100%;
           box-sizing: border-box;
           padding: clamp(8px, 2vw, 24px);
-          font-family: Inter, Arial, sans-serif;
+          font-family: Arial, Helvetica, sans-serif !important;
 
           --widget-bg: rgba(255,255,255,0.18);
           --widget-border: rgba(0,0,0,0.055);
@@ -56,13 +54,17 @@ class SupervisorAccessWidget extends HTMLElement {
           --widget-badge-bg: rgba(0,0,0,0.08);
           --widget-switch-bg: #6b7280;
           --widget-blur: blur(8px);
+
           color: var(--widget-text);
+          text-transform: none !important;
+          font-variant: normal !important;
+          letter-spacing: normal !important;
         }
 
         :host(.theme-dark) {
           --widget-bg: rgba(8,12,20,0.24);
           --widget-border: rgba(255,255,255,0.075);
-          --widget-border-strong: rgba(255,255,255,0.34);
+          --widget-border-strong: rgba(255,255,255,0.36);
           --widget-text: #ffffff;
           --widget-muted: rgba(255,255,255,0.82);
           --widget-input-bg: rgba(255,255,255,0.12);
@@ -74,11 +76,14 @@ class SupervisorAccessWidget extends HTMLElement {
 
         * {
           box-sizing: border-box;
-          font-family: inherit;
+          font-family: Arial, Helvetica, sans-serif !important;
+          text-transform: none !important;
+          font-variant: normal !important;
+          letter-spacing: normal !important;
         }
 
         .card {
-          width: clamp(360px, 78vw, 1300px);
+          width: clamp(360px, 78vw, 1400px);
           max-width: calc(100vw - 32px);
           margin: 0 auto;
           background: var(--widget-bg);
@@ -102,11 +107,6 @@ class SupervisorAccessWidget extends HTMLElement {
         .kpi-label,
         .header-row {
           color: var(--widget-muted);
-        }
-
-        input[type="text"],
-        select {
-          color: var(--widget-text) !important;
         }
 
         .header {
@@ -140,21 +140,21 @@ class SupervisorAccessWidget extends HTMLElement {
           margin: 0;
           font-size: clamp(20px, 1.8vw, 28px);
           font-weight: 700;
-          letter-spacing: -0.02em;
+          line-height: 1.2;
         }
 
         h3 {
           margin: 0 0 16px 0;
           font-size: 21px;
           font-weight: 700;
-          letter-spacing: -0.02em;
+          line-height: 1.25;
         }
 
         h4 {
           margin: 0 0 14px 0;
           font-size: 20px;
           font-weight: 700;
-          letter-spacing: -0.02em;
+          line-height: 1.25;
         }
 
         .subtext {
@@ -256,6 +256,7 @@ class SupervisorAccessWidget extends HTMLElement {
           border: 1px solid var(--widget-input-border);
           background: var(--widget-input-bg);
           outline: none;
+          color: var(--widget-text) !important;
         }
 
         input[type="text"]::placeholder {
@@ -311,34 +312,15 @@ class SupervisorAccessWidget extends HTMLElement {
           font-weight: 700;
         }
 
-        .agent-list,
-        .call-list {
+        .agent-section {
+          margin-top: 26px;
+        }
+
+        .agent-list {
           margin-top: 12px;
           display: flex;
           flex-direction: column;
           gap: 8px;
-        }
-
-        .agent-section {
-          margin-top: 22px;
-        }
-
-        .calls-grid {
-          margin-top: 28px;
-          display: grid;
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-          gap: 16px;
-        }
-
-        .call-panel {
-          border: 2px solid var(--widget-border-strong);
-          border-radius: 14px;
-          padding: 18px;
-          background: rgba(0,0,0,0.04);
-        }
-
-        :host(.theme-dark) .call-panel {
-          background: rgba(255,255,255,0.02);
         }
 
         .agent-row {
@@ -351,18 +333,59 @@ class SupervisorAccessWidget extends HTMLElement {
           font-size: 13px;
         }
 
+        .calls-grid {
+          margin-top: 34px;
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(min(100%, 620px), 1fr));
+          gap: 16px;
+          align-items: start;
+        }
+
+        .call-panel {
+          border: 2px solid var(--widget-border-strong);
+          border-radius: 14px;
+          padding: 18px;
+          background: rgba(0,0,0,0.04);
+          min-width: 0;
+          overflow-x: auto;
+        }
+
+        :host(.theme-dark) .call-panel {
+          background: rgba(255,255,255,0.02);
+        }
+
+        .call-list {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          min-width: 680px;
+        }
+
         .call-row {
           display: grid;
-          grid-template-columns: 0.8fr 1fr 1.1fr 1.2fr 0.8fr 0.8fr;
-          gap: 10px;
+          grid-template-columns:
+            minmax(70px, 0.8fr)
+            minmax(120px, 1.1fr)
+            minmax(130px, 1.1fr)
+            minmax(150px, 1.3fr)
+            minmax(80px, 0.7fr)
+            minmax(70px, 0.7fr);
+          gap: 12px;
           align-items: center;
           padding: 10px 0;
           border-bottom: 1px solid var(--widget-border);
           font-size: 13px;
+          white-space: nowrap;
         }
 
         .call-row.active-call {
-          grid-template-columns: 0.8fr 1fr 1.1fr 1fr 0.8fr 0.8fr;
+          grid-template-columns:
+            minmax(70px, 0.8fr)
+            minmax(120px, 1.1fr)
+            minmax(130px, 1.1fr)
+            minmax(120px, 1fr)
+            minmax(80px, 0.7fr)
+            minmax(70px, 0.7fr);
         }
 
         .header-row {
@@ -380,10 +403,6 @@ class SupervisorAccessWidget extends HTMLElement {
           .kpis {
             grid-template-columns: repeat(4, minmax(0, 1fr));
           }
-
-          .calls-grid {
-            grid-template-columns: 1fr;
-          }
         }
 
         @media (max-width: 900px) {
@@ -391,9 +410,7 @@ class SupervisorAccessWidget extends HTMLElement {
             grid-template-columns: 1fr;
           }
 
-          .agent-row,
-          .call-row,
-          .call-row.active-call {
+          .agent-row {
             grid-template-columns: 1fr;
           }
 
@@ -431,6 +448,10 @@ class SupervisorAccessWidget extends HTMLElement {
 
           .small-btn {
             width: 100%;
+          }
+
+          .call-list {
+            min-width: 640px;
           }
         }
       </style>
@@ -720,17 +741,12 @@ class SupervisorAccessWidget extends HTMLElement {
   }
 
   async resolveDesktopIdentity() {
-    const identity = {
+    return {
       email: this.email || "",
       userId: this.userId || "",
       teamId: this.teamId || "",
       displayName: this.displayName || "Unknown User"
     };
-
-    this.identitySource = "layout-properties";
-    this.resolvedIdentity = identity;
-
-    return identity;
   }
 
   async readJsonResponse(res) {

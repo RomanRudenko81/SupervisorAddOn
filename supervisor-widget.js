@@ -44,9 +44,11 @@ class SupervisorAccessWidget extends HTMLElement {
           min-height: 100%;
           box-sizing: border-box;
           padding: clamp(8px, 2vw, 24px);
-          font-family: inherit, Arial, sans-serif;
+          font-family: Inter, Arial, sans-serif;
+
           --widget-bg: rgba(255,255,255,0.18);
           --widget-border: rgba(0,0,0,0.055);
+          --widget-border-strong: rgba(0,0,0,0.18);
           --widget-text: #1f2937;
           --widget-muted: #4b5563;
           --widget-input-bg: rgba(255,255,255,0.72);
@@ -59,9 +61,10 @@ class SupervisorAccessWidget extends HTMLElement {
 
         :host(.theme-dark) {
           --widget-bg: rgba(8,12,20,0.24);
-          --widget-border: rgba(255,255,255,0.065);
+          --widget-border: rgba(255,255,255,0.075);
+          --widget-border-strong: rgba(255,255,255,0.34);
           --widget-text: #ffffff;
-          --widget-muted: rgba(255,255,255,0.86);
+          --widget-muted: rgba(255,255,255,0.82);
           --widget-input-bg: rgba(255,255,255,0.12);
           --widget-input-border: rgba(255,255,255,0.18);
           --widget-badge-bg: rgba(255,255,255,0.14);
@@ -71,7 +74,7 @@ class SupervisorAccessWidget extends HTMLElement {
 
         * {
           box-sizing: border-box;
-          font-family: inherit, Arial, sans-serif;
+          font-family: inherit;
         }
 
         .card {
@@ -87,15 +90,22 @@ class SupervisorAccessWidget extends HTMLElement {
           color: var(--widget-text);
         }
 
-        .card, .card * {
+        .card,
+        .card * {
           color: var(--widget-text);
         }
 
-        .field label, .subtext, #status, #wallboardStatus, .kpi-label, .table-head {
+        .field label,
+        .subtext,
+        #status,
+        #wallboardStatus,
+        .kpi-label,
+        .header-row {
           color: var(--widget-muted);
         }
 
-        input[type="text"], select {
+        input[type="text"],
+        select {
           color: var(--widget-text) !important;
         }
 
@@ -106,7 +116,8 @@ class SupervisorAccessWidget extends HTMLElement {
           margin-bottom: 24px;
         }
 
-        .header-left, .header-right {
+        .header-left,
+        .header-right {
           display: flex;
           flex-direction: column;
           gap: 8px;
@@ -129,26 +140,29 @@ class SupervisorAccessWidget extends HTMLElement {
           margin: 0;
           font-size: clamp(20px, 1.8vw, 28px);
           font-weight: 700;
-          text-transform: uppercase;
+          letter-spacing: -0.02em;
         }
 
         h3 {
           margin: 0 0 16px 0;
           font-size: 21px;
           font-weight: 700;
+          letter-spacing: -0.02em;
         }
 
         h4 {
-          margin: 24px 0 10px 0;
-          font-size: 16px;
+          margin: 0 0 14px 0;
+          font-size: 20px;
           font-weight: 700;
+          letter-spacing: -0.02em;
         }
 
         .subtext {
           font-size: 13px;
         }
 
-        .role-badge, .theme-btn {
+        .role-badge,
+        .theme-btn {
           padding: 4px 10px;
           border-radius: 999px;
           background: var(--widget-badge-bg);
@@ -233,7 +247,8 @@ class SupervisorAccessWidget extends HTMLElement {
           font-size: 13px;
         }
 
-        input[type="text"], select {
+        input[type="text"],
+        select {
           width: 100%;
           min-width: 0;
           padding: 12px;
@@ -263,12 +278,14 @@ class SupervisorAccessWidget extends HTMLElement {
           background: #0a5ea8;
         }
 
-        .small-btn[disabled], input[disabled], select[disabled] {
+        .small-btn[disabled],
+        input[disabled],
+        select[disabled] {
           opacity: 0.55;
           cursor: not-allowed;
         }
 
-        .wallboard {
+        .dashboard {
           margin-top: 32px;
         }
 
@@ -294,11 +311,34 @@ class SupervisorAccessWidget extends HTMLElement {
           font-weight: 700;
         }
 
-        .agent-list, .call-list {
+        .agent-list,
+        .call-list {
           margin-top: 12px;
           display: flex;
           flex-direction: column;
           gap: 8px;
+        }
+
+        .agent-section {
+          margin-top: 22px;
+        }
+
+        .calls-grid {
+          margin-top: 28px;
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 16px;
+        }
+
+        .call-panel {
+          border: 2px solid var(--widget-border-strong);
+          border-radius: 14px;
+          padding: 18px;
+          background: rgba(0,0,0,0.04);
+        }
+
+        :host(.theme-dark) .call-panel {
+          background: rgba(255,255,255,0.02);
         }
 
         .agent-row {
@@ -313,7 +353,7 @@ class SupervisorAccessWidget extends HTMLElement {
 
         .call-row {
           display: grid;
-          grid-template-columns: 1fr 1.3fr 1.2fr 1fr 1fr;
+          grid-template-columns: 0.8fr 1fr 1.1fr 1.2fr 0.8fr 0.8fr;
           gap: 10px;
           align-items: center;
           padding: 10px 0;
@@ -321,20 +361,28 @@ class SupervisorAccessWidget extends HTMLElement {
           font-size: 13px;
         }
 
+        .call-row.active-call {
+          grid-template-columns: 0.8fr 1fr 1.1fr 1fr 0.8fr 0.8fr;
+        }
+
         .header-row {
-          color: var(--widget-muted);
           font-weight: 700;
         }
 
-        #status, #wallboardStatus {
+        #status,
+        #wallboardStatus {
           margin-top: 12px;
           font-size: 13px;
           min-height: 18px;
         }
 
-        @media (max-width: 1100px) {
+        @media (max-width: 1200px) {
           .kpis {
             grid-template-columns: repeat(4, minmax(0, 1fr));
+          }
+
+          .calls-grid {
+            grid-template-columns: 1fr;
           }
         }
 
@@ -343,7 +391,9 @@ class SupervisorAccessWidget extends HTMLElement {
             grid-template-columns: 1fr;
           }
 
-          .agent-row, .call-row {
+          .agent-row,
+          .call-row,
+          .call-row.active-call {
             grid-template-columns: 1fr;
           }
 
@@ -388,7 +438,7 @@ class SupervisorAccessWidget extends HTMLElement {
       <div class="card">
         <div class="header">
           <div class="header-left">
-            <h2>Supervisor Access Control</h2>
+            <h2>Supervisor access control</h2>
             <span id="userInfo" class="subtext">Loading user context...</span>
           </div>
 
@@ -453,8 +503,8 @@ class SupervisorAccessWidget extends HTMLElement {
 
         <div id="status"></div>
 
-        <div class="wallboard">
-          <h3>Wallboard</h3>
+        <div class="dashboard">
+          <h3>Dashboard</h3>
 
           <div class="kpis">
             <div class="kpi">
@@ -487,39 +537,49 @@ class SupervisorAccessWidget extends HTMLElement {
             </div>
           </div>
 
-          <h4>Waiting Calls</h4>
-          <div class="call-list" id="waitingCallList">
-            <div class="call-row header-row">
-              <div>Status</div>
-              <div>Queue</div>
-              <div>Entry Point</div>
-              <div>Waiting</div>
-              <div>Task</div>
+          <div class="agent-section">
+            <h3>Agents</h3>
+            <div class="agent-list" id="agentList">
+              <div class="agent-row header-row">
+                <div>Name</div>
+                <div>Status</div>
+                <div>Team</div>
+                <div>Active Since</div>
+              </div>
             </div>
           </div>
 
-          <h4>Active Calls</h4>
-          <div class="call-list" id="activeCallList">
-            <div class="call-row header-row">
-              <div>Status</div>
-              <div>Queue</div>
-              <div>Agent</div>
-              <div>Handle</div>
-              <div>Task</div>
+          <div id="wallboardStatus">Loading dashboard...</div>
+
+          <div class="calls-grid">
+            <div class="call-panel">
+              <h4>Waiting Calls</h4>
+              <div class="call-list" id="waitingCallList">
+                <div class="call-row header-row">
+                  <div>Status</div>
+                  <div>Queue</div>
+                  <div>Caller</div>
+                  <div>Entry Point</div>
+                  <div>Waiting</div>
+                  <div>Task</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="call-panel">
+              <h4>Active Calls</h4>
+              <div class="call-list" id="activeCallList">
+                <div class="call-row active-call header-row">
+                  <div>Status</div>
+                  <div>Queue</div>
+                  <div>Caller</div>
+                  <div>Agent</div>
+                  <div>Handle</div>
+                  <div>Task</div>
+                </div>
+              </div>
             </div>
           </div>
-
-          <h4>Agents</h4>
-          <div class="agent-list" id="agentList">
-            <div class="agent-row header-row">
-              <div>Name</div>
-              <div>Status</div>
-              <div>Team</div>
-              <div>Active Since</div>
-            </div>
-          </div>
-
-          <div id="wallboardStatus">Loading wallboard...</div>
         </div>
       </div>
     `;
@@ -542,7 +602,11 @@ class SupervisorAccessWidget extends HTMLElement {
   }
 
   populateStaticOptions() {
-    this.setSelectOptions(this.$priorityQueue(), Array.from({ length: 10 }, (_, i) => String(i + 1)));
+    this.setSelectOptions(
+      this.$priorityQueue(),
+      Array.from({ length: 10 }, (_, i) => String(i + 1))
+    );
+
     this.setSelectOptions(this.$globalLanguage(), ["de-DE", "en-US"]);
     this.updateVoiceOptions();
   }
@@ -812,9 +876,11 @@ class SupervisorAccessWidget extends HTMLElement {
 
   getAgentDuration(agent) {
     const base = Number(agent.lastActivityTime || agent.startTime || 0);
+
     if (base > 0) {
       return Math.max(0, Math.floor((Date.now() - base) / 1000));
     }
+
     return 0;
   }
 
@@ -825,6 +891,7 @@ class SupervisorAccessWidget extends HTMLElement {
       <div class="call-row header-row">
         <div>Status</div>
         <div>Queue</div>
+        <div>Caller</div>
         <div>Entry Point</div>
         <div>Waiting</div>
         <div>Task</div>
@@ -834,7 +901,7 @@ class SupervisorAccessWidget extends HTMLElement {
     if (!waitingCalls.length) {
       const row = document.createElement("div");
       row.className = "call-row";
-      row.innerHTML = `<div>No waiting calls</div><div></div><div></div><div></div><div></div>`;
+      row.innerHTML = `<div>No waiting calls</div><div></div><div></div><div></div><div></div><div></div>`;
       list.appendChild(row);
       return;
     }
@@ -845,6 +912,7 @@ class SupervisorAccessWidget extends HTMLElement {
       row.innerHTML = `
         <div>${call.status || "-"}</div>
         <div>${call.queue || call.firstQueue || "-"}</div>
+        <div>${call.caller || "-"}</div>
         <div>${call.entryPoint || "-"}</div>
         <div>${this.formatDuration(call.waitingSeconds)}</div>
         <div>${this.shortId(call.id)}</div>
@@ -857,9 +925,10 @@ class SupervisorAccessWidget extends HTMLElement {
     const list = this.shadowRoot.getElementById("activeCallList");
 
     list.innerHTML = `
-      <div class="call-row header-row">
+      <div class="call-row active-call header-row">
         <div>Status</div>
         <div>Queue</div>
+        <div>Caller</div>
         <div>Agent</div>
         <div>Handle</div>
         <div>Task</div>
@@ -868,18 +937,19 @@ class SupervisorAccessWidget extends HTMLElement {
 
     if (!activeCalls.length) {
       const row = document.createElement("div");
-      row.className = "call-row";
-      row.innerHTML = `<div>No active calls</div><div></div><div></div><div></div><div></div>`;
+      row.className = "call-row active-call";
+      row.innerHTML = `<div>No active calls</div><div></div><div></div><div></div><div></div><div></div>`;
       list.appendChild(row);
       return;
     }
 
     activeCalls.forEach(call => {
       const row = document.createElement("div");
-      row.className = "call-row";
+      row.className = "call-row active-call";
       row.innerHTML = `
         <div>${call.status || "-"}</div>
         <div>${call.queue || call.firstQueue || "-"}</div>
+        <div>${call.caller || "-"}</div>
         <div>${call.agent || "-"}</div>
         <div>${this.formatDuration(Math.round(Number(call.connectedDuration || 0) / 1000))}</div>
         <div>${this.shortId(call.id)}</div>
@@ -905,15 +975,8 @@ class SupervisorAccessWidget extends HTMLElement {
       this.shadowRoot.getElementById("kpiLoggedIn").textContent = data.agents?.loggedIn ?? 0;
       this.shadowRoot.getElementById("kpiAvailable").textContent = data.agents?.available ?? 0;
 
-      this.renderWaitingCalls(Array.isArray(data.waitingTaskList) ? data.waitingTaskList : []);
-
-      const activeCalls = Array.isArray(data.taskList)
-        ? data.taskList.filter(task => String(task.status || "").toLowerCase() === "connected")
-        : [];
-
-      this.renderActiveCalls(activeCalls);
-
       const agentList = this.shadowRoot.getElementById("agentList");
+
       agentList.innerHTML = `
         <div class="agent-row header-row">
           <div>Name</div>
@@ -945,8 +1008,16 @@ class SupervisorAccessWidget extends HTMLElement {
       }
 
       this.setWallboardStatus(`Updated ${new Date().toLocaleTimeString()}`);
+
+      this.renderWaitingCalls(Array.isArray(data.waitingTaskList) ? data.waitingTaskList : []);
+
+      const activeCalls = Array.isArray(data.taskList)
+        ? data.taskList.filter(task => String(task.status || "").toLowerCase() === "connected")
+        : [];
+
+      this.renderActiveCalls(activeCalls);
     } catch (err) {
-      this.setWallboardStatus(`Wallboard failed: ${err.message}`);
+      this.setWallboardStatus(`Dashboard failed: ${err.message}`);
     }
   }
 

@@ -1,981 +1,632 @@
-class SupervisorAccessWidget extends HTMLElement {
-  constructor() {
-    super();
-    this.attachShadow({ mode: "open" });
-
-    this.API_URL = "https://wxcc-backend.onrender.com";
-    this.ENTRY_POINT_ID = "284cd09a-eef4-40a2-82c6-53d08705e3e3";
-    this.POLL_INTERVAL_MS = 5000;
-    this.WALLBOARD_POLL_INTERVAL_MS = 10000;
-
-    this.sessionToken = null;
-    this.currentRole = "viewer";
-    this.isUpdating = false;
-    this.isBootstrapping = false;
-    this.pollHandle = null;
-    this.wallboardPollHandle = null;
-    this.resolvedIdentity = null;
-    this.identitySource = "none";
-    this.hasUnsavedChanges = false;
-    this.themeMode = localStorage.getItem("supervisorWidgetTheme") || "light";
-  }
-
-  connectedCallback() {
-    this.render();
-    this.applyTheme();
-    this.populateStaticOptions();
-    this.bindEvents();
-    this.init();
-  }
-
-  disconnectedCallback() {
-    if (this.pollHandle) clearInterval(this.pollHandle);
-    if (this.wallboardPollHandle) clearInterval(this.wallboardPollHandle);
-  }
-
-  applyTheme() {
-    this.classList.toggle("theme-dark", this.themeMode === "dark");
-    this.classList.toggle("theme-light", this.themeMode !== "dark");
-
-    const themeBtn = this.shadowRoot.getElementById("themeToggleBtn");
-    if (themeBtn) {
-      themeBtn.textContent = this.themeMode === "dark" ? "Theme: Dark" : "Theme: Light";
-    }
-  }
-
-  toggleTheme() {
-    this.themeMode = this.themeMode === "dark" ? "light" : "dark";
-    localStorage.setItem("supervisorWidgetTheme", this.themeMode);
-    this.applyTheme();
-  }
-
-  render() {
-    this.shadowRoot.innerHTML = `
-      <style>
-        :host {
-          display: flex;
-          justify-content: center;
-          align-items: flex-start;
-          width: 100%;
-          min-height: 100%;
-          box-sizing: border-box;
-          padding: clamp(8px, 2vw, 24px);
-          font-family: inherit, Arial, sans-serif;
-
-          --widget-bg: rgba(255,255,255,0.18);
-          --widget-border: rgba(0,0,0,0.055);
-          --widget-text: #1f2937;
-          --widget-muted: #4b5563;
-          --widget-input-bg: rgba(255,255,255,0.72);
-          --widget-input-border: rgba(0,0,0,0.16);
-          --widget-badge-bg: rgba(0,0,0,0.08);
-          --widget-switch-bg: #6b7280;
-          --widget-blur: blur(8px);
-          color: var(--widget-text);
-        }
-
-        :host(.theme-dark) {
-          --widget-bg: rgba(8,12,20,0.24);
-          --widget-border: rgba(255,255,255,0.065);
-          --widget-text: #ffffff;
-          --widget-muted: rgba(255,255,255,0.86);
-          --widget-input-bg: rgba(255,255,255,0.12);
-          --widget-input-border: rgba(255,255,255,0.18);
-          --widget-badge-bg: rgba(255,255,255,0.14);
-          --widget-switch-bg: #3a3f4b;
-          --widget-blur: blur(10px);
-        }
-
-        * {
-          box-sizing: border-box;
-          font-family: inherit, Arial, sans-serif;
-        }
-
-        .card {
-          width: clamp(360px, 72vw, 1200px);
-          max-width: calc(100vw - 32px);
-          margin: 0 auto;
-          background: var(--widget-bg);
-          border: 1px solid var(--widget-border);
-          border-radius: 14px;
-          padding: clamp(16px, 2vw, 25px);
-          backdrop-filter: var(--widget-blur);
-          -webkit-backdrop-filter: var(--widget-blur);
-          color: var(--widget-text);
-        }
-
-        .card,
-        .card * {
-          color: var(--widget-text);
-        }
-
-        .field label,
-        .subtext,
-        #status,
-        #wallboardStatus,
-        .kpi-label {
-          color: var(--widget-muted);
-        }
-
-        input[type="text"],
-        select {
-          color: var(--widget-text) !important;
-        }
-
-        .header {
-          display: flex;
-          justify-content: space-between;
-          gap: 24px;
-          margin-bottom: 24px;
-        }
-
-        .header-left,
-        .header-right {
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-        }
-
-        .header-right {
-          align-items: flex-end;
-          text-align: right;
-        }
-
-        .header-actions {
-          display: flex;
-          align-items: center;
-          justify-content: flex-end;
-          gap: 8px;
-          flex-wrap: wrap;
-        }
-
-        h2 {
-          margin: 0;
-          font-size: clamp(20px, 1.8vw, 28px);
-          font-weight: 700;
-          text-transform: uppercase;
-        }
-
-        .subtext {
-          font-size: 13px;
-        }
-
-        .role-badge,
-        .theme-btn {
-          padding: 4px 10px;
-          border-radius: 999px;
-          background: var(--widget-badge-bg);
-          font-size: 13px;
-        }
-
-        .role-badge {
-          font-weight: bold;
-        }
-
-        .theme-btn {
-          border: 1px solid var(--widget-border);
-          cursor: pointer;
-          font-size: 12px;
-        }
-
-        .switch {
-          position: relative;
-          display: inline-block;
-          width: 48px;
-          height: 26px;
-          flex: 0 0 auto;
-        }
-
-        .switch input {
-          opacity: 0;
-          width: 0;
-          height: 0;
-        }
-
-        .slider {
-          position: absolute;
-          cursor: pointer;
-          inset: 0;
-          background-color: var(--widget-switch-bg);
-          transition: .3s;
-          border-radius: 26px;
-        }
-
-        .slider:before {
-          position: absolute;
-          content: "";
-          height: 18px;
-          width: 18px;
-          left: 4px;
-          bottom: 4px;
-          background-color: white;
-          transition: .3s;
-          border-radius: 50%;
-        }
-
-        input:checked + .slider {
-          background-color: #22c55e;
-        }
-
-        input:checked + .slider:before {
-          transform: translateX(22px);
-        }
-
-        .row {
-          display: flex;
-          align-items: center;
-          gap: 12px;
-          margin-top: 15px;
-        }
-
-        .categories {
-          display: grid;
-          grid-template-columns: repeat(3, minmax(0, 1fr));
-          gap: clamp(20px, 3vw, 48px);
-          margin-top: 24px;
-        }
-
-        .category {
-          min-width: 0;
-        }
-
-        .category h3,
-        .wallboard h3 {
-          margin: 0 0 16px 0;
-          font-size: 21px;
-          font-weight: 700;
-        }
-
-        .field {
-          display: flex;
-          flex-direction: column;
-          gap: 6px;
-          margin-top: 15px;
-        }
-
-        .field label {
-          font-size: 13px;
-        }
-
-        input[type="text"],
-        select {
-          width: 100%;
-          min-width: 0;
-          padding: 12px;
-          border-radius: 10px;
-          border: 1px solid var(--widget-input-border);
-          background: var(--widget-input-bg);
-          outline: none;
-        }
-
-        input[type="text"]::placeholder {
-          color: var(--widget-muted);
-        }
-
-        .small-btn {
-          padding: 10px 14px;
-          border: none;
-          border-radius: 10px;
-          background: #0078d4;
-          color: white !important;
-          font-size: 13px;
-          cursor: pointer;
-          width: auto;
-          flex: 0 0 auto;
-        }
-
-        .small-btn:hover {
-          background: #0a5ea8;
-        }
-
-        .small-btn[disabled],
-        input[disabled],
-        select[disabled] {
-          opacity: 0.55;
-          cursor: not-allowed;
-        }
-
-        .wallboard {
-          margin-top: 32px;
-        }
-
-        .kpis {
-          display: grid;
-          grid-template-columns: repeat(7, minmax(0, 1fr));
-          gap: 12px;
-        }
-
-        .kpi {
-          padding: 12px;
-          border-radius: 12px;
-          background: var(--widget-badge-bg);
-        }
-
-        .kpi-label {
-          font-size: 12px;
-        }
-
-        .kpi-value {
-          margin-top: 6px;
-          font-size: 24px;
-          font-weight: 700;
-        }
-
-        .agent-list {
-          margin-top: 18px;
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-        }
-
-        .agent-row {
-          display: grid;
-          grid-template-columns: 1.4fr 1fr 1fr 1fr;
-          gap: 10px;
-          align-items: center;
-          padding: 10px 0;
-          border-bottom: 1px solid var(--widget-border);
-          font-size: 13px;
-        }
-
-        .agent-row.header-row {
-          color: var(--widget-muted);
-          font-weight: 700;
-        }
-
-        #status,
-        #wallboardStatus {
-          margin-top: 12px;
-          font-size: 13px;
-          min-height: 18px;
-        }
-
-        @media (max-width: 1100px) {
-          .kpis {
-            grid-template-columns: repeat(4, minmax(0, 1fr));
-          }
-        }
-
-        @media (max-width: 900px) {
-          .categories {
-            grid-template-columns: 1fr;
-          }
-
-          .agent-row {
-            grid-template-columns: 1fr;
-          }
-
-          .kpis {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-          }
-        }
-
-        @media (max-width: 640px) {
-          :host {
-            padding: 8px;
-          }
-
-          .card {
-            width: 100%;
-            max-width: 100%;
-          }
-
-          .header {
-            flex-direction: column;
-          }
-
-          .header-right {
-            align-items: flex-start;
-            text-align: left;
-          }
-
-          .header-actions {
-            justify-content: flex-start;
-          }
-
-          .kpis {
-            grid-template-columns: 1fr;
-          }
-
-          .small-btn {
-            width: 100%;
-          }
-        }
-      </style>
-
-      <div class="card">
-        <div class="header">
-          <div class="header-left">
-            <h2>Supervisor Access Control</h2>
-            <span id="userInfo" class="subtext">Loading user context...</span>
-          </div>
-
-          <div class="header-right">
-            <h2>Conscia Demo Support</h2>
-            <div class="header-actions">
-              <button class="theme-btn" id="themeToggleBtn" type="button">Theme: Light</button>
-              <span id="roleBadge" class="role-badge">...</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="row">
-          <label class="switch">
-            <input type="checkbox" id="emergencyToggle">
-            <span class="slider"></span>
-          </label>
-          <span>Emergency Mode: <span id="stateLabel">OFF</span></span>
-        </div>
-
-        <div class="categories">
-          <div class="category">
-            <h3>Prompts</h3>
-
-            <div class="field">
-              <label for="emergencyPrompt">Emergency Prompt</label>
-              <input id="emergencyPrompt" type="text" placeholder="Enter emergency prompt...">
-            </div>
-
-            <div class="field">
-              <label for="holidayPrompt">Holiday Prompt</label>
-              <input id="holidayPrompt" type="text" placeholder="Enter holiday prompt...">
-            </div>
-          </div>
-
-          <div class="category">
-            <h3>Language Settings</h3>
-
-            <div class="field">
-              <label for="globalLanguage">Global Language</label>
-              <select id="globalLanguage"></select>
-            </div>
-
-            <div class="field">
-              <label for="globalVoiceName">Global Voice Name</label>
-              <select id="globalVoiceName"></select>
-            </div>
-          </div>
-
-          <div class="category">
-            <h3>Queue Settings</h3>
-
-            <div class="field">
-              <label for="priorityQueue">Prio Queue</label>
-              <select id="priorityQueue"></select>
-            </div>
-
-            <div class="field">
-              <label for="mohSalesQueue">MoH Sales Queue</label>
-              <input id="mohSalesQueue" type="text" placeholder="Enter MoH Sales Queue text...">
-            </div>
-          </div>
-        </div>
-
-        <div class="row">
-          <button class="small-btn" id="saveBtn">Save</button>
-        </div>
-
-        <div id="status"></div>
-
-        <div class="wallboard">
-          <h3>Wallboard</h3>
-
-          <div class="kpis">
-            <div class="kpi">
-              <div class="kpi-label">Calls in Queue</div>
-              <div class="kpi-value" id="kpiCallsInQueue">0</div>
-            </div>
-
-            <div class="kpi">
-              <div class="kpi-label">Active Calls</div>
-              <div class="kpi-value" id="kpiActiveCalls">0</div>
-            </div>
-
-            <div class="kpi">
-              <div class="kpi-label">Longest Waiting</div>
-              <div class="kpi-value" id="kpiLongestWaiting">0s</div>
-            </div>
-
-            <div class="kpi">
-              <div class="kpi-label">Avg Wait</div>
-              <div class="kpi-value" id="kpiAvgWait">0s</div>
-            </div>
-
-            <div class="kpi">
-              <div class="kpi-label">Avg Handle</div>
-              <div class="kpi-value" id="kpiAvgHandle">0s</div>
-            </div>
-
-            <div class="kpi">
-              <div class="kpi-label">Logged-in Agents</div>
-              <div class="kpi-value" id="kpiLoggedIn">0</div>
-            </div>
-
-            <div class="kpi">
-              <div class="kpi-label">Available Agents</div>
-              <div class="kpi-value" id="kpiAvailable">0</div>
-            </div>
-          </div>
-
-          <div class="agent-list" id="agentList">
-            <div class="agent-row header-row">
-              <div>Name</div>
-              <div>Status</div>
-              <div>Team</div>
-              <div>Active Since</div>
-            </div>
-          </div>
-
-          <div id="wallboardStatus">Loading wallboard...</div>
-        </div>
-      </div>
-    `;
-  }
-
-  populateStaticOptions() {
-    this.setSelectOptions(
-      this.$priorityQueue(),
-      Array.from({ length: 10 }, (_, i) => String(i + 1))
-    );
-
-    this.setSelectOptions(this.$globalLanguage(), ["de-DE", "en-US"]);
-    this.updateVoiceOptions();
-  }
-
-  setSelectOptions(selectElement, values) {
-    selectElement.innerHTML = "";
-
-    values.forEach(value => {
-      const option = document.createElement("option");
-      option.value = value;
-      option.textContent = value;
-      selectElement.appendChild(option);
-    });
-  }
-
-  bindEvents() {
-    this.$themeToggleBtn().addEventListener("click", () => this.toggleTheme());
-
-    this.$toggle().addEventListener("change", () => {
-      this.hasUnsavedChanges = true;
-      this.updateLabel();
-      this.setStatus("Unsaved changes", "info");
-    });
-
-    this.$priorityQueue().addEventListener("change", () => {
-      this.hasUnsavedChanges = true;
-      this.setStatus("Unsaved changes", "info");
-    });
-
-    this.$emergencyPrompt().addEventListener("input", () => {
-      this.hasUnsavedChanges = true;
-      this.setStatus("Unsaved changes", "info");
-    });
-
-    this.$holidayPrompt().addEventListener("input", () => {
-      this.hasUnsavedChanges = true;
-      this.setStatus("Unsaved changes", "info");
-    });
-
-    this.$globalLanguage().addEventListener("change", () => {
-      this.updateVoiceOptions();
-      this.hasUnsavedChanges = true;
-      this.setStatus("Unsaved changes", "info");
-    });
-
-    this.$globalVoiceName().addEventListener("change", () => {
-      this.hasUnsavedChanges = true;
-      this.setStatus("Unsaved changes", "info");
-    });
-
-    this.$mohSalesQueue().addEventListener("input", () => {
-      this.hasUnsavedChanges = true;
-      this.setStatus("Unsaved changes", "info");
-    });
-
-    this.$saveBtn().addEventListener("click", async () => await this.saveState());
-  }
-
-  async init() {
-    try {
-      await this.bootstrapSession();
-      await this.loadEntryPoint(true);
-      await this.loadWallboard();
-      this.startPolling();
-      this.startWallboardPolling();
-      this.setStatus("Ready", "info");
-    } catch (err) {
-      this.setStatus(`Load failed: ${err.message}`, "error");
-    }
-  }
-
-  $userInfo() { return this.shadowRoot.getElementById("userInfo"); }
-  $roleBadge() { return this.shadowRoot.getElementById("roleBadge"); }
-  $themeToggleBtn() { return this.shadowRoot.getElementById("themeToggleBtn"); }
-  $toggle() { return this.shadowRoot.getElementById("emergencyToggle"); }
-  $priorityQueue() { return this.shadowRoot.getElementById("priorityQueue"); }
-  $emergencyPrompt() { return this.shadowRoot.getElementById("emergencyPrompt"); }
-  $holidayPrompt() { return this.shadowRoot.getElementById("holidayPrompt"); }
-  $globalLanguage() { return this.shadowRoot.getElementById("globalLanguage"); }
-  $globalVoiceName() { return this.shadowRoot.getElementById("globalVoiceName"); }
-  $mohSalesQueue() { return this.shadowRoot.getElementById("mohSalesQueue"); }
-  $saveBtn() { return this.shadowRoot.getElementById("saveBtn"); }
-  $stateLabel() { return this.shadowRoot.getElementById("stateLabel"); }
-  $status() { return this.shadowRoot.getElementById("status"); }
-
-  setStatus(message, type = "info") {
-    const colors = {
-      info: "var(--widget-muted)",
-      success: "#22c55e",
-      error: "#ef4444"
-    };
-
-    const el = this.$status();
-    el.style.color = colors[type] || colors.info;
-    el.textContent = message || "";
-  }
-
-  setWallboardStatus(message) {
-    const el = this.shadowRoot.getElementById("wallboardStatus");
-    if (el) el.textContent = message || "";
-  }
-
-  getVoiceOptions(language) {
-    if (language === "en-US") return ["en-US-Daniel", "en-US-Maria"];
-    return ["de-DE-Jonas", "de-DE-Emma"];
-  }
-
-  updateVoiceOptions(selectedVoice = "") {
-    const language = this.$globalLanguage().value || "de-DE";
-    const options = this.getVoiceOptions(language);
-    const voiceSelect = this.$globalVoiceName();
-    const currentValue = selectedVoice || voiceSelect.value;
-
-    this.setSelectOptions(voiceSelect, options);
-
-    if (currentValue && options.includes(currentValue)) {
-      voiceSelect.value = currentValue;
-    } else {
-      voiceSelect.value = options[0];
-    }
-  }
-
-  getOverrideValue(overrides, name, fallback = "") {
-    const item = overrides.find(o => o.name === name);
-    return item?.value ?? fallback;
-  }
-
-  async resolveDesktopIdentity() {
-    const identity = {
-      email: this.email || "",
-      userId: this.userId || "",
-      teamId: this.teamId || "",
-      displayName: this.displayName || "Unknown User"
-    };
-
-    this.identitySource = "layout-properties";
-    this.resolvedIdentity = identity;
-
-    return identity;
-  }
-
-  async readJsonResponse(res) {
-    const text = await res.text();
-    if (!text) return {};
-
-    try {
-      return JSON.parse(text);
-    } catch {
-      return { error: text };
-    }
-  }
-
-  async bootstrapSession() {
-    if (this.isBootstrapping) return;
-    this.isBootstrapping = true;
-
-    try {
-      const identity = await this.resolveDesktopIdentity();
-
-      const res = await fetch(`${this.API_URL}/api/session/bootstrap`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(identity)
-      });
-
-      const data = await this.readJsonResponse(res);
-
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      if (!data.sessionToken) throw new Error("Bootstrap response did not include a session token");
-
-      this.sessionToken = data.sessionToken;
-      this.currentRole = data.role || "viewer";
-
-      this.$userInfo().textContent = data.user?.displayName || "Unknown User";
-      this.$userInfo().title = data.user?.email || data.user?.userId || "";
-
-      const roleMap = {
-        admin: "Admin",
-        supervisor: "Supervisor",
-        viewer: "Viewer"
-      };
-
-      this.$roleBadge().textContent = roleMap[this.currentRole] || "Viewer";
-      this.applyRoleState();
-    } finally {
-      this.isBootstrapping = false;
-    }
-  }
-
-  applyRoleState() {
-    const writable = ["supervisor", "admin"].includes(this.currentRole);
-
-    this.$toggle().disabled = !writable;
-    this.$priorityQueue().disabled = !writable;
-    this.$emergencyPrompt().disabled = !writable;
-    this.$holidayPrompt().disabled = !writable;
-    this.$globalLanguage().disabled = !writable;
-    this.$globalVoiceName().disabled = !writable;
-    this.$mohSalesQueue().disabled = !writable;
-    this.$saveBtn().disabled = !writable;
-  }
-
-  async authorizedFetch(path, options = {}, retryOn401 = true) {
-    if (!this.sessionToken) await this.bootstrapSession();
-
-    const makeRequest = async () =>
-      fetch(`${this.API_URL}${path}`, {
-        ...options,
-        headers: {
-          ...(options.headers || {}),
-          Authorization: `Bearer ${this.sessionToken}`
-        }
-      });
-
-    let res = await makeRequest();
-
-    if (res.status === 401 && retryOn401) {
-      await this.bootstrapSession();
-      res = await makeRequest();
+import express from "express";
+import cors from "cors";
+import fetch from "node-fetch";
+import crypto from "crypto";
+import dotenv from "dotenv";
+
+dotenv.config();
+
+const app = express();
+app.use(express.json());
+
+const DEFAULT_ALLOWED_ORIGINS = [
+  "https://romanrudenko81.github.io",
+  "https://cdn.jsdelivr.net",
+  "https://desktop.wxcc-us1.cisco.com",
+  "https://desktop.wxcc-eu1.cisco.com",
+  "https://desktop.wxcc-eu2.cisco.com"
+];
+
+const ENV_ALLOWED_ORIGINS = String(process.env.FRONTEND_ORIGIN || "")
+  .split(",")
+  .map(v => v.trim())
+  .filter(Boolean);
+
+const ALLOWED_CORS_ORIGINS = [...new Set([
+  ...DEFAULT_ALLOWED_ORIGINS,
+  ...ENV_ALLOWED_ORIGINS
+])];
+
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin) return callback(null, true);
+
+    if (ALLOWED_CORS_ORIGINS.includes(origin)) {
+      return callback(null, true);
     }
 
-    return res;
-  }
+    return callback(new Error(`CORS blocked for origin: ${origin}`));
+  },
+  methods: ["GET", "POST", "PUT", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: false
+}));
 
-  async loadEntryPoint(force = false) {
-    if (!force && (
-      this.isUpdating ||
-      this.hasUnsavedChanges ||
-      this.shadowRoot.activeElement === this.$emergencyPrompt() ||
-      this.shadowRoot.activeElement === this.$holidayPrompt() ||
-      this.shadowRoot.activeElement === this.$mohSalesQueue()
-    )) {
-      return;
-    }
+app.options("*", cors());
 
-    const res = await this.authorizedFetch(`/api/entrypoint/${this.ENTRY_POINT_ID}`);
-    const data = await this.readJsonResponse(res);
+const WEBEX_BASE_URL = process.env.WEBEX_BASE_URL || "https://api.wxcc-eu2.cisco.com";
+const WEBEX_ORG_ID = process.env.WEBEX_ORG_ID || "c2e0792b-e4ea-4025-b456-7edc6d1c92cb";
+const WEBEX_CLIENT_ID = process.env.WEBEX_CLIENT_ID;
+const WEBEX_CLIENT_SECRET = process.env.WEBEX_CLIENT_SECRET;
+const WEBEX_SERVICE_REFRESH_TOKEN = process.env.WEBEX_SERVICE_REFRESH_TOKEN;
 
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+const ENTRY_POINT_ID = process.env.ENTRY_POINT_ID || "284cd09a-eef4-40a2-82c6-53d08705e3e3";
+const PORT = process.env.PORT || 3000;
 
-    const overrides = Array.isArray(data.flowOverrideSettings) ? data.flowOverrideSettings : [];
+const SESSION_SECRET = process.env.SESSION_SECRET || "change-me";
+const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS || 28800000);
 
-    const priorityQueue = this.getOverrideValue(overrides, "Priority_Queue", "2");
-    const emergencyCase = this.getOverrideValue(overrides, "EmergencyCase", "false") === "true";
-    const emergencyPrompt = this.getOverrideValue(overrides, "EmergencyPrompt", "");
-    const holidayPrompt = this.getOverrideValue(overrides, "HolidayPrompt", "");
-    const globalLanguage = this.getOverrideValue(overrides, "Global_Language", "de-DE");
-    const globalVoiceName = this.getOverrideValue(overrides, "Global_VoiceName", "");
-    const mohSalesQueue = this.getOverrideValue(overrides, "Moh_Sales_Queue", "");
+const ALLOWED_TEAM_IDS = JSON.parse(process.env.ALLOWED_TEAM_IDS || "[]");
 
-    this.$priorityQueue().value = priorityQueue;
-    this.$toggle().checked = emergencyCase;
-    this.$emergencyPrompt().value = emergencyPrompt;
-    this.$holidayPrompt().value = holidayPrompt;
-    this.$globalLanguage().value = ["de-DE", "en-US"].includes(globalLanguage) ? globalLanguage : "de-DE";
-    this.updateVoiceOptions(globalVoiceName);
-    this.$mohSalesQueue().value = mohSalesQueue;
+const SUPERVISOR_EMAILS = new Set(
+  JSON.parse(process.env.SUPERVISOR_EMAILS || "[]").map(v => String(v).toLowerCase())
+);
 
-    this.updateLabel();
-    this.hasUnsavedChanges = false;
-  }
+const SUPERVISOR_USER_IDS = new Set(
+  JSON.parse(process.env.SUPERVISOR_USER_IDS || "[]")
+);
 
-  updateLabel() {
-    this.$stateLabel().innerText = this.$toggle().checked ? "ON" : "OFF";
-  }
+const sessions = new Map();
 
-  formatDuration(seconds) {
-    const value = Number(seconds || 0);
-    if (value < 60) return `${value}s`;
+let tokenStore = {
+  accessToken: null,
+  expiresAt: 0
+};
 
-    const minutes = Math.floor(value / 60);
-    const remainingSeconds = value % 60;
+function safeCompare(a, b) {
+  const aBuf = Buffer.from(a);
+  const bBuf = Buffer.from(b);
 
-    if (minutes < 60) return `${minutes}m ${remainingSeconds}s`;
+  if (aBuf.length !== bBuf.length) return false;
 
-    const hours = Math.floor(minutes / 60);
-    const remainingMinutes = minutes % 60;
-
-    return `${hours}h ${remainingMinutes}m`;
-  }
-
-  getAgentDuration(agent) {
-    if (typeof agent.activeSinceSeconds === "number") {
-      return agent.activeSinceSeconds;
-    }
-
-    const base = Number(agent.lastActivityTime || agent.startTime || 0);
-
-    if (base > 0) {
-      return Math.max(0, Math.floor((Date.now() - base) / 1000));
-    }
-
-    return 0;
-  }
-
-  async loadWallboard() {
-    try {
-      const res = await this.authorizedFetch(`/api/wallboard`);
-      const data = await this.readJsonResponse(res);
-
-      if (!res.ok || data.ok === false) {
-        throw new Error(data.error || `HTTP ${res.status}`);
-      }
-
-      this.shadowRoot.getElementById("kpiCallsInQueue").textContent = data.queue?.callsInQueue ?? 0;
-      this.shadowRoot.getElementById("kpiActiveCalls").textContent = data.queue?.activeCalls ?? 0;
-      this.shadowRoot.getElementById("kpiLongestWaiting").textContent = this.formatDuration(data.queue?.longestWaitingSeconds);
-      this.shadowRoot.getElementById("kpiAvgWait").textContent = this.formatDuration(data.queue?.avgWaitSeconds);
-      this.shadowRoot.getElementById("kpiAvgHandle").textContent = this.formatDuration(data.queue?.avgHandleSeconds);
-      this.shadowRoot.getElementById("kpiLoggedIn").textContent = data.agents?.loggedIn ?? 0;
-      this.shadowRoot.getElementById("kpiAvailable").textContent = data.agents?.available ?? 0;
-
-      const agentList = this.shadowRoot.getElementById("agentList");
-      agentList.innerHTML = `
-        <div class="agent-row header-row">
-          <div>Name</div>
-          <div>Status</div>
-          <div>Team</div>
-          <div>Active Since</div>
-        </div>
-      `;
-
-      const agents = Array.isArray(data.agentList) ? data.agentList : [];
-
-      if (agents.length === 0) {
-        const empty = document.createElement("div");
-        empty.className = "agent-row";
-        empty.innerHTML = `<div>No active agents</div><div></div><div></div><div></div>`;
-        agentList.appendChild(empty);
-      } else {
-        agents.forEach(agent => {
-          const row = document.createElement("div");
-          row.className = "agent-row";
-          row.innerHTML = `
-            <div>${agent.name || agent.login || "-"}</div>
-            <div>${agent.state || "-"}</div>
-            <div>${agent.team || "-"}</div>
-            <div>${this.formatDuration(this.getAgentDuration(agent))}</div>
-          `;
-          agentList.appendChild(row);
-        });
-      }
-
-      this.setWallboardStatus(`Updated ${new Date().toLocaleTimeString()}`);
-    } catch (err) {
-      this.setWallboardStatus(`Wallboard failed: ${err.message}`);
-    }
-  }
-
-  async saveState() {
-    if (!["supervisor", "admin"].includes(this.currentRole)) {
-      this.setStatus("No write permission", "error");
-      return;
-    }
-
-    const flowOverrideSettings = [
-      {
-        name: "Priority_Queue",
-        type: "INTEGER",
-        value: String(Number(this.$priorityQueue().value))
-      },
-      {
-        name: "EmergencyCase",
-        type: "BOOLEAN",
-        value: this.$toggle().checked ? "true" : "false"
-      },
-      {
-        name: "HolidayPrompt",
-        type: "STRING",
-        value: this.$holidayPrompt().value
-      },
-      {
-        name: "Global_VoiceName",
-        type: "STRING",
-        value: this.$globalVoiceName().value
-      },
-      {
-        name: "EmergencyPrompt",
-        type: "STRING",
-        value: this.$emergencyPrompt().value
-      },
-      {
-        name: "Global_Language",
-        type: "STRING",
-        value: this.$globalLanguage().value
-      },
-      {
-        name: "Moh_Sales_Queue",
-        type: "STRING",
-        value: this.$mohSalesQueue().value
-      }
-    ];
-
-    try {
-      this.isUpdating = true;
-      this.$saveBtn().disabled = true;
-      this.setStatus("Saving...", "info");
-
-      const res = await this.authorizedFetch(`/api/entrypoint/${this.ENTRY_POINT_ID}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ flowOverrideSettings })
-      });
-
-      const data = await this.readJsonResponse(res);
-
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-
-      this.hasUnsavedChanges = false;
-      await this.loadEntryPoint(true);
-      this.setStatus("Saved successfully ✔", "success");
-    } catch (err) {
-      this.setStatus(`Update failed ❌ ${err.message || ""}`.trim(), "error");
-    } finally {
-      this.isUpdating = false;
-      this.applyRoleState();
-    }
-  }
-
-  startPolling() {
-    if (this.pollHandle) clearInterval(this.pollHandle);
-
-    this.pollHandle = setInterval(async () => {
-      try {
-        await this.loadEntryPoint(false);
-      } catch {
-        this.setStatus("Refresh failed", "error");
-      }
-    }, this.POLL_INTERVAL_MS);
-  }
-
-  startWallboardPolling() {
-    if (this.wallboardPollHandle) clearInterval(this.wallboardPollHandle);
-
-    this.wallboardPollHandle = setInterval(async () => {
-      await this.loadWallboard();
-    }, this.WALLBOARD_POLL_INTERVAL_MS);
-  }
+  return crypto.timingSafeEqual(aBuf, bBuf);
 }
 
-customElements.define("supervisor-access-widget-v2", SupervisorAccessWidget);
+function signSession(payload) {
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+
+  const sig = crypto
+    .createHmac("sha256", SESSION_SECRET)
+    .update(body)
+    .digest("base64url");
+
+  return `${body}.${sig}`;
+}
+
+function verifySession(token) {
+  if (!token || !token.includes(".")) return null;
+
+  const [body, sig] = token.split(".");
+
+  const expected = crypto
+    .createHmac("sha256", SESSION_SECRET)
+    .update(body)
+    .digest("base64url");
+
+  if (!safeCompare(sig, expected)) return null;
+
+  let payload;
+
+  try {
+    payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+
+  if (!payload.sid || !sessions.has(payload.sid)) return null;
+
+  const stored = sessions.get(payload.sid);
+
+  if (!stored || stored.expiresAt < Date.now()) {
+    sessions.delete(payload.sid);
+    return null;
+  }
+
+  return stored;
+}
+
+function requireSession(req, res, next) {
+  const auth = req.headers.authorization || "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+
+  const session = verifySession(token);
+
+  if (!session) {
+    return res.status(401).json({
+      error: "Invalid or expired session"
+    });
+  }
+
+  req.session = session;
+  next();
+}
+
+function requireWriteRole(req, res, next) {
+  if (!["supervisor", "admin"].includes(req.session.role)) {
+    return res.status(403).json({
+      error: "Write access denied"
+    });
+  }
+
+  next();
+}
+
+function getRole(user) {
+  const email = String(user.email || "").toLowerCase();
+  const userId = String(user.userId || "");
+  const teamId = String(user.teamId || "");
+
+  if (ALLOWED_TEAM_IDS.length && !ALLOWED_TEAM_IDS.includes(teamId)) {
+    return "denied";
+  }
+
+  if (SUPERVISOR_EMAILS.has(email) || SUPERVISOR_USER_IDS.has(userId)) {
+    return "supervisor";
+  }
+
+  return "viewer";
+}
+
+async function safeJson(response) {
+  const text = await response.text();
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}: ${text}`);
+  }
+
+  return JSON.parse(text);
+}
+
+async function refreshServiceAccessToken() {
+  const response = await fetch("https://webexapis.com/v1/access_token", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded"
+    },
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      client_id: WEBEX_CLIENT_ID,
+      client_secret: WEBEX_CLIENT_SECRET,
+      refresh_token: WEBEX_SERVICE_REFRESH_TOKEN
+    })
+  });
+
+  const data = await safeJson(response);
+
+  tokenStore.accessToken = data.access_token;
+  tokenStore.expiresAt = Date.now() + data.expires_in * 1000;
+
+  return tokenStore.accessToken;
+}
+
+async function getValidServiceToken() {
+  if (!tokenStore.accessToken || Date.now() >= tokenStore.expiresAt - 60000) {
+    return refreshServiceAccessToken();
+  }
+
+  return tokenStore.accessToken;
+}
+
+async function getEntryPoint(id) {
+  const token = await getValidServiceToken();
+
+  const response = await fetch(
+    `${WEBEX_BASE_URL}/organization/${WEBEX_ORG_ID}/entry-point/${id}`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json"
+      }
+    }
+  );
+
+  return safeJson(response);
+}
+
+async function updateEntryPoint(id, payload) {
+  const token = await getValidServiceToken();
+
+  const response = await fetch(
+    `${WEBEX_BASE_URL}/organization/${WEBEX_ORG_ID}/entry-point/${id}`,
+    {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    }
+  );
+
+  return safeJson(response);
+}
+
+async function postSearchQuery(query, variables = {}) {
+  const token = await getValidServiceToken();
+
+  const response = await fetch(`${WEBEX_BASE_URL}/search`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      Accept: "application/json"
+    },
+    body: JSON.stringify({
+      query,
+      variables
+    })
+  });
+
+  const text = await response.text();
+
+  if (!response.ok) {
+    throw new Error(text);
+  }
+
+  return JSON.parse(text);
+}
+
+async function getAgentSessions() {
+  const now = Date.now();
+
+  const result = await postSearchQuery(
+    `
+    query AgentSessionsWallboard($from: Long!, $to: Long!) {
+      agentSession(from: $from, to: $to) {
+        agentSessions {
+          isActive
+          agentId
+          agentName
+          agentSessionId
+          userLoginId
+          startTime
+          state
+          teamId
+          teamName
+          siteName
+          channelInfo {
+            channelType
+            currentState
+            idleCodeName
+            lastActivityTime
+          }
+        }
+      }
+    }
+    `,
+    {
+      from: now - 86400000,
+      to: now
+    }
+  );
+
+  return result?.data?.agentSession?.agentSessions || [];
+}
+
+async function getTaskDetails() {
+  const now = Date.now();
+
+  const result = await postSearchQuery(
+    `
+    query TaskDetailsWallboard($from: Long!, $to: Long!) {
+      taskDetails(from: $from, to: $to) {
+        tasks {
+          id
+          status
+          channelType
+          createdTime
+          endedTime
+          direction
+          isActive
+          isContactHandled
+          isContactOffered
+          abandonedType
+          contactHandleType
+          queueDuration
+          connectedDuration
+          totalDuration
+          lastActivityTime
+          firstQueueId
+          firstQueueName
+          lastQueue {
+            id
+            name
+          }
+          lastEntryPoint {
+            id
+            name
+          }
+          lastTeam {
+            id
+            name
+          }
+          lastAgent {
+            id
+            name
+          }
+        }
+      }
+    }
+    `,
+    {
+      from: now - 86400000,
+      to: now
+    }
+  );
+
+  return result?.data?.taskDetails?.tasks || [];
+}
+
+function getPrimaryChannelInfo(agent) {
+  const channels = Array.isArray(agent.channelInfo) ? agent.channelInfo : [];
+
+  return (
+    channels.find(c => String(c.channelType).toLowerCase() === "telephony") ||
+    channels[0] ||
+    null
+  );
+}
+
+function getDisplayState(agent) {
+  const channel = getPrimaryChannelInfo(agent);
+
+  const currentState = String(channel?.currentState || "").toLowerCase();
+  const idleCodeName = String(channel?.idleCodeName || "").trim();
+
+  if (currentState === "available") {
+    return "Available";
+  }
+
+  if (currentState === "idle" && idleCodeName) {
+    return idleCodeName;
+  }
+
+  if (currentState) {
+    return currentState.charAt(0).toUpperCase() + currentState.slice(1);
+  }
+
+  return agent.state || "";
+}
+
+app.get("/health", (req, res) => {
+  res.json({
+    ok: true,
+    entryPointId: ENTRY_POINT_ID,
+    activeSessions: sessions.size,
+    sessionTtlMs: SESSION_TTL_MS,
+    corsOrigins: ALLOWED_CORS_ORIGINS
+  });
+});
+
+app.post("/api/session/bootstrap", (req, res) => {
+  const user = {
+    email: req.body?.email || "",
+    userId: req.body?.userId || "",
+    teamId: req.body?.teamId || "",
+    displayName: req.body?.displayName || req.body?.email || "Unknown"
+  };
+
+  const role = getRole(user);
+
+  if (role === "denied") {
+    return res.status(403).json({
+      error: "User is not in allowed team"
+    });
+  }
+
+  const sid = crypto.randomUUID();
+
+  const session = {
+    sid,
+    role,
+    user,
+    expiresAt: Date.now() + SESSION_TTL_MS
+  };
+
+  sessions.set(sid, session);
+
+  const sessionToken = signSession({ sid });
+
+  res.json({
+    sessionToken,
+    role,
+    user,
+    expiresAt: session.expiresAt
+  });
+});
+
+app.get("/api/entrypoint/:id", requireSession, async (req, res) => {
+  try {
+    const data = await getEntryPoint(req.params.id);
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({
+      error: err.message
+    });
+  }
+});
+
+app.put("/api/entrypoint/:id", requireSession, requireWriteRole, async (req, res) => {
+  try {
+    const existing = await getEntryPoint(req.params.id);
+
+    existing.flowOverrideSettings = req.body.flowOverrideSettings || [];
+
+    const updated = await updateEntryPoint(req.params.id, existing);
+
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({
+      error: err.message
+    });
+  }
+});
+
+app.get("/api/wallboard", requireSession, async (req, res) => {
+  try {
+    const userTeamId = req.session?.user?.teamId || "";
+
+    const [allAgents, allTasks] = await Promise.all([
+      getAgentSessions(),
+      getTaskDetails()
+    ]);
+
+    const agents = allAgents
+      .filter(a => a.isActive === true)
+      .filter(a => a.teamId === userTeamId);
+
+    const teamTasks = allTasks
+      .filter(t => String(t.channelType).toLowerCase() === "telephony")
+      .filter(t => t?.lastTeam?.id === userTeamId);
+
+    const waitingTasks = allTasks
+      .filter(t => String(t.channelType).toLowerCase() === "telephony")
+      .filter(t => t?.isActive === true)
+      .filter(t => ["new", "parked"].includes(String(t.status).toLowerCase()))
+      .filter(t => t?.lastEntryPoint?.id === ENTRY_POINT_ID);
+
+    const connectedTasks = teamTasks.filter(
+      t => String(t.status).toLowerCase() === "connected"
+    );
+
+    const kpiTasks = [...teamTasks];
+
+    const avgWaitSeconds =
+      kpiTasks.length > 0
+        ? Math.round(
+            kpiTasks.reduce(
+              (sum, t) => sum + Number(t.queueDuration || 0),
+              0
+            ) /
+              kpiTasks.length /
+              1000
+          )
+        : 0;
+
+    const avgHandleSeconds =
+      kpiTasks.length > 0
+        ? Math.round(
+            kpiTasks.reduce(
+              (sum, t) => sum + Number(t.connectedDuration || 0),
+              0
+            ) /
+              kpiTasks.length /
+              1000
+          )
+        : 0;
+
+    const longestWaitingSeconds =
+      waitingTasks.length > 0
+        ? Math.max(
+            ...waitingTasks.map(t =>
+              Math.floor((Date.now() - Number(t.createdTime || 0)) / 1000)
+            )
+          )
+        : 0;
+
+    const availableAgents = agents.filter(a =>
+      String(getDisplayState(a)).toLowerCase() === "available"
+    );
+
+    res.json({
+      ok: true,
+      source: "webex-search-api",
+      entryPointId: ENTRY_POINT_ID,
+      teamId: userTeamId,
+      generatedAt: new Date().toISOString(),
+
+      queue: {
+        callsInQueue: waitingTasks.length,
+        activeCalls: connectedTasks.length,
+        longestWaitingSeconds,
+        avgWaitSeconds,
+        avgHandleSeconds
+      },
+
+      agents: {
+        loggedIn: agents.length,
+        available: availableAgents.length
+      },
+
+      agentList: agents.map(agent => {
+        const channel = getPrimaryChannelInfo(agent);
+
+        return {
+          name: agent.agentName || "",
+          login: agent.userLoginId || "",
+          state: getDisplayState(agent),
+          currentState: channel?.currentState || "",
+          idleCodeName: channel?.idleCodeName || "",
+          teamId: agent.teamId || "",
+          team: agent.teamName || "",
+          site: agent.siteName || "",
+          startTime: agent.startTime || null,
+          lastActivityTime: channel?.lastActivityTime || null
+        };
+      }),
+
+      taskList: teamTasks.map(task => ({
+        id: task.id,
+        status: task.status,
+        queue: task?.lastQueue?.name || "",
+        firstQueue: task?.firstQueueName || "",
+        entryPoint: task?.lastEntryPoint?.name || "",
+        agent: task?.lastAgent?.name || "",
+        queueDuration: task.queueDuration || 0,
+        connectedDuration: task.connectedDuration || 0
+      })),
+
+      waitingTaskList: waitingTasks.map(task => ({
+        id: task.id,
+        status: task.status,
+        queue: task?.lastQueue?.name || "",
+        firstQueue: task?.firstQueueName || "",
+        entryPoint: task?.lastEntryPoint?.name || "",
+        createdTime: task.createdTime || null,
+        waitingSeconds: task.createdTime
+          ? Math.floor((Date.now() - Number(task.createdTime)) / 1000)
+          : 0
+      }))
+    });
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      error: err.message
+    });
+  }
+});
+
+app.get("/api/wallboard/test-tasks", async (req, res) => {
+  try {
+    const tasks = await getTaskDetails();
+
+    const telephonyTasks = tasks.filter(
+      t => String(t.channelType || "").toLowerCase() === "telephony"
+    );
+
+    const activeTelephonyTasks = telephonyTasks.filter(t => t?.isActive === true);
+
+    const possibleWaitingTasks = activeTelephonyTasks.filter(t =>
+      ["new", "parked", "connected"].includes(String(t.status || "").toLowerCase())
+    );
+
+    res.json({
+      count: tasks.length,
+      telephonyCount: telephonyTasks.length,
+      activeTelephonyCount: activeTelephonyTasks.length,
+      possibleWaitingOrActiveCount: possibleWaitingTasks.length,
+      generatedAt: new Date().toISOString(),
+      activeTelephonyTasks,
+      possibleWaitingTasks,
+      tasks: tasks.slice(0, 50)
+    });
+  } catch (err) {
+    res.status(500).json({
+      error: err.message
+    });
+  }
+});
+
+app.listen(PORT, () => {
+  console.log(`Secure widget backend listening on ${PORT}`);
+});

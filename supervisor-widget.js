@@ -71,7 +71,6 @@ class SupervisorAccessWidget extends HTMLElement {
           --widget-badge-bg: rgba(0,0,0,0.08);
           --widget-switch-bg: #6b7280;
           --widget-blur: blur(8px);
-
           color: var(--widget-text);
         }
 
@@ -113,7 +112,8 @@ class SupervisorAccessWidget extends HTMLElement {
         .field label,
         .subtext,
         #status,
-        #wallboardStatus {
+        #wallboardStatus,
+        .kpi-label {
           color: var(--widget-muted);
         }
 
@@ -154,7 +154,6 @@ class SupervisorAccessWidget extends HTMLElement {
           font-size: clamp(20px, 1.8vw, 28px);
           font-weight: 700;
           text-transform: uppercase;
-          color: var(--widget-text);
         }
 
         .subtext {
@@ -314,7 +313,6 @@ class SupervisorAccessWidget extends HTMLElement {
 
         .kpi-label {
           font-size: 12px;
-          color: var(--widget-muted);
         }
 
         .kpi-value {
@@ -422,7 +420,6 @@ class SupervisorAccessWidget extends HTMLElement {
             <input type="checkbox" id="emergencyToggle">
             <span class="slider"></span>
           </label>
-
           <span>Emergency Mode: <span id="stateLabel">OFF</span></span>
         </div>
 
@@ -808,9 +805,23 @@ class SupervisorAccessWidget extends HTMLElement {
     return `${hours}h ${remainingMinutes}m`;
   }
 
+  getAgentDuration(agent) {
+    if (typeof agent.activeSinceSeconds === "number") {
+      return agent.activeSinceSeconds;
+    }
+
+    const base = Number(agent.lastActivityTime || agent.startTime || 0);
+
+    if (base > 0) {
+      return Math.max(0, Math.floor((Date.now() - base) / 1000));
+    }
+
+    return 0;
+  }
+
   async loadWallboard() {
     try {
-      const res = await fetch(`${this.API_URL}/api/wallboard`);
+      const res = await this.authorizedFetch(`/api/wallboard`);
       const data = await this.readJsonResponse(res);
 
       if (!res.ok || data.ok === false) {
@@ -849,7 +860,7 @@ class SupervisorAccessWidget extends HTMLElement {
             <div>${agent.name || agent.login || "-"}</div>
             <div>${agent.state || "-"}</div>
             <div>${agent.team || "-"}</div>
-            <div>${this.formatDuration(agent.activeSinceSeconds)}</div>
+            <div>${this.formatDuration(this.getAgentDuration(agent))}</div>
           `;
           agentList.appendChild(row);
         });
@@ -867,15 +878,43 @@ class SupervisorAccessWidget extends HTMLElement {
       return;
     }
 
-    const payload = {
-      Priority_Queue: Number(this.$priorityQueue().value),
-      EmergencyCase: this.$toggle().checked,
-      HolidayPrompt: this.$holidayPrompt().value,
-      Global_VoiceName: this.$globalVoiceName().value,
-      EmergencyPrompt: this.$emergencyPrompt().value,
-      Global_Language: this.$globalLanguage().value,
-      Moh_Sales_Queue: this.$mohSalesQueue().value
-    };
+    const flowOverrideSettings = [
+      {
+        name: "Priority_Queue",
+        type: "INTEGER",
+        value: String(Number(this.$priorityQueue().value))
+      },
+      {
+        name: "EmergencyCase",
+        type: "BOOLEAN",
+        value: this.$toggle().checked ? "true" : "false"
+      },
+      {
+        name: "HolidayPrompt",
+        type: "STRING",
+        value: this.$holidayPrompt().value
+      },
+      {
+        name: "Global_VoiceName",
+        type: "STRING",
+        value: this.$globalVoiceName().value
+      },
+      {
+        name: "EmergencyPrompt",
+        type: "STRING",
+        value: this.$emergencyPrompt().value
+      },
+      {
+        name: "Global_Language",
+        type: "STRING",
+        value: this.$globalLanguage().value
+      },
+      {
+        name: "Moh_Sales_Queue",
+        type: "STRING",
+        value: this.$mohSalesQueue().value
+      }
+    ];
 
     try {
       this.isUpdating = true;
@@ -885,7 +924,7 @@ class SupervisorAccessWidget extends HTMLElement {
       const res = await this.authorizedFetch(`/api/entrypoint/${this.ENTRY_POINT_ID}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
+        body: JSON.stringify({ flowOverrideSettings })
       });
 
       const data = await this.readJsonResponse(res);

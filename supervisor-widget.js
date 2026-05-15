@@ -17,7 +17,6 @@ class SupervisorAccessWidget extends HTMLElement {
     this.wallboardPollHandle = null;
     this.hasUnsavedChanges = false;
     this.themeMode = localStorage.getItem("supervisorWidgetTheme") || "dark";
-
     this.allowedQueueNames = [];
     this.selectedQueueFilters = this.readSelectedQueueFilters();
   }
@@ -33,27 +32,6 @@ class SupervisorAccessWidget extends HTMLElement {
   disconnectedCallback() {
     if (this.pollHandle) clearInterval(this.pollHandle);
     if (this.wallboardPollHandle) clearInterval(this.wallboardPollHandle);
-  }
-
-  readSelectedQueueFilters() {
-    try {
-      const raw = localStorage.getItem("supervisorWidgetSelectedQueues");
-      const parsed = JSON.parse(raw || "[]");
-      return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
-    } catch {
-      return [];
-    }
-  }
-
-  saveSelectedQueueFilters() {
-    try {
-      localStorage.setItem(
-        "supervisorWidgetSelectedQueues",
-        JSON.stringify(Array.isArray(this.selectedQueueFilters) ? this.selectedQueueFilters : [])
-      );
-    } catch {
-      // Ignore storage issues inside embedded desktop if storage is unavailable.
-    }
   }
 
   render() {
@@ -301,6 +279,95 @@ class SupervisorAccessWidget extends HTMLElement {
           pointer-events: none;
         }
 
+        .kpi.calls-in-queue-card {
+          position: relative;
+          overflow: visible;
+        }
+
+        .kpi-topline {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 10px;
+        }
+
+        .queue-filter-inline {
+          position: relative;
+          display: none;
+          flex: 0 0 auto;
+        }
+
+        .queue-filter-inline.visible {
+          display: block;
+        }
+
+        .queue-filter-button {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          min-height: 24px;
+          max-width: 150px;
+          padding: 4px 8px;
+          border-radius: 999px;
+          border: 1px solid var(--cardBorder);
+          background: rgba(255,255,255,0.10);
+          color: var(--text) !important;
+          font-size: 11px;
+          line-height: 1;
+          cursor: pointer;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        :host(.theme-light) .queue-filter-button {
+          background: rgba(0,0,0,0.06);
+        }
+
+        .queue-filter-menu {
+          position: absolute;
+          top: 30px;
+          right: 0;
+          z-index: 50;
+          display: none;
+          min-width: 210px;
+          padding: 10px;
+          border-radius: 12px;
+          border: 1px solid var(--cardBorder);
+          background: var(--card);
+          box-shadow: 0 12px 30px rgba(0,0,0,0.35);
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+        }
+
+        .queue-filter-inline.open .queue-filter-menu {
+          display: block;
+        }
+
+        .queue-filter-option {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 7px 4px;
+          color: var(--text);
+          font-size: 12px;
+          cursor: pointer;
+        }
+
+        .queue-filter-option input {
+          width: auto;
+          margin: 0;
+        }
+
+        .queue-filter-hint {
+          margin-top: 6px;
+          padding-top: 8px;
+          border-top: 1px solid var(--tableBorder);
+          color: var(--muted);
+          font-size: 11px;
+          line-height: 1.3;
+        }
+
         .section-grid {
           display: grid;
           grid-template-columns: repeat(3, minmax(0,1fr));
@@ -373,97 +440,6 @@ class SupervisorAccessWidget extends HTMLElement {
           margin-top: 34px;
         }
 
-
-        .kpi.calls-in-queue-card {
-          position: relative;
-          overflow: visible;
-        }
-
-        .kpi-topline {
-          display: flex;
-          align-items: flex-start;
-          justify-content: space-between;
-          gap: 10px;
-        }
-
-        .queue-filter-inline {
-          position: relative;
-          display: none;
-          flex: 0 0 auto;
-        }
-
-        .queue-filter-inline.visible {
-          display: block;
-        }
-
-        .queue-filter-button {
-          display: inline-flex;
-          align-items: center;
-          gap: 6px;
-          min-height: 24px;
-          max-width: 150px;
-          padding: 4px 8px;
-          border-radius: 999px;
-          border: 1px solid var(--cardBorder);
-          background: rgba(255,255,255,0.10);
-          color: var(--text) !important;
-          font-size: 11px;
-          line-height: 1;
-          cursor: pointer;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-
-        :host(.theme-light) .queue-filter-button {
-          background: rgba(0,0,0,0.06);
-        }
-
-        .queue-filter-menu {
-          position: absolute;
-          top: 30px;
-          right: 0;
-          z-index: 50;
-          display: none;
-          min-width: 210px;
-          padding: 10px;
-          border-radius: 12px;
-          border: 1px solid var(--cardBorder);
-          background: var(--card);
-          box-shadow: 0 12px 30px rgba(0,0,0,0.35);
-          backdrop-filter: blur(12px);
-          -webkit-backdrop-filter: blur(12px);
-        }
-
-        .queue-filter-inline.open .queue-filter-menu {
-          display: block;
-        }
-
-        .queue-filter-option {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          padding: 7px 4px;
-          color: var(--text);
-          font-size: 12px;
-          cursor: pointer;
-        }
-
-        .queue-filter-option input {
-          width: auto;
-          margin: 0;
-        }
-
-        .queue-filter-hint {
-          margin-top: 6px;
-          padding-top: 8px;
-          border-top: 1px solid var(--tableBorder);
-          color: var(--muted);
-          font-size: 11px;
-          line-height: 1.3;
-        }
-
-
         .kpis {
           display: grid;
           grid-template-columns: repeat(7, minmax(0,1fr));
@@ -472,9 +448,45 @@ class SupervisorAccessWidget extends HTMLElement {
 
         .kpi {
           background: var(--kpi);
+          border: 1px solid transparent;
           border-radius: 14px;
           padding: 14px;
           min-height: 74px;
+          transition: background .25s ease, border-color .25s ease, box-shadow .25s ease;
+        }
+
+        .kpi-green {
+          background: linear-gradient(135deg, rgba(34,197,94,0.22), rgba(34,197,94,0.10));
+          border-color: rgba(34,197,94,0.72);
+          box-shadow: 0 0 0 1px rgba(34,197,94,0.10), 0 0 18px rgba(34,197,94,0.16);
+        }
+
+        .kpi-orange {
+          background: linear-gradient(135deg, rgba(245,158,11,0.24), rgba(245,158,11,0.10));
+          border-color: rgba(245,158,11,0.78);
+          box-shadow: 0 0 0 1px rgba(245,158,11,0.10), 0 0 18px rgba(245,158,11,0.16);
+        }
+
+        .kpi-red,
+        .kpi-critical {
+          background: linear-gradient(135deg, rgba(239,68,68,0.24), rgba(239,68,68,0.10));
+          border-color: rgba(239,68,68,0.82);
+          box-shadow: 0 0 0 1px rgba(239,68,68,0.12), 0 0 18px rgba(239,68,68,0.18);
+        }
+
+        .kpi-critical {
+          animation: supervisorCriticalPulse 1.4s ease-in-out infinite;
+        }
+
+        @keyframes supervisorCriticalPulse {
+          0%, 100% {
+            border-color: rgba(239,68,68,0.70);
+            box-shadow: 0 0 0 1px rgba(239,68,68,0.10), 0 0 14px rgba(239,68,68,0.16);
+          }
+          50% {
+            border-color: rgba(239,68,68,1);
+            box-shadow: 0 0 0 1px rgba(239,68,68,0.26), 0 0 26px rgba(239,68,68,0.42);
+          }
         }
 
         .kpi-label {
@@ -506,6 +518,27 @@ class SupervisorAccessWidget extends HTMLElement {
           align-items: center;
           color: var(--text);
           font-size: 14px;
+          transition: background .25s ease, border-color .25s ease, box-shadow .25s ease;
+        }
+
+        .table-row.agent-available,
+        .table-row.agent-unavailable {
+          border: 1px solid transparent;
+          border-radius: 14px;
+          padding: 14px;
+          margin: 10px 0;
+        }
+
+        .table-row.agent-available {
+          background: linear-gradient(135deg, rgba(34,197,94,0.18), rgba(34,197,94,0.08));
+          border-color: rgba(34,197,94,0.78);
+          box-shadow: 0 0 0 1px rgba(34,197,94,0.08), 0 0 18px rgba(34,197,94,0.14);
+        }
+
+        .table-row.agent-unavailable {
+          background: linear-gradient(135deg, rgba(239,68,68,0.18), rgba(239,68,68,0.08));
+          border-color: rgba(239,68,68,0.82);
+          box-shadow: 0 0 0 1px rgba(239,68,68,0.08), 0 0 18px rgba(239,68,68,0.14);
         }
 
         .table-header,
@@ -572,145 +605,8 @@ class SupervisorAccessWidget extends HTMLElement {
           color: var(--muted);
         }
 
-        
-        .kpi.kpi-green {
-          border: 1px solid rgba(34,197,94,0.65);
-          background: rgba(34,197,94,0.14);
-          box-shadow: 0 0 10px rgba(34,197,94,0.18);
-        }
-
-        .kpi.kpi-orange {
-          border: 1px solid rgba(251,146,60,0.75);
-          background: rgba(251,146,60,0.14);
-          box-shadow: 0 0 10px rgba(251,146,60,0.18);
-        }
-
-        .kpi.kpi-red {
-          border: 1px solid rgba(239,68,68,0.75);
-          background: rgba(239,68,68,0.14);
-          box-shadow: 0 0 12px rgba(239,68,68,0.20);
-        }
-
-        .kpi.kpi-critical {
-          animation: criticalPulse 1.5s infinite;
-        }
-
-        @keyframes criticalPulse {
-          0% { box-shadow: 0 0 8px rgba(239,68,68,0.18); }
-          50% { box-shadow: 0 0 20px rgba(239,68,68,0.45); }
-          100% { box-shadow: 0 0 8px rgba(239,68,68,0.18); }
-        }
-
-        .table-row.agent-available {
-          border: 1px solid rgba(34,197,94,0.75);
-          border-radius: 14px;
-          background: rgba(34,197,94,0.08);
-          margin-top: 10px;
-          padding: 14px;
-        }
-
-        .table-row.agent-unavailable {
-          border: 1px solid rgba(239,68,68,0.75);
-          border-radius: 14px;
-          background: rgba(239,68,68,0.08);
-          margin-top: 10px;
-          padding: 14px;
-        }
-
-
         @media (max-width: 1400px) {
-  
-        .kpi.calls-in-queue-card {
-          position: relative;
-          overflow: visible;
-        }
-
-        .kpi-topline {
-          display: flex;
-          align-items: flex-start;
-          justify-content: space-between;
-          gap: 10px;
-        }
-
-        .queue-filter-inline {
-          position: relative;
-          display: none;
-          flex: 0 0 auto;
-        }
-
-        .queue-filter-inline.visible {
-          display: block;
-        }
-
-        .queue-filter-button {
-          display: inline-flex;
-          align-items: center;
-          gap: 6px;
-          min-height: 24px;
-          max-width: 150px;
-          padding: 4px 8px;
-          border-radius: 999px;
-          border: 1px solid var(--cardBorder);
-          background: rgba(255,255,255,0.10);
-          color: var(--text) !important;
-          font-size: 11px;
-          line-height: 1;
-          cursor: pointer;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-
-        :host(.theme-light) .queue-filter-button {
-          background: rgba(0,0,0,0.06);
-        }
-
-        .queue-filter-menu {
-          position: absolute;
-          top: 30px;
-          right: 0;
-          z-index: 50;
-          display: none;
-          min-width: 210px;
-          padding: 10px;
-          border-radius: 12px;
-          border: 1px solid var(--cardBorder);
-          background: var(--card);
-          box-shadow: 0 12px 30px rgba(0,0,0,0.35);
-          backdrop-filter: blur(12px);
-          -webkit-backdrop-filter: blur(12px);
-        }
-
-        .queue-filter-inline.open .queue-filter-menu {
-          display: block;
-        }
-
-        .queue-filter-option {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          padding: 7px 4px;
-          color: var(--text);
-          font-size: 12px;
-          cursor: pointer;
-        }
-
-        .queue-filter-option input {
-          width: auto;
-          margin: 0;
-        }
-
-        .queue-filter-hint {
-          margin-top: 6px;
-          padding-top: 8px;
-          border-top: 1px solid var(--tableBorder);
-          color: var(--muted);
-          font-size: 11px;
-          line-height: 1.3;
-        }
-
-
-        .kpis {
+          .kpis {
             grid-template-columns: repeat(4, minmax(0,1fr));
           }
         }
@@ -758,11 +654,6 @@ class SupervisorAccessWidget extends HTMLElement {
           pointer-events: none;
         }
 
-        .section-grid {
-            grid-template-columns: 1fr;
-          }
-
-  
         .kpi.calls-in-queue-card {
           position: relative;
           overflow: visible;
@@ -852,8 +743,11 @@ class SupervisorAccessWidget extends HTMLElement {
           line-height: 1.3;
         }
 
+        .section-grid {
+            grid-template-columns: 1fr;
+          }
 
-        .kpis {
+          .kpis {
             grid-template-columns: repeat(2, minmax(0,1fr));
           }
 
@@ -879,98 +773,7 @@ class SupervisorAccessWidget extends HTMLElement {
             justify-content: flex-start;
           }
 
-  
-        .kpi.calls-in-queue-card {
-          position: relative;
-          overflow: visible;
-        }
-
-        .kpi-topline {
-          display: flex;
-          align-items: flex-start;
-          justify-content: space-between;
-          gap: 10px;
-        }
-
-        .queue-filter-inline {
-          position: relative;
-          display: none;
-          flex: 0 0 auto;
-        }
-
-        .queue-filter-inline.visible {
-          display: block;
-        }
-
-        .queue-filter-button {
-          display: inline-flex;
-          align-items: center;
-          gap: 6px;
-          min-height: 24px;
-          max-width: 150px;
-          padding: 4px 8px;
-          border-radius: 999px;
-          border: 1px solid var(--cardBorder);
-          background: rgba(255,255,255,0.10);
-          color: var(--text) !important;
-          font-size: 11px;
-          line-height: 1;
-          cursor: pointer;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-
-        :host(.theme-light) .queue-filter-button {
-          background: rgba(0,0,0,0.06);
-        }
-
-        .queue-filter-menu {
-          position: absolute;
-          top: 30px;
-          right: 0;
-          z-index: 50;
-          display: none;
-          min-width: 210px;
-          padding: 10px;
-          border-radius: 12px;
-          border: 1px solid var(--cardBorder);
-          background: var(--card);
-          box-shadow: 0 12px 30px rgba(0,0,0,0.35);
-          backdrop-filter: blur(12px);
-          -webkit-backdrop-filter: blur(12px);
-        }
-
-        .queue-filter-inline.open .queue-filter-menu {
-          display: block;
-        }
-
-        .queue-filter-option {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          padding: 7px 4px;
-          color: var(--text);
-          font-size: 12px;
-          cursor: pointer;
-        }
-
-        .queue-filter-option input {
-          width: auto;
-          margin: 0;
-        }
-
-        .queue-filter-hint {
-          margin-top: 6px;
-          padding-top: 8px;
-          border-top: 1px solid var(--tableBorder);
-          color: var(--muted);
-          font-size: 11px;
-          line-height: 1.3;
-        }
-
-
-        .kpis {
+          .kpis {
             grid-template-columns: 1fr;
           }
 
@@ -1075,8 +878,8 @@ class SupervisorAccessWidget extends HTMLElement {
               <div class="kpi"><div class="kpi-label">Longest Waiting</div><div class="kpi-value" id="kpiLongestWaiting">0s</div></div>
               <div class="kpi"><div class="kpi-label">Avg Wait</div><div class="kpi-value" id="kpiAvgWait">0s</div></div>
               <div class="kpi"><div class="kpi-label">Avg Handle</div><div class="kpi-value" id="kpiAvgHandle">0s</div></div>
-              <div class="kpi" id="kpiCardLoggedIn"><div class="kpi-label">Logged-in Agents</div><div class="kpi-value" id="kpiLoggedIn">0</div></div>
-              <div class="kpi" id="kpiCardAvailable"><div class="kpi-label">Available Agents</div><div class="kpi-value" id="kpiAvailable">0</div></div>
+              <div class="kpi"><div class="kpi-label">Logged-in Agents</div><div class="kpi-value" id="kpiLoggedIn">0</div></div>
+              <div class="kpi"><div class="kpi-label">Available Agents</div><div class="kpi-value" id="kpiAvailable">0</div></div>
             </div>
           </div>
 
@@ -1371,6 +1174,47 @@ class SupervisorAccessWidget extends HTMLElement {
     this.$stateLabel().textContent = this.$toggle().checked ? "ON" : "OFF";
   }
 
+  toNumber(value, fallback = 0) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  setKpiClass(elementId, state) {
+    const el = this.shadowRoot.getElementById(elementId);
+    const card = el?.closest(".kpi");
+    if (!card) return;
+
+    card.classList.remove("kpi-green", "kpi-orange", "kpi-red", "kpi-critical");
+    if (state) card.classList.add(state);
+  }
+
+  applyWallboardThresholds({ callsInQueue, loggedInAgents, availableAgents }) {
+    const queue = this.toNumber(callsInQueue);
+    const loggedIn = this.toNumber(loggedInAgents);
+    const available = this.toNumber(availableAgents);
+
+    this.setKpiClass(
+      "kpiCallsInQueue",
+      queue > 1 ? "kpi-critical" : queue === 1 ? "kpi-orange" : ""
+    );
+
+    this.setKpiClass(
+      "kpiLoggedIn",
+      loggedIn > 1 ? "kpi-green" : loggedIn === 1 ? "kpi-orange" : "kpi-red"
+    );
+
+    this.setKpiClass(
+      "kpiAvailable",
+      available > 1 ? "kpi-green" : available === 1 ? "kpi-orange" : "kpi-red"
+    );
+  }
+
+  getAgentRowClass(state) {
+    return String(state || "").trim().toLowerCase() === "available"
+      ? "table-row agent-available"
+      : "table-row agent-unavailable";
+  }
+
   formatDuration(seconds) {
     const value = Number(seconds || 0);
     if (value < 60) return `${value}s`;
@@ -1532,14 +1376,7 @@ class SupervisorAccessWidget extends HTMLElement {
     const visibleQueues = this.getVisibleQueueNames();
     const normalizedQueue = this.normalizeText(queueName);
 
-    return visibleQueues.some(q => {
-      const normalizedAllowed = this.normalizeText(q);
-      return (
-        normalizedQueue === normalizedAllowed ||
-        normalizedQueue.includes(normalizedAllowed) ||
-        normalizedAllowed.includes(normalizedQueue)
-      );
-    });
+    return visibleQueues.some(q => this.normalizeText(q) === normalizedQueue);
   }
 
   filterCallsByAllowedQueues(calls) {
@@ -1639,34 +1476,6 @@ class SupervisorAccessWidget extends HTMLElement {
     });
   }
 
-
-  updateKpiState(elementId, value, type) {
-    const el = this.shadowRoot.getElementById(elementId);
-    if (!el) return;
-
-    el.classList.remove("kpi-green", "kpi-orange", "kpi-red", "kpi-critical");
-
-    const num = Number(value || 0);
-
-    if (type === "queue") {
-      if (num === 1) {
-        el.classList.add("kpi-orange");
-      } else if (num > 1) {
-        el.classList.add("kpi-red", "kpi-critical");
-      }
-    }
-
-    if (type === "agents") {
-      if (num === 1) {
-        el.classList.add("kpi-orange");
-      } else if (num > 1) {
-        el.classList.add("kpi-green");
-      } else {
-        el.classList.add("kpi-red");
-      }
-    }
-  }
-
   async loadWallboard() {
     try {
       const res = await this.authorizedFetch(`/api/wallboard`);
@@ -1675,9 +1484,7 @@ class SupervisorAccessWidget extends HTMLElement {
       if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
 
       const detectedQueues = this.extractAllowedQueuesFromWallboardData(data);
-      if (detectedQueues.length) {
-        this.allowedQueueNames = detectedQueues;
-      }
+      this.allowedQueueNames = detectedQueues;
 
       this.updateQueueFilterOptions();
 
@@ -1707,9 +1514,13 @@ class SupervisorAccessWidget extends HTMLElement {
       this.shadowRoot.getElementById("kpiLoggedIn").textContent = loggedInAgents;
       this.shadowRoot.getElementById("kpiAvailable").textContent = availableAgents;
 
-      this.updateKpiState("kpiCardCallsInQueue", callsInQueue, "queue");
-      this.updateKpiState("kpiCardLoggedIn", loggedInAgents, "agents");
-      this.updateKpiState("kpiCardAvailable", availableAgents, "agents");
+      if (typeof this.updateKpiState === "function") {
+        this.updateKpiState("kpiCardCallsInQueue", callsInQueue, "queue");
+        this.updateKpiState("kpiCardLoggedIn", loggedInAgents, "agents");
+        this.updateKpiState("kpiCardAvailable", availableAgents, "agents");
+      } else if (typeof this.applyWallboardThresholds === "function") {
+        this.applyWallboardThresholds({ callsInQueue, loggedInAgents, availableAgents });
+      }
 
       const agentList = this.shadowRoot.getElementById("agentList");
       agentList.innerHTML = `
@@ -1820,9 +1631,5 @@ class SupervisorAccessWidget extends HTMLElement {
 }
 
 if (!customElements.get("supervisor-access-widget-v2")) {
-  if (!customElements.get("supervisor-access-widget-v2")) {
-  if (!customElements.get("supervisor-access-widget-v2")) {
   customElements.define("supervisor-access-widget-v2", SupervisorAccessWidget);
-}
-}
 }

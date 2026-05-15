@@ -11,20 +11,25 @@ class SupervisorAccessWidget extends HTMLElement {
 
     this.sessionToken = null;
     this.currentRole = "viewer";
-    this.themeMode =
-      localStorage.getItem("supervisorWidgetTheme") || "dark";
+    this.isUpdating = false;
+    this.isBootstrapping = false;
+    this.pollHandle = null;
+    this.wallboardPollHandle = null;
+    this.hasUnsavedChanges = false;
+    this.themeMode = localStorage.getItem("supervisorWidgetTheme") || "dark";
   }
 
   connectedCallback() {
     this.render();
-    this.bindEvents();
     this.applyTheme();
+    this.populateStaticOptions();
+    this.bindEvents();
     this.init();
   }
 
   disconnectedCallback() {
-    clearInterval(this.pollHandle);
-    clearInterval(this.wallboardPollHandle);
+    if (this.pollHandle) clearInterval(this.pollHandle);
+    if (this.wallboardPollHandle) clearInterval(this.wallboardPollHandle);
   }
 
   render() {
@@ -32,21 +37,20 @@ class SupervisorAccessWidget extends HTMLElement {
       <style>
         :host {
           all: initial;
-
           display: block;
           width: 100%;
-          height: 100%;
-
+          min-height: 100%;
+          box-sizing: border-box;
           font-family: Arial, Helvetica, sans-serif !important;
 
-          --bg: #020817;
           --card: rgba(15, 23, 42, 0.82);
           --cardBorder: rgba(255,255,255,0.08);
-          --panelBorder: rgba(255,255,255,0.22);
+          --panelBorder: rgba(255,255,255,0.28);
           --input: rgba(255,255,255,0.10);
           --text: #ffffff;
           --muted: rgba(255,255,255,0.75);
           --kpi: rgba(255,255,255,0.14);
+          --switch: #4b5563;
 
           color: var(--text);
         }
@@ -55,8 +59,9 @@ class SupervisorAccessWidget extends HTMLElement {
         :host *::before,
         :host *::after {
           box-sizing: border-box !important;
-          text-transform: none !important;
           font-family: Arial, Helvetica, sans-serif !important;
+          text-transform: none !important;
+          font-variant: normal !important;
           font-variant-caps: normal !important;
           font-feature-settings: normal !important;
           letter-spacing: normal !important;
@@ -75,6 +80,7 @@ class SupervisorAccessWidget extends HTMLElement {
           border: 1px solid var(--cardBorder);
           padding: 28px;
           backdrop-filter: blur(10px);
+          -webkit-backdrop-filter: blur(10px);
         }
 
         .header {
@@ -89,6 +95,7 @@ class SupervisorAccessWidget extends HTMLElement {
           font-weight: 700;
           margin: 0;
           color: white;
+          line-height: 1.2;
         }
 
         .subtitle {
@@ -105,12 +112,18 @@ class SupervisorAccessWidget extends HTMLElement {
           justify-content: flex-end;
         }
 
-        .badge {
+        .badge,
+        .theme-btn {
           background: rgba(255,255,255,0.12);
           border-radius: 999px;
           padding: 6px 12px;
           font-size: 12px;
           color: white;
+          border: 1px solid rgba(255,255,255,0.08);
+        }
+
+        .theme-btn {
+          cursor: pointer;
         }
 
         .toggle-row {
@@ -118,6 +131,7 @@ class SupervisorAccessWidget extends HTMLElement {
           align-items: center;
           gap: 14px;
           margin-bottom: 28px;
+          font-size: 14px;
         }
 
         .switch {
@@ -125,6 +139,7 @@ class SupervisorAccessWidget extends HTMLElement {
           width: 52px;
           height: 28px;
           display: inline-block;
+          flex: 0 0 auto;
         }
 
         .switch input {
@@ -137,7 +152,7 @@ class SupervisorAccessWidget extends HTMLElement {
           position: absolute;
           inset: 0;
           cursor: pointer;
-          background: #4b5563;
+          background: var(--switch);
           border-radius: 999px;
           transition: .25s;
         }
@@ -168,11 +183,15 @@ class SupervisorAccessWidget extends HTMLElement {
           gap: 42px;
         }
 
-        .section-title {
+        .section-title,
+        .dashboard-title,
+        .agents-title,
+        .calls-title {
           font-size: 22px;
           font-weight: 700;
           margin: 0 0 18px 0;
           color: white;
+          line-height: 1.25;
         }
 
         .field {
@@ -193,14 +212,14 @@ class SupervisorAccessWidget extends HTMLElement {
           border-radius: 12px;
           border: 1px solid rgba(255,255,255,0.12);
           background: var(--input);
-          color: white;
+          color: white !important;
           outline: none;
           font-size: 14px;
         }
 
         button {
           background: #0a84ff;
-          color: white;
+          color: white !important;
           border: none;
           border-radius: 10px;
           padding: 10px 16px;
@@ -208,21 +227,22 @@ class SupervisorAccessWidget extends HTMLElement {
           font-size: 14px;
         }
 
+        button[disabled],
+        input[disabled],
+        select[disabled] {
+          opacity: 0.55;
+          cursor: not-allowed;
+        }
+
         .status {
           margin-top: 14px;
           font-size: 13px;
           color: var(--muted);
+          min-height: 18px;
         }
 
         .dashboard {
           margin-top: 34px;
-        }
-
-        .dashboard-title {
-          font-size: 22px;
-          font-weight: 700;
-          margin-bottom: 18px;
-          color: white;
         }
 
         .kpis {
@@ -235,6 +255,7 @@ class SupervisorAccessWidget extends HTMLElement {
           background: var(--kpi);
           border-radius: 14px;
           padding: 14px;
+          min-height: 74px;
         }
 
         .kpi-label {
@@ -243,7 +264,7 @@ class SupervisorAccessWidget extends HTMLElement {
         }
 
         .kpi-value {
-          font-size: 22px;
+          font-size: 24px;
           font-weight: 700;
           margin-top: 8px;
           color: white;
@@ -251,13 +272,6 @@ class SupervisorAccessWidget extends HTMLElement {
 
         .agents-section {
           margin-top: 28px;
-        }
-
-        .agents-title {
-          font-size: 22px;
-          font-weight: 700;
-          margin-bottom: 16px;
-          color: white;
         }
 
         .table {
@@ -272,9 +286,11 @@ class SupervisorAccessWidget extends HTMLElement {
           border-bottom: 1px solid rgba(255,255,255,0.08);
           align-items: center;
           color: white;
+          font-size: 14px;
         }
 
-        .table-header {
+        .table-header,
+        .call-header {
           color: rgba(255,255,255,0.82);
           font-weight: 700;
         }
@@ -282,7 +298,7 @@ class SupervisorAccessWidget extends HTMLElement {
         .calls-wrapper {
           margin-top: 34px;
           display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(720px, 1fr));
+          grid-template-columns: repeat(auto-fit, minmax(min(100%, 720px), 1fr));
           gap: 18px;
         }
 
@@ -292,13 +308,7 @@ class SupervisorAccessWidget extends HTMLElement {
           padding: 20px;
           overflow-x: auto;
           min-width: 0;
-        }
-
-        .calls-title {
-          font-size: 22px;
-          font-weight: 700;
-          margin-bottom: 18px;
-          color: white;
+          background: rgba(255,255,255,0.02);
         }
 
         .calls-table {
@@ -320,6 +330,7 @@ class SupervisorAccessWidget extends HTMLElement {
           align-items: center;
           color: white;
           white-space: nowrap;
+          font-size: 14px;
         }
 
         .call-row.active {
@@ -332,9 +343,10 @@ class SupervisorAccessWidget extends HTMLElement {
             minmax(90px,0.7fr);
         }
 
-        .call-header {
-          font-weight: 700;
-          color: rgba(255,255,255,0.82);
+        #wallboardStatus {
+          margin-top: 12px;
+          font-size: 13px;
+          color: var(--muted);
         }
 
         @media (max-width: 1400px) {
@@ -351,15 +363,31 @@ class SupervisorAccessWidget extends HTMLElement {
           .kpis {
             grid-template-columns: repeat(2, minmax(0,1fr));
           }
+
+          .table-row {
+            grid-template-columns: 1fr;
+          }
         }
 
         @media (max-width: 640px) {
-          .kpis {
-            grid-template-columns: 1fr;
+          .wrapper {
+            padding: 8px;
+          }
+
+          .card {
+            padding: 18px;
           }
 
           .header {
             flex-direction: column;
+          }
+
+          .badge-row {
+            justify-content: flex-start;
+          }
+
+          .kpis {
+            grid-template-columns: 1fr;
           }
 
           .calls-wrapper {
@@ -370,7 +398,6 @@ class SupervisorAccessWidget extends HTMLElement {
 
       <div class="wrapper">
         <div class="card">
-
           <div class="header">
             <div>
               <h2 class="title">Supervisor access control</h2>
@@ -379,10 +406,9 @@ class SupervisorAccessWidget extends HTMLElement {
 
             <div>
               <h2 class="title">Conscia Demo Support</h2>
-
               <div class="badge-row">
-                <div class="badge" id="themeBadge">Theme: Dark</div>
-                <div class="badge" id="roleBadge">Supervisor</div>
+                <button class="theme-btn" id="themeToggleBtn" type="button">Theme: Dark</button>
+                <div class="badge" id="roleBadge">...</div>
               </div>
             </div>
           </div>
@@ -392,23 +418,16 @@ class SupervisorAccessWidget extends HTMLElement {
               <input type="checkbox" id="emergencyToggle">
               <span class="slider"></span>
             </label>
-
-            <div>
-              Emergency Mode:
-              <span id="stateLabel">OFF</span>
-            </div>
+            <div>Emergency Mode: <span id="stateLabel">OFF</span></div>
           </div>
 
           <div class="section-grid">
-
             <div>
               <div class="section-title">Prompts</div>
-
               <div class="field">
                 <label>Emergency Prompt</label>
                 <input id="emergencyPrompt" type="text">
               </div>
-
               <div class="field">
                 <label>Holiday Prompt</label>
                 <input id="holidayPrompt" type="text">
@@ -417,12 +436,10 @@ class SupervisorAccessWidget extends HTMLElement {
 
             <div>
               <div class="section-title">Language Settings</div>
-
               <div class="field">
                 <label>Global Language</label>
                 <select id="globalLanguage"></select>
               </div>
-
               <div class="field">
                 <label>Global Voice Name</label>
                 <select id="globalVoiceName"></select>
@@ -431,122 +448,494 @@ class SupervisorAccessWidget extends HTMLElement {
 
             <div>
               <div class="section-title">Queue Settings</div>
-
               <div class="field">
                 <label>Prio Queue</label>
                 <select id="priorityQueue"></select>
               </div>
-
               <div class="field">
                 <label>MoH Sales Queue</label>
                 <input id="mohSalesQueue" type="text">
               </div>
             </div>
-
           </div>
 
           <div style="margin-top:18px;">
             <button id="saveBtn">Save</button>
           </div>
 
-          <div class="status" id="status">Ready</div>
+          <div class="status" id="status">Loading...</div>
 
           <div class="dashboard">
             <div class="dashboard-title">Dashboard</div>
 
             <div class="kpis">
-
-              <div class="kpi">
-                <div class="kpi-label">Calls in Queue</div>
-                <div class="kpi-value" id="kpiCallsInQueue">0</div>
-              </div>
-
-              <div class="kpi">
-                <div class="kpi-label">Active Calls</div>
-                <div class="kpi-value" id="kpiActiveCalls">0</div>
-              </div>
-
-              <div class="kpi">
-                <div class="kpi-label">Longest Waiting</div>
-                <div class="kpi-value" id="kpiLongestWaiting">0s</div>
-              </div>
-
-              <div class="kpi">
-                <div class="kpi-label">Avg Wait</div>
-                <div class="kpi-value" id="kpiAvgWait">0s</div>
-              </div>
-
-              <div class="kpi">
-                <div class="kpi-label">Avg Handle</div>
-                <div class="kpi-value" id="kpiAvgHandle">0s</div>
-              </div>
-
-              <div class="kpi">
-                <div class="kpi-label">Logged-in Agents</div>
-                <div class="kpi-value" id="kpiLoggedIn">0</div>
-              </div>
-
-              <div class="kpi">
-                <div class="kpi-label">Available Agents</div>
-                <div class="kpi-value" id="kpiAvailable">0</div>
-              </div>
-
+              <div class="kpi"><div class="kpi-label">Calls in Queue</div><div class="kpi-value" id="kpiCallsInQueue">0</div></div>
+              <div class="kpi"><div class="kpi-label">Active Calls</div><div class="kpi-value" id="kpiActiveCalls">0</div></div>
+              <div class="kpi"><div class="kpi-label">Longest Waiting</div><div class="kpi-value" id="kpiLongestWaiting">0s</div></div>
+              <div class="kpi"><div class="kpi-label">Avg Wait</div><div class="kpi-value" id="kpiAvgWait">0s</div></div>
+              <div class="kpi"><div class="kpi-label">Avg Handle</div><div class="kpi-value" id="kpiAvgHandle">0s</div></div>
+              <div class="kpi"><div class="kpi-label">Logged-in Agents</div><div class="kpi-value" id="kpiLoggedIn">0</div></div>
+              <div class="kpi"><div class="kpi-label">Available Agents</div><div class="kpi-value" id="kpiAvailable">0</div></div>
             </div>
           </div>
 
           <div class="agents-section">
             <div class="agents-title">Agents</div>
-
             <div class="table" id="agentList">
               <div class="table-row table-header">
-                <div>Name</div>
-                <div>Status</div>
-                <div>Team</div>
-                <div>Active Since</div>
+                <div>Name</div><div>Status</div><div>Team</div><div>Active Since</div>
               </div>
             </div>
+            <div id="wallboardStatus">Loading dashboard...</div>
           </div>
 
           <div class="calls-wrapper">
-
             <div class="calls-card">
               <div class="calls-title">Waiting Calls</div>
-
               <div class="calls-table" id="waitingCallList">
                 <div class="call-row call-header">
-                  <div>Status</div>
-                  <div>Queue</div>
-                  <div>Caller</div>
-                  <div>Entry Point</div>
-                  <div>Waiting</div>
-                  <div>Task</div>
+                  <div>Status</div><div>Queue</div><div>Caller</div><div>Entry Point</div><div>Waiting</div><div>Task</div>
                 </div>
               </div>
             </div>
 
             <div class="calls-card">
               <div class="calls-title">Active Calls</div>
-
               <div class="calls-table" id="activeCallList">
                 <div class="call-row active call-header">
-                  <div>Status</div>
-                  <div>Queue</div>
-                  <div>Caller</div>
-                  <div>Agent</div>
-                  <div>Handle</div>
-                  <div>Task</div>
+                  <div>Status</div><div>Queue</div><div>Caller</div><div>Agent</div><div>Handle</div><div>Task</div>
                 </div>
               </div>
             </div>
-
           </div>
-
         </div>
       </div>
     `;
   }
+
+  applyTheme() {
+    this.classList.toggle("theme-dark", this.themeMode === "dark");
+    const btn = this.shadowRoot.getElementById("themeToggleBtn");
+    if (btn) btn.textContent = this.themeMode === "dark" ? "Theme: Dark" : "Theme: Light";
+  }
+
+  toggleTheme() {
+    this.themeMode = this.themeMode === "dark" ? "light" : "dark";
+    localStorage.setItem("supervisorWidgetTheme", this.themeMode);
+    this.applyTheme();
+  }
+
+  populateStaticOptions() {
+    this.setSelectOptions(this.$priorityQueue(), Array.from({ length: 10 }, (_, i) => String(i + 1)));
+    this.setSelectOptions(this.$globalLanguage(), ["de-DE", "en-US"]);
+    this.updateVoiceOptions();
+  }
+
+  setSelectOptions(el, values) {
+    el.innerHTML = "";
+    values.forEach(value => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = value;
+      el.appendChild(option);
+    });
+  }
+
+  bindEvents() {
+    this.$themeToggleBtn().addEventListener("click", () => this.toggleTheme());
+
+    this.$toggle().addEventListener("change", () => {
+      this.hasUnsavedChanges = true;
+      this.updateLabel();
+      this.setStatus("Unsaved changes");
+    });
+
+    [
+      this.$priorityQueue(),
+      this.$emergencyPrompt(),
+      this.$holidayPrompt(),
+      this.$globalVoiceName(),
+      this.$mohSalesQueue()
+    ].forEach(el => el.addEventListener("input", () => this.markDirty()));
+
+    this.$globalLanguage().addEventListener("change", () => {
+      this.updateVoiceOptions();
+      this.markDirty();
+    });
+
+    this.$saveBtn().addEventListener("click", async () => await this.saveState());
+  }
+
+  markDirty() {
+    this.hasUnsavedChanges = true;
+    this.setStatus("Unsaved changes");
+  }
+
+  async init() {
+    try {
+      await this.bootstrapSession();
+      await this.loadEntryPoint(true);
+      await this.loadWallboard();
+      this.startPolling();
+      this.startWallboardPolling();
+      this.setStatus("Ready");
+    } catch (err) {
+      this.setStatus(`Load failed: ${err.message}`);
+    }
+  }
+
+  $userInfo() { return this.shadowRoot.getElementById("userInfo"); }
+  $roleBadge() { return this.shadowRoot.getElementById("roleBadge"); }
+  $themeToggleBtn() { return this.shadowRoot.getElementById("themeToggleBtn"); }
+  $toggle() { return this.shadowRoot.getElementById("emergencyToggle"); }
+  $priorityQueue() { return this.shadowRoot.getElementById("priorityQueue"); }
+  $emergencyPrompt() { return this.shadowRoot.getElementById("emergencyPrompt"); }
+  $holidayPrompt() { return this.shadowRoot.getElementById("holidayPrompt"); }
+  $globalLanguage() { return this.shadowRoot.getElementById("globalLanguage"); }
+  $globalVoiceName() { return this.shadowRoot.getElementById("globalVoiceName"); }
+  $mohSalesQueue() { return this.shadowRoot.getElementById("mohSalesQueue"); }
+  $saveBtn() { return this.shadowRoot.getElementById("saveBtn"); }
+  $stateLabel() { return this.shadowRoot.getElementById("stateLabel"); }
+  $status() { return this.shadowRoot.getElementById("status"); }
+
+  setStatus(msg) {
+    this.$status().textContent = msg || "";
+  }
+
+  setWallboardStatus(msg) {
+    const el = this.shadowRoot.getElementById("wallboardStatus");
+    if (el) el.textContent = msg || "";
+  }
+
+  getVoiceOptions(lang) {
+    return lang === "en-US" ? ["en-US-Daniel", "en-US-Maria"] : ["de-DE-Jonas", "de-DE-Emma"];
+  }
+
+  updateVoiceOptions(selected = "") {
+    const lang = this.$globalLanguage().value || "de-DE";
+    const options = this.getVoiceOptions(lang);
+    const select = this.$globalVoiceName();
+    const current = selected || select.value;
+    this.setSelectOptions(select, options);
+    select.value = options.includes(current) ? current : options[0];
+  }
+
+  getOverrideValue(overrides, name, fallback = "") {
+    return overrides.find(o => o.name === name)?.value ?? fallback;
+  }
+
+  async resolveDesktopIdentity() {
+    return {
+      email: this.email || "",
+      userId: this.userId || "",
+      teamId: this.teamId || "",
+      displayName: this.displayName || "Unknown User"
+    };
+  }
+
+  async readJsonResponse(res) {
+    const text = await res.text();
+    if (!text) return {};
+    try {
+      return JSON.parse(text);
+    } catch {
+      return { error: text };
+    }
+  }
+
+  async bootstrapSession() {
+    if (this.isBootstrapping) return;
+    this.isBootstrapping = true;
+
+    try {
+      const identity = await this.resolveDesktopIdentity();
+
+      const res = await fetch(`${this.API_URL}/api/session/bootstrap`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(identity)
+      });
+
+      const data = await this.readJsonResponse(res);
+
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      if (!data.sessionToken) throw new Error("Bootstrap response did not include a session token");
+
+      this.sessionToken = data.sessionToken;
+      this.currentRole = data.role || "viewer";
+
+      this.$userInfo().textContent = data.user?.displayName || "Unknown User";
+      this.$roleBadge().textContent = this.currentRole === "supervisor" ? "Supervisor" : "Viewer";
+
+      this.applyRoleState();
+    } finally {
+      this.isBootstrapping = false;
+    }
+  }
+
+  applyRoleState() {
+    const writable = ["supervisor", "admin"].includes(this.currentRole);
+    [
+      this.$toggle(),
+      this.$priorityQueue(),
+      this.$emergencyPrompt(),
+      this.$holidayPrompt(),
+      this.$globalLanguage(),
+      this.$globalVoiceName(),
+      this.$mohSalesQueue(),
+      this.$saveBtn()
+    ].forEach(el => el.disabled = !writable);
+  }
+
+  async authorizedFetch(path, options = {}, retryOn401 = true) {
+    if (!this.sessionToken) await this.bootstrapSession();
+
+    const makeRequest = () => fetch(`${this.API_URL}${path}`, {
+      ...options,
+      headers: {
+        ...(options.headers || {}),
+        Authorization: `Bearer ${this.sessionToken}`
+      }
+    });
+
+    let res = await makeRequest();
+
+    if (res.status === 401 && retryOn401) {
+      await this.bootstrapSession();
+      res = await makeRequest();
+    }
+
+    return res;
+  }
+
+  async loadEntryPoint(force = false) {
+    if (!force && (this.isUpdating || this.hasUnsavedChanges)) return;
+
+    const res = await this.authorizedFetch(`/api/entrypoint/${this.ENTRY_POINT_ID}`);
+    const data = await this.readJsonResponse(res);
+
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+    const overrides = Array.isArray(data.flowOverrideSettings) ? data.flowOverrideSettings : [];
+
+    this.$priorityQueue().value = this.getOverrideValue(overrides, "Priority_Queue", "2");
+    this.$toggle().checked = this.getOverrideValue(overrides, "EmergencyCase", "false") === "true";
+    this.$emergencyPrompt().value = this.getOverrideValue(overrides, "EmergencyPrompt", "");
+    this.$holidayPrompt().value = this.getOverrideValue(overrides, "HolidayPrompt", "");
+
+    const lang = this.getOverrideValue(overrides, "Global_Language", "de-DE");
+    const voice = this.getOverrideValue(overrides, "Global_VoiceName", "");
+
+    this.$globalLanguage().value = ["de-DE", "en-US"].includes(lang) ? lang : "de-DE";
+    this.updateVoiceOptions(voice);
+    this.$mohSalesQueue().value = this.getOverrideValue(overrides, "Moh_Sales_Queue", "");
+
+    this.updateLabel();
+    this.hasUnsavedChanges = false;
+  }
+
+  updateLabel() {
+    this.$stateLabel().textContent = this.$toggle().checked ? "ON" : "OFF";
+  }
+
+  formatDuration(seconds) {
+    const value = Number(seconds || 0);
+    if (value < 60) return `${value}s`;
+    const min = Math.floor(value / 60);
+    const sec = value % 60;
+    if (min < 60) return `${min}m ${sec}s`;
+    return `${Math.floor(min / 60)}h ${min % 60}m`;
+  }
+
+  shortId(id) {
+    return id ? String(id).slice(0, 8) : "-";
+  }
+
+  getAgentDuration(agent) {
+    const base = Number(agent.lastActivityTime || agent.startTime || 0);
+    return base > 0 ? Math.max(0, Math.floor((Date.now() - base) / 1000)) : 0;
+  }
+
+  renderWaitingCalls(calls) {
+    const list = this.shadowRoot.getElementById("waitingCallList");
+    list.innerHTML = `
+      <div class="call-row call-header">
+        <div>Status</div><div>Queue</div><div>Caller</div><div>Entry Point</div><div>Waiting</div><div>Task</div>
+      </div>
+    `;
+
+    if (!calls.length) {
+      const row = document.createElement("div");
+      row.className = "call-row";
+      row.innerHTML = `<div>No waiting calls</div><div></div><div></div><div></div><div></div><div></div>`;
+      list.appendChild(row);
+      return;
+    }
+
+    calls.forEach(call => {
+      const row = document.createElement("div");
+      row.className = "call-row";
+      row.innerHTML = `
+        <div>${call.status || "-"}</div>
+        <div>${call.queue || call.firstQueue || "-"}</div>
+        <div>${call.caller || "-"}</div>
+        <div>${call.entryPoint || "-"}</div>
+        <div>${this.formatDuration(call.waitingSeconds)}</div>
+        <div>${this.shortId(call.id)}</div>
+      `;
+      list.appendChild(row);
+    });
+  }
+
+  renderActiveCalls(calls) {
+    const list = this.shadowRoot.getElementById("activeCallList");
+    list.innerHTML = `
+      <div class="call-row active call-header">
+        <div>Status</div><div>Queue</div><div>Caller</div><div>Agent</div><div>Handle</div><div>Task</div>
+      </div>
+    `;
+
+    if (!calls.length) {
+      const row = document.createElement("div");
+      row.className = "call-row active";
+      row.innerHTML = `<div>No active calls</div><div></div><div></div><div></div><div></div><div></div>`;
+      list.appendChild(row);
+      return;
+    }
+
+    calls.forEach(call => {
+      const row = document.createElement("div");
+      row.className = "call-row active";
+      row.innerHTML = `
+        <div>${call.status || "-"}</div>
+        <div>${call.queue || call.firstQueue || "-"}</div>
+        <div>${call.caller || "-"}</div>
+        <div>${call.agent || "-"}</div>
+        <div>${this.formatDuration(Math.round(Number(call.connectedDuration || 0) / 1000))}</div>
+        <div>${this.shortId(call.id)}</div>
+      `;
+      list.appendChild(row);
+    });
+  }
+
+  async loadWallboard() {
+    try {
+      const res = await this.authorizedFetch(`/api/wallboard`);
+      const data = await this.readJsonResponse(res);
+
+      if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
+
+      this.shadowRoot.getElementById("kpiCallsInQueue").textContent = data.queue?.callsInQueue ?? 0;
+      this.shadowRoot.getElementById("kpiActiveCalls").textContent = data.queue?.activeCalls ?? 0;
+      this.shadowRoot.getElementById("kpiLongestWaiting").textContent = this.formatDuration(data.queue?.longestWaitingSeconds);
+      this.shadowRoot.getElementById("kpiAvgWait").textContent = this.formatDuration(data.queue?.avgWaitSeconds);
+      this.shadowRoot.getElementById("kpiAvgHandle").textContent = this.formatDuration(data.queue?.avgHandleSeconds);
+      this.shadowRoot.getElementById("kpiLoggedIn").textContent = data.agents?.loggedIn ?? 0;
+      this.shadowRoot.getElementById("kpiAvailable").textContent = data.agents?.available ?? 0;
+
+      const agentList = this.shadowRoot.getElementById("agentList");
+      agentList.innerHTML = `
+        <div class="table-row table-header">
+          <div>Name</div><div>Status</div><div>Team</div><div>Active Since</div>
+        </div>
+      `;
+
+      const agents = Array.isArray(data.agentList) ? data.agentList : [];
+
+      if (!agents.length) {
+        const row = document.createElement("div");
+        row.className = "table-row";
+        row.innerHTML = `<div>No active agents</div><div></div><div></div><div></div>`;
+        agentList.appendChild(row);
+      } else {
+        agents.forEach(agent => {
+          const row = document.createElement("div");
+          row.className = "table-row";
+          row.innerHTML = `
+            <div>${agent.name || agent.login || "-"}</div>
+            <div>${agent.state || "-"}</div>
+            <div>${agent.team || "-"}</div>
+            <div>${this.formatDuration(this.getAgentDuration(agent))}</div>
+          `;
+          agentList.appendChild(row);
+        });
+      }
+
+      this.renderWaitingCalls(Array.isArray(data.waitingTaskList) ? data.waitingTaskList : []);
+
+      const activeCalls = Array.isArray(data.taskList)
+        ? data.taskList.filter(t => String(t.status || "").toLowerCase() === "connected")
+        : [];
+
+      this.renderActiveCalls(activeCalls);
+
+      this.setWallboardStatus(`Updated ${new Date().toLocaleTimeString()}`);
+    } catch (err) {
+      this.setWallboardStatus(`Dashboard failed: ${err.message}`);
+    }
+  }
+
+  async saveState() {
+    if (!["supervisor", "admin"].includes(this.currentRole)) {
+      this.setStatus("No write permission");
+      return;
+    }
+
+    const flowOverrideSettings = [
+      { name: "Priority_Queue", type: "INTEGER", value: String(Number(this.$priorityQueue().value)) },
+      { name: "EmergencyCase", type: "BOOLEAN", value: this.$toggle().checked ? "true" : "false" },
+      { name: "HolidayPrompt", type: "STRING", value: this.$holidayPrompt().value },
+      { name: "Global_VoiceName", type: "STRING", value: this.$globalVoiceName().value },
+      { name: "EmergencyPrompt", type: "STRING", value: this.$emergencyPrompt().value },
+      { name: "Global_Language", type: "STRING", value: this.$globalLanguage().value },
+      { name: "Moh_Sales_Queue", type: "STRING", value: this.$mohSalesQueue().value }
+    ];
+
+    try {
+      this.isUpdating = true;
+      this.$saveBtn().disabled = true;
+      this.setStatus("Saving...");
+
+      const res = await this.authorizedFetch(`/api/entrypoint/${this.ENTRY_POINT_ID}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ flowOverrideSettings })
+      });
+
+      const data = await this.readJsonResponse(res);
+
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+      this.hasUnsavedChanges = false;
+      await this.loadEntryPoint(true);
+      this.setStatus("Saved successfully ✔");
+    } catch (err) {
+      this.setStatus(`Update failed ❌ ${err.message || ""}`.trim());
+    } finally {
+      this.isUpdating = false;
+      this.applyRoleState();
+    }
+  }
+
+  startPolling() {
+    if (this.pollHandle) clearInterval(this.pollHandle);
+
+    this.pollHandle = setInterval(async () => {
+      try {
+        await this.loadEntryPoint(false);
+      } catch {
+        this.setStatus("Refresh failed");
+      }
+    }, this.POLL_INTERVAL_MS);
+  }
+
+  startWallboardPolling() {
+    if (this.wallboardPollHandle) clearInterval(this.wallboardPollHandle);
+
+    this.wallboardPollHandle = setInterval(async () => {
+      await this.loadWallboard();
+    }, this.WALLBOARD_POLL_INTERVAL_MS);
+  }
 }
-customElements.define(
-  "supervisor-access-widget-v2",
-  SupervisorAccessWidget
-);
+
+customElements.define("supervisor-access-widget-v2", SupervisorAccessWidget);

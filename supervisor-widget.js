@@ -34,6 +34,27 @@ class SupervisorAccessWidget extends HTMLElement {
     if (this.wallboardPollHandle) clearInterval(this.wallboardPollHandle);
   }
 
+  readSelectedQueueFilters() {
+    try {
+      const raw = localStorage.getItem("supervisorWidgetSelectedQueues");
+      const parsed = JSON.parse(raw || "[]");
+      return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  saveSelectedQueueFilters() {
+    try {
+      localStorage.setItem(
+        "supervisorWidgetSelectedQueues",
+        JSON.stringify(Array.isArray(this.selectedQueueFilters) ? this.selectedQueueFilters : [])
+      );
+    } catch {
+      // Ignore storage issues inside embedded desktop.
+    }
+  }
+
   render() {
     this.shadowRoot.innerHTML = `
       <style>

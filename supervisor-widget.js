@@ -1636,6 +1636,14 @@ class SupervisorAccessWidget extends HTMLElement {
       }
     });
 
+    source.addEventListener("wxcc-event", () => {
+      this.setWallboardStatus("WXCC event received. Refreshing...");
+    });
+
+    source.addEventListener("event-refresh", () => {
+      this.setWallboardStatus(`Event refresh completed ${new Date().toLocaleTimeString()}`);
+    });
+
     source.addEventListener("error", () => {
       if (this.wallboardEventSource) {
         this.wallboardEventSource.close();

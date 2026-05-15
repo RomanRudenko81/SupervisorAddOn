@@ -376,6 +376,52 @@ class SupervisorAccessWidget extends HTMLElement {
           color: var(--muted);
         }
 
+        
+        .kpi.kpi-green {
+          border: 1px solid rgba(34,197,94,0.65);
+          background: rgba(34,197,94,0.14);
+          box-shadow: 0 0 10px rgba(34,197,94,0.18);
+        }
+
+        .kpi.kpi-orange {
+          border: 1px solid rgba(251,146,60,0.75);
+          background: rgba(251,146,60,0.14);
+          box-shadow: 0 0 10px rgba(251,146,60,0.18);
+        }
+
+        .kpi.kpi-red {
+          border: 1px solid rgba(239,68,68,0.75);
+          background: rgba(239,68,68,0.14);
+          box-shadow: 0 0 12px rgba(239,68,68,0.20);
+        }
+
+        .kpi.kpi-critical {
+          animation: criticalPulse 1.5s infinite;
+        }
+
+        @keyframes criticalPulse {
+          0% { box-shadow: 0 0 8px rgba(239,68,68,0.18); }
+          50% { box-shadow: 0 0 20px rgba(239,68,68,0.45); }
+          100% { box-shadow: 0 0 8px rgba(239,68,68,0.18); }
+        }
+
+        .table-row.agent-available {
+          border: 1px solid rgba(34,197,94,0.75);
+          border-radius: 14px;
+          background: rgba(34,197,94,0.08);
+          margin-top: 10px;
+          padding: 14px;
+        }
+
+        .table-row.agent-unavailable {
+          border: 1px solid rgba(239,68,68,0.75);
+          border-radius: 14px;
+          background: rgba(239,68,68,0.08);
+          margin-top: 10px;
+          padding: 14px;
+        }
+
+
         @media (max-width: 1400px) {
           .kpis {
             grid-template-columns: repeat(4, minmax(0,1fr));
@@ -496,13 +542,13 @@ class SupervisorAccessWidget extends HTMLElement {
             <div class="dashboard-title">Dashboard</div>
 
             <div class="kpis">
-              <div class="kpi"><div class="kpi-label">Calls in Queue</div><div class="kpi-value" id="kpiCallsInQueue">0</div></div>
+              <div class="kpi" id="kpiCardCallsInQueue"><div class="kpi-label">Calls in Queue</div><div class="kpi-value" id="kpiCallsInQueue">0</div></div>
               <div class="kpi"><div class="kpi-label">Active Calls</div><div class="kpi-value" id="kpiActiveCalls">0</div></div>
               <div class="kpi"><div class="kpi-label">Longest Waiting</div><div class="kpi-value" id="kpiLongestWaiting">0s</div></div>
               <div class="kpi"><div class="kpi-label">Avg Wait</div><div class="kpi-value" id="kpiAvgWait">0s</div></div>
               <div class="kpi"><div class="kpi-label">Avg Handle</div><div class="kpi-value" id="kpiAvgHandle">0s</div></div>
-              <div class="kpi"><div class="kpi-label">Logged-in Agents</div><div class="kpi-value" id="kpiLoggedIn">0</div></div>
-              <div class="kpi"><div class="kpi-label">Available Agents</div><div class="kpi-value" id="kpiAvailable">0</div></div>
+              <div class="kpi" id="kpiCardLoggedIn"><div class="kpi-label">Logged-in Agents</div><div class="kpi-value" id="kpiLoggedIn">0</div></div>
+              <div class="kpi" id="kpiCardAvailable"><div class="kpi-label">Available Agents</div><div class="kpi-value" id="kpiAvailable">0</div></div>
             </div>
           </div>
 
@@ -849,6 +895,34 @@ class SupervisorAccessWidget extends HTMLElement {
     });
   }
 
+
+  updateKpiState(elementId, value, type) {
+    const el = this.shadowRoot.getElementById(elementId);
+    if (!el) return;
+
+    el.classList.remove("kpi-green", "kpi-orange", "kpi-red", "kpi-critical");
+
+    const num = Number(value || 0);
+
+    if (type === "queue") {
+      if (num === 1) {
+        el.classList.add("kpi-orange");
+      } else if (num > 1) {
+        el.classList.add("kpi-red", "kpi-critical");
+      }
+    }
+
+    if (type === "agents") {
+      if (num === 1) {
+        el.classList.add("kpi-orange");
+      } else if (num > 1) {
+        el.classList.add("kpi-green");
+      } else {
+        el.classList.add("kpi-red");
+      }
+    }
+  }
+
   async loadWallboard() {
     try {
       const res = await this.authorizedFetch(`/api/wallboard`);
@@ -863,6 +937,11 @@ class SupervisorAccessWidget extends HTMLElement {
       this.shadowRoot.getElementById("kpiAvgHandle").textContent = this.formatDuration(data.queue?.avgHandleSeconds);
       this.shadowRoot.getElementById("kpiLoggedIn").textContent = data.agents?.loggedIn ?? 0;
       this.shadowRoot.getElementById("kpiAvailable").textContent = data.agents?.available ?? 0;
+
+      this.updateKpiState("kpiCardCallsInQueue", data.queue?.callsInQueue ?? 0, "queue");
+      this.updateKpiState("kpiCardLoggedIn", data.agents?.loggedIn ?? 0, "agents");
+      this.updateKpiState("kpiCardAvailable", data.agents?.available ?? 0, "agents");
+
 
       const agentList = this.shadowRoot.getElementById("agentList");
       agentList.innerHTML = `
@@ -881,7 +960,10 @@ class SupervisorAccessWidget extends HTMLElement {
       } else {
         agents.forEach(agent => {
           const row = document.createElement("div");
-          row.className = "table-row";
+          row.className =
+            String(agent.state || "").toLowerCase() === "available"
+              ? "table-row agent-available"
+              : "table-row agent-unavailable";
           row.innerHTML = `
             <div>${agent.name || agent.login || "-"}</div>
             <div>${agent.state || "-"}</div>

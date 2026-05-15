@@ -1035,7 +1035,6 @@ class SupervisorAccessWidget extends HTMLElement {
     try {
       await this.bootstrapSession();
       await this.loadEntryPoint(true);
-      this.startPolling();
       this.startWallboardStream();
       this.setStatus("Ready");
     } catch (err) {
@@ -1701,15 +1700,8 @@ class SupervisorAccessWidget extends HTMLElement {
   }
 
   startPolling() {
-    if (this.pollHandle) clearInterval(this.pollHandle);
-
-    this.pollHandle = setInterval(async () => {
-      try {
-        await this.loadEntryPoint(false);
-      } catch {
-        this.setStatus("Refresh failed");
-      }
-    }, this.POLL_INTERVAL_MS);
+    // Disabled: entry point auto-polling is intentionally off.
+    // The entry point is loaded once during init and again after Save.
   }
 
   startWallboardPolling() {

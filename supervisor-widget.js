@@ -43,16 +43,33 @@ class SupervisorAccessWidget extends HTMLElement {
           box-sizing: border-box;
           font-family: Arial, Helvetica, sans-serif !important;
 
+          --card: rgba(255,255,255,0.90);
+          --cardBorder: rgba(0,0,0,0.10);
+          --panelBorder: rgba(0,0,0,0.30);
+          --input: rgba(255,255,255,0.95);
+          --inputBorder: rgba(0,0,0,0.18);
+          --text: #111827;
+          --muted: rgba(17,24,39,0.72);
+          --kpi: rgba(0,0,0,0.08);
+          --switch: #9ca3af;
+          --button: #0a84ff;
+          --tableBorder: rgba(0,0,0,0.10);
+
+          color: var(--text);
+        }
+
+        :host(.theme-dark) {
           --card: rgba(15, 23, 42, 0.82);
           --cardBorder: rgba(255,255,255,0.08);
           --panelBorder: rgba(255,255,255,0.28);
           --input: rgba(255,255,255,0.10);
+          --inputBorder: rgba(255,255,255,0.14);
           --text: #ffffff;
           --muted: rgba(255,255,255,0.75);
           --kpi: rgba(255,255,255,0.14);
           --switch: #4b5563;
-
-          color: var(--text);
+          --button: #0a84ff;
+          --tableBorder: rgba(255,255,255,0.08);
         }
 
         :host *,
@@ -81,6 +98,7 @@ class SupervisorAccessWidget extends HTMLElement {
           padding: 28px;
           backdrop-filter: blur(10px);
           -webkit-backdrop-filter: blur(10px);
+          color: var(--text);
         }
 
         .header {
@@ -94,7 +112,7 @@ class SupervisorAccessWidget extends HTMLElement {
           font-size: 28px;
           font-weight: 700;
           margin: 0;
-          color: white;
+          color: var(--text);
           line-height: 1.2;
         }
 
@@ -114,12 +132,12 @@ class SupervisorAccessWidget extends HTMLElement {
 
         .badge,
         .theme-btn {
-          background: rgba(255,255,255,0.12);
+          background: var(--kpi);
           border-radius: 999px;
           padding: 6px 12px;
           font-size: 12px;
-          color: white;
-          border: 1px solid rgba(255,255,255,0.08);
+          color: var(--text);
+          border: 1px solid var(--cardBorder);
         }
 
         .theme-btn {
@@ -132,6 +150,7 @@ class SupervisorAccessWidget extends HTMLElement {
           gap: 14px;
           margin-bottom: 28px;
           font-size: 14px;
+          color: var(--text);
         }
 
         .switch {
@@ -190,7 +209,7 @@ class SupervisorAccessWidget extends HTMLElement {
           font-size: 22px;
           font-weight: 700;
           margin: 0 0 18px 0;
-          color: white;
+          color: var(--text);
           line-height: 1.25;
         }
 
@@ -210,15 +229,19 @@ class SupervisorAccessWidget extends HTMLElement {
           width: 100%;
           padding: 14px;
           border-radius: 12px;
-          border: 1px solid rgba(255,255,255,0.12);
+          border: 1px solid var(--inputBorder);
           background: var(--input);
-          color: white !important;
+          color: var(--text) !important;
           outline: none;
           font-size: 14px;
         }
 
+        input[type="text"]::placeholder {
+          color: var(--muted);
+        }
+
         button {
-          background: #0a84ff;
+          background: var(--button);
           color: white !important;
           border: none;
           border-radius: 10px;
@@ -260,14 +283,14 @@ class SupervisorAccessWidget extends HTMLElement {
 
         .kpi-label {
           font-size: 13px;
-          color: rgba(255,255,255,0.84);
+          color: var(--muted);
         }
 
         .kpi-value {
           font-size: 24px;
           font-weight: 700;
           margin-top: 8px;
-          color: white;
+          color: var(--text);
         }
 
         .agents-section {
@@ -283,15 +306,15 @@ class SupervisorAccessWidget extends HTMLElement {
           grid-template-columns: 1.2fr 1fr 1fr 1fr;
           gap: 16px;
           padding: 12px 0;
-          border-bottom: 1px solid rgba(255,255,255,0.08);
+          border-bottom: 1px solid var(--tableBorder);
           align-items: center;
-          color: white;
+          color: var(--text);
           font-size: 14px;
         }
 
         .table-header,
         .call-header {
-          color: rgba(255,255,255,0.82);
+          color: var(--muted);
           font-weight: 700;
         }
 
@@ -311,6 +334,10 @@ class SupervisorAccessWidget extends HTMLElement {
           background: rgba(255,255,255,0.02);
         }
 
+        :host(.theme-light) .calls-card {
+          background: rgba(0,0,0,0.02);
+        }
+
         .calls-table {
           min-width: 760px;
         }
@@ -326,9 +353,9 @@ class SupervisorAccessWidget extends HTMLElement {
             minmax(90px,0.7fr);
           gap: 14px;
           padding: 12px 0;
-          border-bottom: 1px solid rgba(255,255,255,0.08);
+          border-bottom: 1px solid var(--tableBorder);
           align-items: center;
-          color: white;
+          color: var(--text);
           white-space: nowrap;
           font-size: 14px;
         }
@@ -514,9 +541,13 @@ class SupervisorAccessWidget extends HTMLElement {
   }
 
   applyTheme() {
+    this.classList.toggle("theme-light", this.themeMode === "light");
     this.classList.toggle("theme-dark", this.themeMode === "dark");
+
     const btn = this.shadowRoot.getElementById("themeToggleBtn");
-    if (btn) btn.textContent = this.themeMode === "dark" ? "Theme: Dark" : "Theme: Light";
+    if (btn) {
+      btn.textContent = this.themeMode === "dark" ? "Theme: Dark" : "Theme: Light";
+    }
   }
 
   toggleTheme() {

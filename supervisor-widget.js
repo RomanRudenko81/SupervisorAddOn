@@ -573,7 +573,7 @@ class SupervisorAccessWidget extends HTMLElement {
           </div>
 
           <div class="config-toggle" id="configToggle">
-            <div class="config-toggle-title">Configuration Panel</div>
+            <div class="config-toggle-title">Call flow settings</div>
             <div class="config-toggle-icon">▼</div>
           </div>
 

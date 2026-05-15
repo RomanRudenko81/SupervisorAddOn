@@ -15,6 +15,9 @@ class SupervisorAccessWidget extends HTMLElement {
     this.isBootstrapping = false;
     this.pollHandle = null;
     this.wallboardPollHandle = null;
+    this.wallboardEventSource = null;
+    this.wallboardReconnectHandle = null;
+    this.lastWallboardData = null;
     this.hasUnsavedChanges = false;
     this.themeMode = localStorage.getItem("supervisorWidgetTheme") || "dark";
     this.allowedQueueNames = [];
@@ -32,6 +35,8 @@ class SupervisorAccessWidget extends HTMLElement {
   disconnectedCallback() {
     if (this.pollHandle) clearInterval(this.pollHandle);
     if (this.wallboardPollHandle) clearInterval(this.wallboardPollHandle);
+    if (this.wallboardReconnectHandle) clearTimeout(this.wallboardReconnectHandle);
+    if (this.wallboardEventSource) this.wallboardEventSource.close();
   }
 
   readSelectedQueueFilters() {
@@ -1030,9 +1035,8 @@ class SupervisorAccessWidget extends HTMLElement {
     try {
       await this.bootstrapSession();
       await this.loadEntryPoint(true);
-      await this.loadWallboard();
       this.startPolling();
-      this.startWallboardPolling();
+      this.startWallboardStream();
       this.setStatus("Ready");
     } catch (err) {
       this.setStatus(`Load failed: ${err.message}`);
@@ -1341,7 +1345,12 @@ class SupervisorAccessWidget extends HTMLElement {
         this.selectedQueueFilters = checkedValues;
         this.saveSelectedQueueFilters();
         this.updateQueueFilterButtonLabel();
-        await this.loadWallboard();
+
+        if (this.lastWallboardData) {
+          this.processWallboardData(this.lastWallboardData);
+        } else {
+          await this.loadWallboard();
+        }
       });
 
       const text = document.createElement("span");
@@ -1497,6 +1506,90 @@ class SupervisorAccessWidget extends HTMLElement {
     });
   }
 
+  processWallboardData(data) {
+    this.lastWallboardData = data;
+
+    const detectedQueues = this.extractAllowedQueuesFromWallboardData(data);
+    this.allowedQueueNames = detectedQueues;
+
+    this.updateQueueFilterOptions();
+
+    const rawWaitingCalls = Array.isArray(data.waitingTaskList) ? data.waitingTaskList : [];
+
+    const rawActiveCalls = Array.isArray(data.taskList)
+      ? data.taskList.filter(t => String(t.status || "").toLowerCase() === "connected")
+      : [];
+
+    const visibleWaitingCalls = this.filterCallsByAllowedQueues(rawWaitingCalls);
+    const visibleActiveCalls = this.filterCallsByAllowedQueues(rawActiveCalls);
+    const visibleQueueKpis = this.calculateQueueKpisFromVisibleCalls(
+      visibleWaitingCalls,
+      visibleActiveCalls,
+      data.queue || {}
+    );
+
+    const callsInQueue = visibleQueueKpis.callsInQueue;
+    const loggedInAgents = data.agents?.loggedIn ?? 0;
+    const availableAgents = data.agents?.available ?? 0;
+
+    this.shadowRoot.getElementById("kpiCallsInQueue").textContent = callsInQueue;
+    this.shadowRoot.getElementById("kpiActiveCalls").textContent = visibleQueueKpis.activeCalls;
+    this.shadowRoot.getElementById("kpiLongestWaiting").textContent = this.formatDuration(visibleQueueKpis.longestWaitingSeconds);
+    this.shadowRoot.getElementById("kpiAvgWait").textContent = this.formatDuration(visibleQueueKpis.avgWaitSeconds);
+    this.shadowRoot.getElementById("kpiAvgHandle").textContent = this.formatDuration(visibleQueueKpis.avgHandleSeconds);
+    this.shadowRoot.getElementById("kpiLoggedIn").textContent = loggedInAgents;
+    this.shadowRoot.getElementById("kpiAvailable").textContent = availableAgents;
+
+    if (typeof this.updateKpiState === "function") {
+      this.updateKpiState("kpiCardCallsInQueue", callsInQueue, "queue");
+      this.updateKpiState("kpiCardLoggedIn", loggedInAgents, "agents");
+      this.updateKpiState("kpiCardAvailable", availableAgents, "agents");
+    } else if (typeof this.applyWallboardThresholds === "function") {
+      this.applyWallboardThresholds({ callsInQueue, loggedInAgents, availableAgents });
+    }
+
+    const agentList = this.shadowRoot.getElementById("agentList");
+    agentList.innerHTML = `
+      <div class="table-row table-header">
+        <div>Name</div><div>Status</div><div>Team</div><div>Active Since</div>
+      </div>
+    `;
+
+    const agents = Array.isArray(data.agentList) ? data.agentList : [];
+
+    if (!agents.length) {
+      const row = document.createElement("div");
+      row.className = "table-row";
+      row.innerHTML = `<div>No active agents</div><div></div><div></div><div></div>`;
+      agentList.appendChild(row);
+    } else {
+      agents.forEach(agent => {
+        const row = document.createElement("div");
+        row.className =
+          String(agent.state || "").toLowerCase() === "available"
+            ? "table-row agent-available"
+            : "table-row agent-unavailable";
+        row.innerHTML = `
+          <div>${agent.name || agent.login || "-"}</div>
+          <div>${agent.state || "-"}</div>
+          <div>${agent.team || "-"}</div>
+          <div>${this.formatDuration(this.getAgentDuration(agent))}</div>
+        `;
+        agentList.appendChild(row);
+      });
+    }
+
+    this.renderWaitingCalls(visibleWaitingCalls);
+    this.renderActiveCalls(visibleActiveCalls);
+
+    const visibleQueues = this.getVisibleQueueNames();
+    const queueFilterInfo = visibleQueues.length
+      ? ` • Queues: ${visibleQueues.join(", ")}`
+      : " • No queue assignment detected";
+
+    this.setWallboardStatus(`Live • Updated ${new Date().toLocaleTimeString()}${queueFilterInfo}`);
+  }
+
   async loadWallboard() {
     try {
       const res = await this.authorizedFetch(`/api/wallboard`);
@@ -1504,88 +1597,57 @@ class SupervisorAccessWidget extends HTMLElement {
 
       if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
 
-      const detectedQueues = this.extractAllowedQueuesFromWallboardData(data);
-      this.allowedQueueNames = detectedQueues;
-
-      this.updateQueueFilterOptions();
-
-      const rawWaitingCalls = Array.isArray(data.waitingTaskList) ? data.waitingTaskList : [];
-
-      const rawActiveCalls = Array.isArray(data.taskList)
-        ? data.taskList.filter(t => String(t.status || "").toLowerCase() === "connected")
-        : [];
-
-      const visibleWaitingCalls = this.filterCallsByAllowedQueues(rawWaitingCalls);
-      const visibleActiveCalls = this.filterCallsByAllowedQueues(rawActiveCalls);
-      const visibleQueueKpis = this.calculateQueueKpisFromVisibleCalls(
-        visibleWaitingCalls,
-        visibleActiveCalls,
-        data.queue || {}
-      );
-
-      const callsInQueue = visibleQueueKpis.callsInQueue;
-      const loggedInAgents = data.agents?.loggedIn ?? 0;
-      const availableAgents = data.agents?.available ?? 0;
-
-      this.shadowRoot.getElementById("kpiCallsInQueue").textContent = callsInQueue;
-      this.shadowRoot.getElementById("kpiActiveCalls").textContent = visibleQueueKpis.activeCalls;
-      this.shadowRoot.getElementById("kpiLongestWaiting").textContent = this.formatDuration(visibleQueueKpis.longestWaitingSeconds);
-      this.shadowRoot.getElementById("kpiAvgWait").textContent = this.formatDuration(visibleQueueKpis.avgWaitSeconds);
-      this.shadowRoot.getElementById("kpiAvgHandle").textContent = this.formatDuration(visibleQueueKpis.avgHandleSeconds);
-      this.shadowRoot.getElementById("kpiLoggedIn").textContent = loggedInAgents;
-      this.shadowRoot.getElementById("kpiAvailable").textContent = availableAgents;
-
-      if (typeof this.updateKpiState === "function") {
-        this.updateKpiState("kpiCardCallsInQueue", callsInQueue, "queue");
-        this.updateKpiState("kpiCardLoggedIn", loggedInAgents, "agents");
-        this.updateKpiState("kpiCardAvailable", availableAgents, "agents");
-      } else if (typeof this.applyWallboardThresholds === "function") {
-        this.applyWallboardThresholds({ callsInQueue, loggedInAgents, availableAgents });
-      }
-
-      const agentList = this.shadowRoot.getElementById("agentList");
-      agentList.innerHTML = `
-        <div class="table-row table-header">
-          <div>Name</div><div>Status</div><div>Team</div><div>Active Since</div>
-        </div>
-      `;
-
-      const agents = Array.isArray(data.agentList) ? data.agentList : [];
-
-      if (!agents.length) {
-        const row = document.createElement("div");
-        row.className = "table-row";
-        row.innerHTML = `<div>No active agents</div><div></div><div></div><div></div>`;
-        agentList.appendChild(row);
-      } else {
-        agents.forEach(agent => {
-          const row = document.createElement("div");
-          row.className =
-            String(agent.state || "").toLowerCase() === "available"
-              ? "table-row agent-available"
-              : "table-row agent-unavailable";
-          row.innerHTML = `
-            <div>${agent.name || agent.login || "-"}</div>
-            <div>${agent.state || "-"}</div>
-            <div>${agent.team || "-"}</div>
-            <div>${this.formatDuration(this.getAgentDuration(agent))}</div>
-          `;
-          agentList.appendChild(row);
-        });
-      }
-
-      this.renderWaitingCalls(visibleWaitingCalls);
-      this.renderActiveCalls(visibleActiveCalls);
-
-      const visibleQueues = this.getVisibleQueueNames();
-      const queueFilterInfo = visibleQueues.length
-        ? ` • Queues: ${visibleQueues.join(", ")}`
-        : " • No queue assignment detected";
-
-      this.setWallboardStatus(`Updated ${new Date().toLocaleTimeString()}${queueFilterInfo}`);
+      this.processWallboardData(data);
     } catch (err) {
       this.setWallboardStatus(`Dashboard failed: ${err.message}`);
     }
+  }
+
+  startWallboardStream() {
+    if (this.wallboardEventSource) {
+      this.wallboardEventSource.close();
+      this.wallboardEventSource = null;
+    }
+
+    if (this.wallboardReconnectHandle) {
+      clearTimeout(this.wallboardReconnectHandle);
+      this.wallboardReconnectHandle = null;
+    }
+
+    if (!this.sessionToken) {
+      this.setWallboardStatus("Live dashboard failed: missing session token");
+      return;
+    }
+
+    const url = `${this.API_URL}/api/wallboard/stream?token=${encodeURIComponent(this.sessionToken)}`;
+    const source = new EventSource(url);
+    this.wallboardEventSource = source;
+
+    source.addEventListener("ready", () => {
+      this.setWallboardStatus("Live dashboard connected");
+    });
+
+    source.addEventListener("wallboard", event => {
+      try {
+        const data = JSON.parse(event.data);
+        this.processWallboardData(data);
+      } catch (err) {
+        this.setWallboardStatus(`Live dashboard parse failed: ${err.message}`);
+      }
+    });
+
+    source.addEventListener("error", () => {
+      if (this.wallboardEventSource) {
+        this.wallboardEventSource.close();
+        this.wallboardEventSource = null;
+      }
+
+      this.setWallboardStatus("Live dashboard disconnected. Reconnecting...");
+
+      this.wallboardReconnectHandle = setTimeout(() => {
+        this.startWallboardStream();
+      }, 5000);
+    });
   }
 
   async saveState() {
@@ -1643,11 +1705,7 @@ class SupervisorAccessWidget extends HTMLElement {
   }
 
   startWallboardPolling() {
-    if (this.wallboardPollHandle) clearInterval(this.wallboardPollHandle);
-
-    this.wallboardPollHandle = setInterval(async () => {
-      await this.loadWallboard();
-    }, this.WALLBOARD_POLL_INTERVAL_MS);
+    // Disabled: wallboard updates are delivered through Server-Sent Events.
   }
 }
 

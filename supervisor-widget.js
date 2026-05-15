@@ -25,8 +25,13 @@ class SupervisorAccessWidget extends HTMLElement {
       - Matching is case-insensitive.
     */
     this.TEAM_QUEUE_MAP = {
+      // Team names
       service: ["service"],
-      sales: ["sales"]
+      sales: ["sales"],
+
+      // Known WXCC Team IDs
+      "42d5cfd2-1bf4-4f29-ac52-ae5676137849": ["service"],
+      "dc9e1fa5-394a-444c-a597-b5ddad6a8ca1": ["sales"]
     };
 
     this.currentUserTeam = "";
@@ -1271,6 +1276,33 @@ class SupervisorAccessWidget extends HTMLElement {
     return this.TEAM_QUEUE_MAP[normalizedTeam] || [];
   }
 
+  getCallQueueName(call) {
+    return (
+      call?.queue ||
+      call?.queueName ||
+      call?.firstQueue ||
+      call?.firstQueueName ||
+      call?.originalQueue ||
+      call?.lastQueue ||
+      call?.destinationQueue ||
+      call?.queueDisplayName ||
+      ""
+    );
+  }
+
+  queueMatchesAllowedQueue(queueName, allowedQueueName) {
+    const queue = this.normalizeText(queueName);
+    const allowed = this.normalizeText(allowedQueueName);
+
+    if (!queue || !allowed) return false;
+
+    return (
+      queue === allowed ||
+      queue.includes(allowed) ||
+      allowed.includes(queue)
+    );
+  }
+
   updateQueueFilterOptions() {
     const wrapper = this.shadowRoot.getElementById("queueFilterWrapper");
     const select = this.$queueFilterSelect();
@@ -1282,6 +1314,14 @@ class SupervisorAccessWidget extends HTMLElement {
     if (!Array.isArray(this.allowedQueueNames) || this.allowedQueueNames.length <= 1) {
       wrapper.classList.remove("visible");
       this.selectedQueueFilter = this.allowedQueueNames[0] || "";
+      select.innerHTML = "";
+      if (this.selectedQueueFilter) {
+        const option = document.createElement("option");
+        option.value = this.selectedQueueFilter;
+        option.textContent = this.selectedQueueFilter;
+        select.appendChild(option);
+        select.value = this.selectedQueueFilter;
+      }
       return;
     }
 
@@ -1317,20 +1357,20 @@ class SupervisorAccessWidget extends HTMLElement {
   isQueueVisibleForCurrentUser(queueName) {
     const allowedQueues = Array.isArray(this.allowedQueueNames) ? this.allowedQueueNames : [];
 
-    // If the backend/session does not provide a team, keep existing behavior instead of hiding everything.
-    if (!allowedQueues.length) return true;
+    // Important: do NOT show all calls when no team/queue mapping is available.
+    // Otherwise a Service user could still see Sales calls if the backend returns global wallboard data.
+    if (!allowedQueues.length) return false;
 
     const visibleQueues = this.getVisibleQueueNames();
-    const normalizedQueue = this.normalizeText(queueName);
 
-    return visibleQueues.some(q => this.normalizeText(q) === normalizedQueue);
+    return visibleQueues.some(q => this.queueMatchesAllowedQueue(queueName, q));
   }
 
   filterCallsByAllowedQueues(calls) {
     const list = Array.isArray(calls) ? calls : [];
 
     return list.filter(call => {
-      const queueName = call.queue || call.firstQueue || "";
+      const queueName = this.getCallQueueName(call);
       return this.isQueueVisibleForCurrentUser(queueName);
     });
   }
@@ -1382,7 +1422,7 @@ class SupervisorAccessWidget extends HTMLElement {
       row.className = "call-row";
       row.innerHTML = `
         <div>${call.status || "-"}</div>
-        <div>${call.queue || call.firstQueue || "-"}</div>
+        <div>${this.getCallQueueName(call) || "-"}</div>
         <div>${call.caller || "-"}</div>
         <div>${call.entryPoint || "-"}</div>
         <div>${this.formatDuration(call.waitingSeconds)}</div>
@@ -1413,7 +1453,7 @@ class SupervisorAccessWidget extends HTMLElement {
       row.className = "call-row active";
       row.innerHTML = `
         <div>${call.status || "-"}</div>
-        <div>${call.queue || call.firstQueue || "-"}</div>
+        <div>${this.getCallQueueName(call) || "-"}</div>
         <div>${call.caller || "-"}</div>
         <div>${call.agent || "-"}</div>
         <div>${this.formatDuration(Math.round(Number(call.connectedDuration || 0) / 1000))}</div>
@@ -1494,7 +1534,7 @@ class SupervisorAccessWidget extends HTMLElement {
       const visibleQueues = this.getVisibleQueueNames();
       const queueFilterInfo = visibleQueues.length
         ? ` • Queue: ${visibleQueues.join(", ")}`
-        : "";
+        : ` • No queue mapping for team: ${this.currentUserTeam || "unknown"}`;
 
       this.setWallboardStatus(`Updated ${new Date().toLocaleTimeString()}${queueFilterInfo}`);
     } catch (err) {

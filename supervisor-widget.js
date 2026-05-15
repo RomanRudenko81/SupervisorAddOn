@@ -18,18 +18,6 @@ class SupervisorAccessWidget extends HTMLElement {
     this.hasUnsavedChanges = false;
     this.themeMode = localStorage.getItem("supervisorWidgetTheme") || "dark";
 
-    /*
-      Queue visibility filter:
-      - The widget only displays calls for queues assigned to the current user's team.
-      - Adjust this map if additional team-to-queue assignments are needed.
-      - Matching is case-insensitive.
-    */
-    this.TEAM_QUEUE_MAP = {
-      service: ["service"],
-      sales: ["sales"]
-    };
-
-    this.currentUserTeam = "";
     this.allowedQueueNames = [];
     this.selectedQueueFilters = this.readSelectedQueueFilters();
   }
@@ -45,6 +33,27 @@ class SupervisorAccessWidget extends HTMLElement {
   disconnectedCallback() {
     if (this.pollHandle) clearInterval(this.pollHandle);
     if (this.wallboardPollHandle) clearInterval(this.wallboardPollHandle);
+  }
+
+  readSelectedQueueFilters() {
+    try {
+      const raw = localStorage.getItem("supervisorWidgetSelectedQueues");
+      const parsed = JSON.parse(raw || "[]");
+      return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  saveSelectedQueueFilters() {
+    try {
+      localStorage.setItem(
+        "supervisorWidgetSelectedQueues",
+        JSON.stringify(Array.isArray(this.selectedQueueFilters) ? this.selectedQueueFilters : [])
+      );
+    } catch {
+      // Ignore storage issues inside embedded desktop if storage is unavailable.
+    }
   }
 
   render() {
@@ -101,47 +110,8 @@ class SupervisorAccessWidget extends HTMLElement {
 
         .wrapper {
           width: 100%;
-          height: 100vh;
-          overflow-y: auto;
-          overflow-x: hidden;
           padding: 22px;
           color: var(--text);
-          scrollbar-width: thin;
-          scrollbar-color: rgba(255,255,255,0.35) rgba(255,255,255,0.08);
-        }
-
-        .wrapper::-webkit-scrollbar {
-          width: 8px;
-        }
-
-        .wrapper::-webkit-scrollbar-track {
-          background: rgba(255,255,255,0.06);
-          border-radius: 999px;
-        }
-
-        .wrapper::-webkit-scrollbar-thumb {
-          background: rgba(255,255,255,0.35);
-          border-radius: 999px;
-        }
-
-        .wrapper::-webkit-scrollbar-thumb:hover {
-          background: rgba(255,255,255,0.50);
-        }
-
-        :host(.theme-light) .wrapper {
-          scrollbar-color: rgba(0,0,0,0.35) rgba(0,0,0,0.08);
-        }
-
-        :host(.theme-light) .wrapper::-webkit-scrollbar-track {
-          background: rgba(0,0,0,0.06);
-        }
-
-        :host(.theme-light) .wrapper::-webkit-scrollbar-thumb {
-          background: rgba(0,0,0,0.35);
-        }
-
-        :host(.theme-light) .wrapper::-webkit-scrollbar-thumb:hover {
-          background: rgba(0,0,0,0.50);
         }
 
         .card {
@@ -250,49 +220,6 @@ class SupervisorAccessWidget extends HTMLElement {
           transform: translateX(24px);
         }
 
-
-        .config-toggle {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          margin: 10px 0 18px 0;
-          padding: 12px 16px;
-          border-radius: 12px;
-          background: var(--kpi);
-          border: 1px solid var(--cardBorder);
-          cursor: pointer;
-          user-select: none;
-        }
-
-        .config-toggle-title {
-          font-size: 14px;
-          font-weight: 600;
-          color: var(--text);
-        }
-
-        .config-toggle-icon {
-          transition: transform 0.25s ease;
-          color: var(--text);
-        }
-
-        .config-toggle.collapsed .config-toggle-icon {
-          transform: rotate(-90deg);
-        }
-
-        .config-content {
-          overflow: hidden;
-          transition: max-height 0.35s ease, opacity 0.25s ease;
-          max-height: 1200px;
-          opacity: 1;
-        }
-
-        .config-content.collapsed {
-          max-height: 0;
-          opacity: 0;
-          pointer-events: none;
-        }
-
-
         .section-grid {
           display: grid;
           grid-template-columns: repeat(3, minmax(0,1fr));
@@ -366,52 +293,6 @@ class SupervisorAccessWidget extends HTMLElement {
         }
 
 
-        .dashboard-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 16px;
-          margin-bottom: 18px;
-        }
-
-        .dashboard-header .dashboard-title {
-          margin-bottom: 0;
-        }
-
-        .queue-filter {
-          display: none;
-          align-items: center;
-          gap: 10px;
-          color: var(--muted);
-          font-size: 13px;
-        }
-
-        .queue-filter.visible {
-          display: flex;
-        }
-
-        .queue-filter select {
-          width: auto;
-          min-width: 180px;
-          padding: 9px 12px;
-          border-radius: 10px;
-          font-size: 13px;
-        }
-
-        @media (max-width: 980px) {
-          .dashboard-header {
-            flex-direction: column;
-            align-items: flex-start;
-          }
-
-          .queue-filter,
-          .queue-filter select {
-            width: 100%;
-          }
-        }
-
-
-
         .kpi.calls-in-queue-card {
           position: relative;
           overflow: visible;
@@ -439,7 +320,7 @@ class SupervisorAccessWidget extends HTMLElement {
           align-items: center;
           gap: 6px;
           min-height: 24px;
-          max-width: 145px;
+          max-width: 150px;
           padding: 4px 8px;
           border-radius: 999px;
           border: 1px solid var(--cardBorder);
@@ -463,7 +344,7 @@ class SupervisorAccessWidget extends HTMLElement {
           left: 0;
           z-index: 50;
           display: none;
-          min-width: 190px;
+          min-width: 210px;
           padding: 10px;
           border-radius: 12px;
           border: 1px solid var(--cardBorder);
@@ -510,45 +391,9 @@ class SupervisorAccessWidget extends HTMLElement {
 
         .kpi {
           background: var(--kpi);
-          border: 1px solid transparent;
           border-radius: 14px;
           padding: 14px;
           min-height: 74px;
-          transition: background .25s ease, border-color .25s ease, box-shadow .25s ease;
-        }
-
-        .kpi-green {
-          background: linear-gradient(135deg, rgba(34,197,94,0.22), rgba(34,197,94,0.10));
-          border-color: rgba(34,197,94,0.72);
-          box-shadow: 0 0 0 1px rgba(34,197,94,0.10), 0 0 18px rgba(34,197,94,0.16);
-        }
-
-        .kpi-orange {
-          background: linear-gradient(135deg, rgba(245,158,11,0.24), rgba(245,158,11,0.10));
-          border-color: rgba(245,158,11,0.78);
-          box-shadow: 0 0 0 1px rgba(245,158,11,0.10), 0 0 18px rgba(245,158,11,0.16);
-        }
-
-        .kpi-red,
-        .kpi-critical {
-          background: linear-gradient(135deg, rgba(239,68,68,0.24), rgba(239,68,68,0.10));
-          border-color: rgba(239,68,68,0.82);
-          box-shadow: 0 0 0 1px rgba(239,68,68,0.12), 0 0 18px rgba(239,68,68,0.18);
-        }
-
-        .kpi-critical {
-          animation: supervisorCriticalPulse 1.4s ease-in-out infinite;
-        }
-
-        @keyframes supervisorCriticalPulse {
-          0%, 100% {
-            border-color: rgba(239,68,68,0.70);
-            box-shadow: 0 0 0 1px rgba(239,68,68,0.10), 0 0 14px rgba(239,68,68,0.16);
-          }
-          50% {
-            border-color: rgba(239,68,68,1);
-            box-shadow: 0 0 0 1px rgba(239,68,68,0.26), 0 0 26px rgba(239,68,68,0.42);
-          }
         }
 
         .kpi-label {
@@ -580,27 +425,6 @@ class SupervisorAccessWidget extends HTMLElement {
           align-items: center;
           color: var(--text);
           font-size: 14px;
-          transition: background .25s ease, border-color .25s ease, box-shadow .25s ease;
-        }
-
-        .table-row.agent-available,
-        .table-row.agent-unavailable {
-          border: 1px solid transparent;
-          border-radius: 14px;
-          padding: 14px;
-          margin: 10px 0;
-        }
-
-        .table-row.agent-available {
-          background: linear-gradient(135deg, rgba(34,197,94,0.18), rgba(34,197,94,0.08));
-          border-color: rgba(34,197,94,0.78);
-          box-shadow: 0 0 0 1px rgba(34,197,94,0.08), 0 0 18px rgba(34,197,94,0.14);
-        }
-
-        .table-row.agent-unavailable {
-          background: linear-gradient(135deg, rgba(239,68,68,0.18), rgba(239,68,68,0.08));
-          border-color: rgba(239,68,68,0.82);
-          box-shadow: 0 0 0 1px rgba(239,68,68,0.08), 0 0 18px rgba(239,68,68,0.14);
         }
 
         .table-header,
@@ -667,54 +491,54 @@ class SupervisorAccessWidget extends HTMLElement {
           color: var(--muted);
         }
 
+        
+        .kpi.kpi-green {
+          border: 1px solid rgba(34,197,94,0.65);
+          background: rgba(34,197,94,0.14);
+          box-shadow: 0 0 10px rgba(34,197,94,0.18);
+        }
+
+        .kpi.kpi-orange {
+          border: 1px solid rgba(251,146,60,0.75);
+          background: rgba(251,146,60,0.14);
+          box-shadow: 0 0 10px rgba(251,146,60,0.18);
+        }
+
+        .kpi.kpi-red {
+          border: 1px solid rgba(239,68,68,0.75);
+          background: rgba(239,68,68,0.14);
+          box-shadow: 0 0 12px rgba(239,68,68,0.20);
+        }
+
+        .kpi.kpi-critical {
+          animation: criticalPulse 1.5s infinite;
+        }
+
+        @keyframes criticalPulse {
+          0% { box-shadow: 0 0 8px rgba(239,68,68,0.18); }
+          50% { box-shadow: 0 0 20px rgba(239,68,68,0.45); }
+          100% { box-shadow: 0 0 8px rgba(239,68,68,0.18); }
+        }
+
+        .table-row.agent-available {
+          border: 1px solid rgba(34,197,94,0.75);
+          border-radius: 14px;
+          background: rgba(34,197,94,0.08);
+          margin-top: 10px;
+          padding: 14px;
+        }
+
+        .table-row.agent-unavailable {
+          border: 1px solid rgba(239,68,68,0.75);
+          border-radius: 14px;
+          background: rgba(239,68,68,0.08);
+          margin-top: 10px;
+          padding: 14px;
+        }
+
+
         @media (max-width: 1400px) {
   
-        .dashboard-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 16px;
-          margin-bottom: 18px;
-        }
-
-        .dashboard-header .dashboard-title {
-          margin-bottom: 0;
-        }
-
-        .queue-filter {
-          display: none;
-          align-items: center;
-          gap: 10px;
-          color: var(--muted);
-          font-size: 13px;
-        }
-
-        .queue-filter.visible {
-          display: flex;
-        }
-
-        .queue-filter select {
-          width: auto;
-          min-width: 180px;
-          padding: 9px 12px;
-          border-radius: 10px;
-          font-size: 13px;
-        }
-
-        @media (max-width: 980px) {
-          .dashboard-header {
-            flex-direction: column;
-            align-items: flex-start;
-          }
-
-          .queue-filter,
-          .queue-filter select {
-            width: 100%;
-          }
-        }
-
-
-
         .kpi.calls-in-queue-card {
           position: relative;
           overflow: visible;
@@ -742,7 +566,7 @@ class SupervisorAccessWidget extends HTMLElement {
           align-items: center;
           gap: 6px;
           min-height: 24px;
-          max-width: 145px;
+          max-width: 150px;
           padding: 4px 8px;
           border-radius: 999px;
           border: 1px solid var(--cardBorder);
@@ -766,7 +590,7 @@ class SupervisorAccessWidget extends HTMLElement {
           left: 0;
           z-index: 50;
           display: none;
-          min-width: 190px;
+          min-width: 210px;
           padding: 10px;
           border-radius: 12px;
           border: 1px solid var(--cardBorder);
@@ -811,100 +635,11 @@ class SupervisorAccessWidget extends HTMLElement {
         }
 
         @media (max-width: 980px) {
-  
-        .config-toggle {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          margin: 10px 0 18px 0;
-          padding: 12px 16px;
-          border-radius: 12px;
-          background: var(--kpi);
-          border: 1px solid var(--cardBorder);
-          cursor: pointer;
-          user-select: none;
-        }
-
-        .config-toggle-title {
-          font-size: 14px;
-          font-weight: 600;
-          color: var(--text);
-        }
-
-        .config-toggle-icon {
-          transition: transform 0.25s ease;
-          color: var(--text);
-        }
-
-        .config-toggle.collapsed .config-toggle-icon {
-          transform: rotate(-90deg);
-        }
-
-        .config-content {
-          overflow: hidden;
-          transition: max-height 0.35s ease, opacity 0.25s ease;
-          max-height: 1200px;
-          opacity: 1;
-        }
-
-        .config-content.collapsed {
-          max-height: 0;
-          opacity: 0;
-          pointer-events: none;
-        }
-
-
-        .section-grid {
+          .section-grid {
             grid-template-columns: 1fr;
           }
 
   
-        .dashboard-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 16px;
-          margin-bottom: 18px;
-        }
-
-        .dashboard-header .dashboard-title {
-          margin-bottom: 0;
-        }
-
-        .queue-filter {
-          display: none;
-          align-items: center;
-          gap: 10px;
-          color: var(--muted);
-          font-size: 13px;
-        }
-
-        .queue-filter.visible {
-          display: flex;
-        }
-
-        .queue-filter select {
-          width: auto;
-          min-width: 180px;
-          padding: 9px 12px;
-          border-radius: 10px;
-          font-size: 13px;
-        }
-
-        @media (max-width: 980px) {
-          .dashboard-header {
-            flex-direction: column;
-            align-items: flex-start;
-          }
-
-          .queue-filter,
-          .queue-filter select {
-            width: 100%;
-          }
-        }
-
-
-
         .kpi.calls-in-queue-card {
           position: relative;
           overflow: visible;
@@ -932,7 +667,7 @@ class SupervisorAccessWidget extends HTMLElement {
           align-items: center;
           gap: 6px;
           min-height: 24px;
-          max-width: 145px;
+          max-width: 150px;
           padding: 4px 8px;
           border-radius: 999px;
           border: 1px solid var(--cardBorder);
@@ -956,7 +691,7 @@ class SupervisorAccessWidget extends HTMLElement {
           left: 0;
           z-index: 50;
           display: none;
-          min-width: 190px;
+          min-width: 210px;
           padding: 10px;
           border-radius: 12px;
           border: 1px solid var(--cardBorder);
@@ -1022,52 +757,6 @@ class SupervisorAccessWidget extends HTMLElement {
           }
 
   
-        .dashboard-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 16px;
-          margin-bottom: 18px;
-        }
-
-        .dashboard-header .dashboard-title {
-          margin-bottom: 0;
-        }
-
-        .queue-filter {
-          display: none;
-          align-items: center;
-          gap: 10px;
-          color: var(--muted);
-          font-size: 13px;
-        }
-
-        .queue-filter.visible {
-          display: flex;
-        }
-
-        .queue-filter select {
-          width: auto;
-          min-width: 180px;
-          padding: 9px 12px;
-          border-radius: 10px;
-          font-size: 13px;
-        }
-
-        @media (max-width: 980px) {
-          .dashboard-header {
-            flex-direction: column;
-            align-items: flex-start;
-          }
-
-          .queue-filter,
-          .queue-filter select {
-            width: 100%;
-          }
-        }
-
-
-
         .kpi.calls-in-queue-card {
           position: relative;
           overflow: visible;
@@ -1095,7 +784,7 @@ class SupervisorAccessWidget extends HTMLElement {
           align-items: center;
           gap: 6px;
           min-height: 24px;
-          max-width: 145px;
+          max-width: 150px;
           padding: 4px 8px;
           border-radius: 999px;
           border: 1px solid var(--cardBorder);
@@ -1119,7 +808,7 @@ class SupervisorAccessWidget extends HTMLElement {
           left: 0;
           z-index: 50;
           display: none;
-          min-width: 190px;
+          min-width: 210px;
           padding: 10px;
           border-radius: 12px;
           border: 1px solid var(--cardBorder);
@@ -1172,7 +861,7 @@ class SupervisorAccessWidget extends HTMLElement {
         <div class="card">
           <div class="header">
             <div>
-              <h2 class="title">Supervisor Access Control</h2>
+              <h2 class="title">Supervisor access control</h2>
               <div class="subtitle" id="userInfo">Loading...</div>
             </div>
 
@@ -1184,13 +873,6 @@ class SupervisorAccessWidget extends HTMLElement {
               </div>
             </div>
           </div>
-
-          <div class="config-toggle" id="configToggle">
-            <div class="config-toggle-title">Call flow settings</div>
-            <div class="config-toggle-icon">▼</div>
-          </div>
-
-          <div class="config-content" id="configContent">
 
           <div class="toggle-row">
             <label class="switch">
@@ -1244,28 +926,17 @@ class SupervisorAccessWidget extends HTMLElement {
 
           <div class="status" id="status">Loading...</div>
 
-          </div>
-
           <div class="dashboard">
             <div class="dashboard-title">Dashboard</div>
 
             <div class="kpis">
-              <div class="kpi calls-in-queue-card" id="kpiCardCallsInQueue">
-                <div class="kpi-topline">
-                  <div class="kpi-label">Calls in Queue</div>
-                  <div class="queue-filter-inline" id="queueFilterWrapper">
-                    <button class="queue-filter-button" id="queueFilterButton" type="button">Queues ▾</button>
-                    <div class="queue-filter-menu" id="queueFilterMenu"></div>
-                  </div>
-                </div>
-                <div class="kpi-value" id="kpiCallsInQueue">0</div>
-              </div>
+              <div class="kpi" id="kpiCardCallsInQueue"><div class="kpi-label">Calls in Queue</div><div class="kpi-value" id="kpiCallsInQueue">0</div></div>
               <div class="kpi"><div class="kpi-label">Active Calls</div><div class="kpi-value" id="kpiActiveCalls">0</div></div>
               <div class="kpi"><div class="kpi-label">Longest Waiting</div><div class="kpi-value" id="kpiLongestWaiting">0s</div></div>
               <div class="kpi"><div class="kpi-label">Avg Wait</div><div class="kpi-value" id="kpiAvgWait">0s</div></div>
               <div class="kpi"><div class="kpi-label">Avg Handle</div><div class="kpi-value" id="kpiAvgHandle">0s</div></div>
-              <div class="kpi"><div class="kpi-label">Logged-in Agents</div><div class="kpi-value" id="kpiLoggedIn">0</div></div>
-              <div class="kpi"><div class="kpi-label">Available Agents</div><div class="kpi-value" id="kpiAvailable">0</div></div>
+              <div class="kpi" id="kpiCardLoggedIn"><div class="kpi-label">Logged-in Agents</div><div class="kpi-value" id="kpiLoggedIn">0</div></div>
+              <div class="kpi" id="kpiCardAvailable"><div class="kpi-label">Available Agents</div><div class="kpi-value" id="kpiAvailable">0</div></div>
             </div>
           </div>
 
@@ -1374,18 +1045,6 @@ class SupervisorAccessWidget extends HTMLElement {
         }
       });
     }
-
-
-    const configToggle = this.shadowRoot.getElementById("configToggle");
-    const configContent = this.shadowRoot.getElementById("configContent");
-
-    if (configToggle && configContent) {
-      configToggle.addEventListener("click", () => {
-        configContent.classList.toggle("collapsed");
-        configToggle.classList.toggle("collapsed");
-      });
-    }
-
   }
 
   markDirty() {
@@ -1488,19 +1147,7 @@ class SupervisorAccessWidget extends HTMLElement {
       this.sessionToken = data.sessionToken;
       this.currentRole = data.role || "viewer";
 
-      this.currentUserTeam =
-        data.user?.team ||
-        data.user?.teamName ||
-        data.user?.teamId ||
-        identity.team ||
-        identity.teamName ||
-        identity.teamId ||
-        "";
-
-      this.allowedQueueNames = this.getAllowedQueuesForTeam(this.currentUserTeam);
-      this.updateQueueFilterOptions();
-
-      this.$userInfo().textContent = data.user?.displayName || identity.displayName || "Unknown User";
+      this.$userInfo().textContent = data.user?.displayName || "Unknown User";
       this.$roleBadge().textContent = this.currentRole === "supervisor" ? "Supervisor" : "Viewer";
 
       this.applyRoleState();
@@ -1574,47 +1221,6 @@ class SupervisorAccessWidget extends HTMLElement {
     this.$stateLabel().textContent = this.$toggle().checked ? "ON" : "OFF";
   }
 
-  toNumber(value, fallback = 0) {
-    const n = Number(value);
-    return Number.isFinite(n) ? n : fallback;
-  }
-
-  setKpiClass(elementId, state) {
-    const el = this.shadowRoot.getElementById(elementId);
-    const card = el?.closest(".kpi");
-    if (!card) return;
-
-    card.classList.remove("kpi-green", "kpi-orange", "kpi-red", "kpi-critical");
-    if (state) card.classList.add(state);
-  }
-
-  applyWallboardThresholds({ callsInQueue, loggedInAgents, availableAgents }) {
-    const queue = this.toNumber(callsInQueue);
-    const loggedIn = this.toNumber(loggedInAgents);
-    const available = this.toNumber(availableAgents);
-
-    this.setKpiClass(
-      "kpiCallsInQueue",
-      queue > 1 ? "kpi-critical" : queue === 1 ? "kpi-orange" : ""
-    );
-
-    this.setKpiClass(
-      "kpiLoggedIn",
-      loggedIn > 1 ? "kpi-green" : loggedIn === 1 ? "kpi-orange" : "kpi-red"
-    );
-
-    this.setKpiClass(
-      "kpiAvailable",
-      available > 1 ? "kpi-green" : available === 1 ? "kpi-orange" : "kpi-red"
-    );
-  }
-
-  getAgentRowClass(state) {
-    return String(state || "").trim().toLowerCase() === "available"
-      ? "table-row agent-available"
-      : "table-row agent-unavailable";
-  }
-
   formatDuration(seconds) {
     const value = Number(seconds || 0);
     if (value < 60) return `${value}s`;
@@ -1638,12 +1244,34 @@ class SupervisorAccessWidget extends HTMLElement {
     return String(value || "").trim().toLowerCase();
   }
 
-  getAllowedQueuesForTeam(teamNameOrId) {
-    const normalizedTeam = this.normalizeText(teamNameOrId);
+  extractAllowedQueuesFromWallboardData(data = {}) {
+    const directQueues =
+      data.allowedQueues ||
+      data.user?.allowedQueues ||
+      data.user?.queues ||
+      data.queues ||
+      [];
 
-    if (!normalizedTeam) return [];
+    return Array.from(
+      new Set(
+        (Array.isArray(directQueues) ? directQueues : [])
+          .map(q => String(q || "").trim())
+          .filter(Boolean)
+      )
+    );
+  }
 
-    return this.TEAM_QUEUE_MAP[normalizedTeam] || [];
+  getCallQueueName(call) {
+    return (
+      call?.queue ||
+      call?.queueName ||
+      call?.firstQueue ||
+      call?.firstQueueName ||
+      call?.lastQueue ||
+      call?.destinationQueue ||
+      call?.queueDisplayName ||
+      ""
+    );
   }
 
   updateQueueFilterOptions() {
@@ -1663,7 +1291,7 @@ class SupervisorAccessWidget extends HTMLElement {
       wrapper.classList.remove("visible", "open");
       this.selectedQueueFilters = allowedQueues.length === 1 ? [allowedQueues[0]] : [];
       this.saveSelectedQueueFilters();
-      button.textContent = allowedQueues.length === 1 ? allowedQueues[0] : "Queues ▾";
+      button.textContent = allowedQueues.length === 1 ? `${allowedQueues[0]} ▾` : "Queues ▾";
       return;
     }
 
@@ -1690,7 +1318,6 @@ class SupervisorAccessWidget extends HTMLElement {
           menu.querySelectorAll('input[type="checkbox"]:checked')
         ).map(input => input.value);
 
-        // At least one queue must stay selected.
         if (!checkedValues.length) {
           checkbox.checked = true;
           return;
@@ -1744,15 +1371,12 @@ class SupervisorAccessWidget extends HTMLElement {
       ? this.selectedQueueFilters.filter(q => allowedQueues.includes(q))
       : [];
 
-    if (selected.length) return selected;
-
-    return [allowedQueues[0]];
+    return selected.length ? selected : [allowedQueues[0]];
   }
 
   isQueueVisibleForCurrentUser(queueName) {
     const allowedQueues = Array.isArray(this.allowedQueueNames) ? this.allowedQueueNames : [];
 
-    // Do not show queue calls if no queue assignment was detected.
     if (!allowedQueues.length) return false;
 
     const visibleQueues = this.getVisibleQueueNames();
@@ -1772,7 +1396,7 @@ class SupervisorAccessWidget extends HTMLElement {
     const list = Array.isArray(calls) ? calls : [];
 
     return list.filter(call => {
-      const queueName = call.queue || call.firstQueue || "";
+      const queueName = this.getCallQueueName(call);
       return this.isQueueVisibleForCurrentUser(queueName);
     });
   }
@@ -1824,7 +1448,7 @@ class SupervisorAccessWidget extends HTMLElement {
       row.className = "call-row";
       row.innerHTML = `
         <div>${call.status || "-"}</div>
-        <div>${call.queue || call.firstQueue || "-"}</div>
+        <div>${this.getCallQueueName(call) || "-"}</div>
         <div>${call.caller || "-"}</div>
         <div>${call.entryPoint || "-"}</div>
         <div>${this.formatDuration(call.waitingSeconds)}</div>
@@ -1855,7 +1479,7 @@ class SupervisorAccessWidget extends HTMLElement {
       row.className = "call-row active";
       row.innerHTML = `
         <div>${call.status || "-"}</div>
-        <div>${call.queue || call.firstQueue || "-"}</div>
+        <div>${this.getCallQueueName(call) || "-"}</div>
         <div>${call.caller || "-"}</div>
         <div>${call.agent || "-"}</div>
         <div>${this.formatDuration(Math.round(Number(call.connectedDuration || 0) / 1000))}</div>
@@ -1865,12 +1489,45 @@ class SupervisorAccessWidget extends HTMLElement {
     });
   }
 
+
+  updateKpiState(elementId, value, type) {
+    const el = this.shadowRoot.getElementById(elementId);
+    if (!el) return;
+
+    el.classList.remove("kpi-green", "kpi-orange", "kpi-red", "kpi-critical");
+
+    const num = Number(value || 0);
+
+    if (type === "queue") {
+      if (num === 1) {
+        el.classList.add("kpi-orange");
+      } else if (num > 1) {
+        el.classList.add("kpi-red", "kpi-critical");
+      }
+    }
+
+    if (type === "agents") {
+      if (num === 1) {
+        el.classList.add("kpi-orange");
+      } else if (num > 1) {
+        el.classList.add("kpi-green");
+      } else {
+        el.classList.add("kpi-red");
+      }
+    }
+  }
+
   async loadWallboard() {
     try {
       const res = await this.authorizedFetch(`/api/wallboard`);
       const data = await this.readJsonResponse(res);
 
       if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
+
+      const detectedQueues = this.extractAllowedQueuesFromWallboardData(data);
+      if (detectedQueues.length) {
+        this.allowedQueueNames = detectedQueues;
+      }
 
       this.updateQueueFilterOptions();
 
@@ -1900,7 +1557,9 @@ class SupervisorAccessWidget extends HTMLElement {
       this.shadowRoot.getElementById("kpiLoggedIn").textContent = loggedInAgents;
       this.shadowRoot.getElementById("kpiAvailable").textContent = availableAgents;
 
-      this.applyWallboardThresholds({ callsInQueue, loggedInAgents, availableAgents });
+      this.updateKpiState("kpiCardCallsInQueue", callsInQueue, "queue");
+      this.updateKpiState("kpiCardLoggedIn", loggedInAgents, "agents");
+      this.updateKpiState("kpiCardAvailable", availableAgents, "agents");
 
       const agentList = this.shadowRoot.getElementById("agentList");
       agentList.innerHTML = `
@@ -1919,7 +1578,10 @@ class SupervisorAccessWidget extends HTMLElement {
       } else {
         agents.forEach(agent => {
           const row = document.createElement("div");
-          row.className = this.getAgentRowClass(agent.state);
+          row.className =
+            String(agent.state || "").toLowerCase() === "available"
+              ? "table-row agent-available"
+              : "table-row agent-unavailable";
           row.innerHTML = `
             <div>${agent.name || agent.login || "-"}</div>
             <div>${agent.state || "-"}</div>
@@ -1935,8 +1597,8 @@ class SupervisorAccessWidget extends HTMLElement {
 
       const visibleQueues = this.getVisibleQueueNames();
       const queueFilterInfo = visibleQueues.length
-        ? ` • Queue: ${visibleQueues.join(", ")}`
-        : "";
+        ? ` • Queues: ${visibleQueues.join(", ")}`
+        : " • No queue assignment detected";
 
       this.setWallboardStatus(`Updated ${new Date().toLocaleTimeString()}${queueFilterInfo}`);
     } catch (err) {
@@ -2007,4 +1669,8 @@ class SupervisorAccessWidget extends HTMLElement {
   }
 }
 
-customElements.define("supervisor-access-widget-v2", SupervisorAccessWidget);
+if (!customElements.get("supervisor-access-widget-v2")) {
+  if (!customElements.get("supervisor-access-widget-v2")) {
+  customElements.define("supervisor-access-widget-v2", SupervisorAccessWidget);
+}
+}

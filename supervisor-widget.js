@@ -379,20 +379,20 @@ class SupervisorAccessWidget extends HTMLElement {
         
         .kpi.kpi-green {
           border: 1px solid rgba(34,197,94,0.65);
-          background: rgba(34,197,94,0.14);
-          box-shadow: 0 0 10px rgba(34,197,94,0.18);
+          background: rgba(34,197,94,0.24);
+          box-shadow: 0 0 14px rgba(34,197,94,0.28);
         }
 
         .kpi.kpi-orange {
           border: 1px solid rgba(251,146,60,0.75);
-          background: rgba(251,146,60,0.14);
-          box-shadow: 0 0 10px rgba(251,146,60,0.18);
+          background: rgba(251,146,60,0.24);
+          box-shadow: 0 0 14px rgba(251,146,60,0.28);
         }
 
         .kpi.kpi-red {
           border: 1px solid rgba(239,68,68,0.75);
-          background: rgba(239,68,68,0.14);
-          box-shadow: 0 0 12px rgba(239,68,68,0.20);
+          background: rgba(239,68,68,0.24);
+          box-shadow: 0 0 16px rgba(239,68,68,0.32);
         }
 
         .kpi.kpi-critical {
@@ -408,7 +408,7 @@ class SupervisorAccessWidget extends HTMLElement {
         .table-row.agent-available {
           border: 1px solid rgba(34,197,94,0.75);
           border-radius: 14px;
-          background: rgba(34,197,94,0.08);
+          background: rgba(34,197,94,0.18);
           margin-top: 10px;
           padding: 14px;
         }
@@ -416,7 +416,7 @@ class SupervisorAccessWidget extends HTMLElement {
         .table-row.agent-unavailable {
           border: 1px solid rgba(239,68,68,0.75);
           border-radius: 14px;
-          background: rgba(239,68,68,0.08);
+          background: rgba(239,68,68,0.18);
           margin-top: 10px;
           padding: 14px;
         }

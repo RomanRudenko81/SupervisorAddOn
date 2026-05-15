@@ -19,20 +19,17 @@ class SupervisorAccessWidget extends HTMLElement {
     this.themeMode = localStorage.getItem("supervisorWidgetTheme") || "dark";
 
     /*
-      Queue visibility filter:
-      - The widget only displays calls for queues assigned to the current user's team.
-      - Adjust this map if additional team-to-queue assignments are needed.
-      - Matching is case-insensitive.
-    */
-    this.TEAM_QUEUE_MAP = {
-      // Team names
-      service: ["service"],
-      sales: ["sales"],
+      Dynamic queue visibility:
+      Queues are now detected automatically from backend wallboard/session data.
+      Preferred backend fields:
+      - data.allowedQueues
+      - data.user.allowedQueues
+      - data.user.queues
 
-      // Known WXCC Team IDs
-      "42d5cfd2-1bf4-4f29-ac52-ae5676137849": ["service"],
-      "dc9e1fa5-394a-444c-a597-b5ddad6a8ca1": ["sales"]
-    };
+      Static fallback mappings can still be added if required.
+    */
+
+    this.TEAM_QUEUE_MAP = {};
 
     this.currentUserTeam = "";
     this.allowedQueueNames = [];
@@ -1276,6 +1273,25 @@ class SupervisorAccessWidget extends HTMLElement {
     return this.TEAM_QUEUE_MAP[normalizedTeam] || [];
   }
 
+  extractAllowedQueuesFromWallboardData(data = {}) {
+    const directQueues =
+      data.allowedQueues ||
+      data.user?.allowedQueues ||
+      data.user?.queues ||
+      data.queues ||
+      [];
+
+    const normalized = Array.from(
+      new Set(
+        (Array.isArray(directQueues) ? directQueues : [])
+          .map(q => String(q || "").trim())
+          .filter(Boolean)
+      )
+    );
+
+    return normalized;
+  }
+
   getCallQueueName(call) {
     return (
       call?.queue ||
@@ -1470,6 +1486,13 @@ class SupervisorAccessWidget extends HTMLElement {
 
       if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
 
+      // Dynamically detect queues assigned to the current user/team
+      const detectedQueues = this.extractAllowedQueuesFromWallboardData(data);
+
+      if (detectedQueues.length) {
+        this.allowedQueueNames = detectedQueues;
+      }
+
       this.updateQueueFilterOptions();
 
       const rawWaitingCalls = Array.isArray(data.waitingTaskList) ? data.waitingTaskList : [];
@@ -1534,7 +1557,7 @@ class SupervisorAccessWidget extends HTMLElement {
       const visibleQueues = this.getVisibleQueueNames();
       const queueFilterInfo = visibleQueues.length
         ? ` • Queue: ${visibleQueues.join(", ")}`
-        : ` • No queue mapping for team: ${this.currentUserTeam || "unknown"}`;
+        : ` • No queue assignment detected`;
 
       this.setWallboardStatus(`Updated ${new Date().toLocaleTimeString()}${queueFilterInfo}`);
     } catch (err) {

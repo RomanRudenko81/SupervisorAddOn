@@ -1749,19 +1749,23 @@ class SupervisorAccessWidget extends HTMLElement {
     return [allowedQueues[0]];
   }
 
-    return [allowedQueues[0]];
-  }
-
   isQueueVisibleForCurrentUser(queueName) {
     const allowedQueues = Array.isArray(this.allowedQueueNames) ? this.allowedQueueNames : [];
 
-    // If the backend/session does not provide a team, keep existing behavior instead of hiding everything.
-    if (!allowedQueues.length) return true;
+    // Do not show queue calls if no queue assignment was detected.
+    if (!allowedQueues.length) return false;
 
     const visibleQueues = this.getVisibleQueueNames();
     const normalizedQueue = this.normalizeText(queueName);
 
-    return visibleQueues.some(q => this.normalizeText(q) === normalizedQueue);
+    return visibleQueues.some(q => {
+      const normalizedAllowed = this.normalizeText(q);
+      return (
+        normalizedQueue === normalizedAllowed ||
+        normalizedQueue.includes(normalizedAllowed) ||
+        normalizedAllowed.includes(normalizedQueue)
+      );
+    });
   }
 
   filterCallsByAllowedQueues(calls) {

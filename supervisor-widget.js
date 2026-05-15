@@ -196,6 +196,49 @@ class SupervisorAccessWidget extends HTMLElement {
           transform: translateX(24px);
         }
 
+        
+        .config-toggle {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          margin: 10px 0 18px 0;
+          padding: 12px 16px;
+          border-radius: 12px;
+          background: var(--kpi);
+          border: 1px solid var(--cardBorder);
+          cursor: pointer;
+          user-select: none;
+        }
+
+        .config-toggle-title {
+          font-size: 14px;
+          font-weight: 600;
+          color: var(--text);
+        }
+
+        .config-toggle-icon {
+          transition: transform 0.25s ease;
+          color: var(--text);
+        }
+
+        .config-toggle.collapsed .config-toggle-icon {
+          transform: rotate(-90deg);
+        }
+
+        .config-content {
+          overflow: hidden;
+          transition: max-height 0.35s ease, opacity 0.25s ease;
+          max-height: 1200px;
+          opacity: 1;
+        }
+
+        .config-content.collapsed {
+          max-height: 0;
+          opacity: 0;
+          pointer-events: none;
+        }
+
+
         .section-grid {
           display: grid;
           grid-template-columns: repeat(3, minmax(0,1fr));
@@ -429,7 +472,50 @@ class SupervisorAccessWidget extends HTMLElement {
         }
 
         @media (max-width: 980px) {
-          .section-grid {
+          
+        .config-toggle {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          margin: 10px 0 18px 0;
+          padding: 12px 16px;
+          border-radius: 12px;
+          background: var(--kpi);
+          border: 1px solid var(--cardBorder);
+          cursor: pointer;
+          user-select: none;
+        }
+
+        .config-toggle-title {
+          font-size: 14px;
+          font-weight: 600;
+          color: var(--text);
+        }
+
+        .config-toggle-icon {
+          transition: transform 0.25s ease;
+          color: var(--text);
+        }
+
+        .config-toggle.collapsed .config-toggle-icon {
+          transform: rotate(-90deg);
+        }
+
+        .config-content {
+          overflow: hidden;
+          transition: max-height 0.35s ease, opacity 0.25s ease;
+          max-height: 1200px;
+          opacity: 1;
+        }
+
+        .config-content.collapsed {
+          max-height: 0;
+          opacity: 0;
+          pointer-events: none;
+        }
+
+
+        .section-grid {
             grid-template-columns: 1fr;
           }
 
@@ -473,7 +559,7 @@ class SupervisorAccessWidget extends HTMLElement {
         <div class="card">
           <div class="header">
             <div>
-              <h2 class="title">Supervisor access control</h2>
+              <h2 class="title">Supervisor Access Control</h2>
               <div class="subtitle" id="userInfo">Loading...</div>
             </div>
 
@@ -485,6 +571,13 @@ class SupervisorAccessWidget extends HTMLElement {
               </div>
             </div>
           </div>
+
+          <div class="config-toggle" id="configToggle">
+            <div class="config-toggle-title">Configuration Panel</div>
+            <div class="config-toggle-icon">▼</div>
+          </div>
+
+          <div class="config-content" id="configContent">
 
           <div class="toggle-row">
             <label class="switch">
@@ -537,6 +630,8 @@ class SupervisorAccessWidget extends HTMLElement {
           </div>
 
           <div class="status" id="status">Loading...</div>
+
+          </div>
 
           <div class="dashboard">
             <div class="dashboard-title">Dashboard</div>
@@ -641,6 +736,15 @@ class SupervisorAccessWidget extends HTMLElement {
     });
 
     this.$saveBtn().addEventListener("click", async () => await this.saveState());
+
+    const configToggle = this.shadowRoot.getElementById("configToggle");
+    const configContent = this.shadowRoot.getElementById("configContent");
+
+    configToggle.addEventListener("click", () => {
+      configContent.classList.toggle("collapsed");
+      configToggle.classList.toggle("collapsed");
+    });
+
   }
 
   markDirty() {

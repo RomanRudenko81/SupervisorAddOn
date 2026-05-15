@@ -17,6 +17,21 @@ class SupervisorAccessWidget extends HTMLElement {
     this.wallboardPollHandle = null;
     this.hasUnsavedChanges = false;
     this.themeMode = localStorage.getItem("supervisorWidgetTheme") || "dark";
+
+    /*
+      Queue visibility filter:
+      - The widget only displays calls for queues assigned to the current user's team.
+      - Adjust this map if additional team-to-queue assignments are needed.
+      - Matching is case-insensitive.
+    */
+    this.TEAM_QUEUE_MAP = {
+      service: ["service"],
+      sales: ["sales"]
+    };
+
+    this.currentUserTeam = "";
+    this.allowedQueueNames = [];
+    this.selectedQueueFilter = localStorage.getItem("supervisorWidgetSelectedQueue") || "";
   }
 
   connectedCallback() {
@@ -350,6 +365,52 @@ class SupervisorAccessWidget extends HTMLElement {
           margin-top: 34px;
         }
 
+
+        .dashboard-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 16px;
+          margin-bottom: 18px;
+        }
+
+        .dashboard-header .dashboard-title {
+          margin-bottom: 0;
+        }
+
+        .queue-filter {
+          display: none;
+          align-items: center;
+          gap: 10px;
+          color: var(--muted);
+          font-size: 13px;
+        }
+
+        .queue-filter.visible {
+          display: flex;
+        }
+
+        .queue-filter select {
+          width: auto;
+          min-width: 180px;
+          padding: 9px 12px;
+          border-radius: 10px;
+          font-size: 13px;
+        }
+
+        @media (max-width: 980px) {
+          .dashboard-header {
+            flex-direction: column;
+            align-items: flex-start;
+          }
+
+          .queue-filter,
+          .queue-filter select {
+            width: 100%;
+          }
+        }
+
+
         .kpis {
           display: grid;
           grid-template-columns: repeat(7, minmax(0,1fr));
@@ -516,7 +577,53 @@ class SupervisorAccessWidget extends HTMLElement {
         }
 
         @media (max-width: 1400px) {
-          .kpis {
+  
+        .dashboard-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 16px;
+          margin-bottom: 18px;
+        }
+
+        .dashboard-header .dashboard-title {
+          margin-bottom: 0;
+        }
+
+        .queue-filter {
+          display: none;
+          align-items: center;
+          gap: 10px;
+          color: var(--muted);
+          font-size: 13px;
+        }
+
+        .queue-filter.visible {
+          display: flex;
+        }
+
+        .queue-filter select {
+          width: auto;
+          min-width: 180px;
+          padding: 9px 12px;
+          border-radius: 10px;
+          font-size: 13px;
+        }
+
+        @media (max-width: 980px) {
+          .dashboard-header {
+            flex-direction: column;
+            align-items: flex-start;
+          }
+
+          .queue-filter,
+          .queue-filter select {
+            width: 100%;
+          }
+        }
+
+
+        .kpis {
             grid-template-columns: repeat(4, minmax(0,1fr));
           }
         }
@@ -569,7 +676,53 @@ class SupervisorAccessWidget extends HTMLElement {
             grid-template-columns: 1fr;
           }
 
-          .kpis {
+  
+        .dashboard-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 16px;
+          margin-bottom: 18px;
+        }
+
+        .dashboard-header .dashboard-title {
+          margin-bottom: 0;
+        }
+
+        .queue-filter {
+          display: none;
+          align-items: center;
+          gap: 10px;
+          color: var(--muted);
+          font-size: 13px;
+        }
+
+        .queue-filter.visible {
+          display: flex;
+        }
+
+        .queue-filter select {
+          width: auto;
+          min-width: 180px;
+          padding: 9px 12px;
+          border-radius: 10px;
+          font-size: 13px;
+        }
+
+        @media (max-width: 980px) {
+          .dashboard-header {
+            flex-direction: column;
+            align-items: flex-start;
+          }
+
+          .queue-filter,
+          .queue-filter select {
+            width: 100%;
+          }
+        }
+
+
+        .kpis {
             grid-template-columns: repeat(2, minmax(0,1fr));
           }
 
@@ -595,7 +748,53 @@ class SupervisorAccessWidget extends HTMLElement {
             justify-content: flex-start;
           }
 
-          .kpis {
+  
+        .dashboard-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 16px;
+          margin-bottom: 18px;
+        }
+
+        .dashboard-header .dashboard-title {
+          margin-bottom: 0;
+        }
+
+        .queue-filter {
+          display: none;
+          align-items: center;
+          gap: 10px;
+          color: var(--muted);
+          font-size: 13px;
+        }
+
+        .queue-filter.visible {
+          display: flex;
+        }
+
+        .queue-filter select {
+          width: auto;
+          min-width: 180px;
+          padding: 9px 12px;
+          border-radius: 10px;
+          font-size: 13px;
+        }
+
+        @media (max-width: 980px) {
+          .dashboard-header {
+            flex-direction: column;
+            align-items: flex-start;
+          }
+
+          .queue-filter,
+          .queue-filter select {
+            width: 100%;
+          }
+        }
+
+
+        .kpis {
             grid-template-columns: 1fr;
           }
 
@@ -684,7 +883,13 @@ class SupervisorAccessWidget extends HTMLElement {
           </div>
 
           <div class="dashboard">
-            <div class="dashboard-title">Dashboard</div>
+            <div class="dashboard-header">
+              <div class="dashboard-title">Dashboard</div>
+              <div class="queue-filter" id="queueFilterWrapper">
+                <label for="queueFilterSelect">Queue</label>
+                <select id="queueFilterSelect"></select>
+              </div>
+            </div>
 
             <div class="kpis">
               <div class="kpi"><div class="kpi-label">Calls in Queue</div><div class="kpi-value" id="kpiCallsInQueue">0</div></div>
@@ -787,6 +992,16 @@ class SupervisorAccessWidget extends HTMLElement {
 
     this.$saveBtn().addEventListener("click", async () => await this.saveState());
 
+    const queueFilterSelect = this.$queueFilterSelect();
+    if (queueFilterSelect) {
+      queueFilterSelect.addEventListener("change", async () => {
+        this.selectedQueueFilter = queueFilterSelect.value || "";
+        localStorage.setItem("supervisorWidgetSelectedQueue", this.selectedQueueFilter);
+        await this.loadWallboard();
+      });
+    }
+
+
     const configToggle = this.shadowRoot.getElementById("configToggle");
     const configContent = this.shadowRoot.getElementById("configContent");
 
@@ -830,6 +1045,7 @@ class SupervisorAccessWidget extends HTMLElement {
   $saveBtn() { return this.shadowRoot.getElementById("saveBtn"); }
   $stateLabel() { return this.shadowRoot.getElementById("stateLabel"); }
   $status() { return this.shadowRoot.getElementById("status"); }
+  $queueFilterSelect() { return this.shadowRoot.getElementById("queueFilterSelect"); }
 
   setStatus(msg) {
     this.$status().textContent = msg || "";
@@ -897,7 +1113,19 @@ class SupervisorAccessWidget extends HTMLElement {
       this.sessionToken = data.sessionToken;
       this.currentRole = data.role || "viewer";
 
-      this.$userInfo().textContent = data.user?.displayName || "Unknown User";
+      this.currentUserTeam =
+        data.user?.team ||
+        data.user?.teamName ||
+        data.user?.teamId ||
+        identity.team ||
+        identity.teamName ||
+        identity.teamId ||
+        "";
+
+      this.allowedQueueNames = this.getAllowedQueuesForTeam(this.currentUserTeam);
+      this.updateQueueFilterOptions();
+
+      this.$userInfo().textContent = data.user?.displayName || identity.displayName || "Unknown User";
       this.$roleBadge().textContent = this.currentRole === "supervisor" ? "Supervisor" : "Viewer";
 
       this.applyRoleState();
@@ -1030,6 +1258,109 @@ class SupervisorAccessWidget extends HTMLElement {
     return base > 0 ? Math.max(0, Math.floor((Date.now() - base) / 1000)) : 0;
   }
 
+
+  normalizeText(value) {
+    return String(value || "").trim().toLowerCase();
+  }
+
+  getAllowedQueuesForTeam(teamNameOrId) {
+    const normalizedTeam = this.normalizeText(teamNameOrId);
+
+    if (!normalizedTeam) return [];
+
+    return this.TEAM_QUEUE_MAP[normalizedTeam] || [];
+  }
+
+  updateQueueFilterOptions() {
+    const wrapper = this.shadowRoot.getElementById("queueFilterWrapper");
+    const select = this.$queueFilterSelect();
+
+    if (!wrapper || !select) return;
+
+    select.innerHTML = "";
+
+    if (!Array.isArray(this.allowedQueueNames) || this.allowedQueueNames.length <= 1) {
+      wrapper.classList.remove("visible");
+      this.selectedQueueFilter = this.allowedQueueNames[0] || "";
+      return;
+    }
+
+    wrapper.classList.add("visible");
+
+    this.allowedQueueNames.forEach(queueName => {
+      const option = document.createElement("option");
+      option.value = queueName;
+      option.textContent = queueName;
+      select.appendChild(option);
+    });
+
+    if (!this.allowedQueueNames.includes(this.selectedQueueFilter)) {
+      this.selectedQueueFilter = this.allowedQueueNames[0];
+      localStorage.setItem("supervisorWidgetSelectedQueue", this.selectedQueueFilter);
+    }
+
+    select.value = this.selectedQueueFilter;
+  }
+
+  getVisibleQueueNames() {
+    const allowedQueues = Array.isArray(this.allowedQueueNames) ? this.allowedQueueNames : [];
+
+    if (!allowedQueues.length) return [];
+
+    if (this.selectedQueueFilter && allowedQueues.includes(this.selectedQueueFilter)) {
+      return [this.selectedQueueFilter];
+    }
+
+    return [allowedQueues[0]];
+  }
+
+  isQueueVisibleForCurrentUser(queueName) {
+    const allowedQueues = Array.isArray(this.allowedQueueNames) ? this.allowedQueueNames : [];
+
+    // If the backend/session does not provide a team, keep existing behavior instead of hiding everything.
+    if (!allowedQueues.length) return true;
+
+    const visibleQueues = this.getVisibleQueueNames();
+    const normalizedQueue = this.normalizeText(queueName);
+
+    return visibleQueues.some(q => this.normalizeText(q) === normalizedQueue);
+  }
+
+  filterCallsByAllowedQueues(calls) {
+    const list = Array.isArray(calls) ? calls : [];
+
+    return list.filter(call => {
+      const queueName = call.queue || call.firstQueue || "";
+      return this.isQueueVisibleForCurrentUser(queueName);
+    });
+  }
+
+  calculateQueueKpisFromVisibleCalls(waitingCalls, activeCalls, originalQueue = {}) {
+    const visibleWaiting = Array.isArray(waitingCalls) ? waitingCalls : [];
+    const visibleActive = Array.isArray(activeCalls) ? activeCalls : [];
+
+    const waitingDurations = visibleWaiting
+      .map(call => Number(call.waitingSeconds || 0))
+      .filter(value => Number.isFinite(value) && value >= 0);
+
+    const activeDurations = visibleActive
+      .map(call => Math.round(Number(call.connectedDuration || 0) / 1000))
+      .filter(value => Number.isFinite(value) && value >= 0);
+
+    const avg = values => {
+      if (!values.length) return 0;
+      return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+    };
+
+    return {
+      callsInQueue: visibleWaiting.length,
+      activeCalls: visibleActive.length,
+      longestWaitingSeconds: waitingDurations.length ? Math.max(...waitingDurations) : 0,
+      avgWaitSeconds: waitingDurations.length ? avg(waitingDurations) : 0,
+      avgHandleSeconds: activeDurations.length ? avg(activeDurations) : Number(originalQueue.avgHandleSeconds || 0)
+    };
+  }
+
   renderWaitingCalls(calls) {
     const list = this.shadowRoot.getElementById("waitingCallList");
     list.innerHTML = `
@@ -1099,15 +1430,31 @@ class SupervisorAccessWidget extends HTMLElement {
 
       if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
 
-      const callsInQueue = data.queue?.callsInQueue ?? 0;
+      this.updateQueueFilterOptions();
+
+      const rawWaitingCalls = Array.isArray(data.waitingTaskList) ? data.waitingTaskList : [];
+
+      const rawActiveCalls = Array.isArray(data.taskList)
+        ? data.taskList.filter(t => String(t.status || "").toLowerCase() === "connected")
+        : [];
+
+      const visibleWaitingCalls = this.filterCallsByAllowedQueues(rawWaitingCalls);
+      const visibleActiveCalls = this.filterCallsByAllowedQueues(rawActiveCalls);
+      const visibleQueueKpis = this.calculateQueueKpisFromVisibleCalls(
+        visibleWaitingCalls,
+        visibleActiveCalls,
+        data.queue || {}
+      );
+
+      const callsInQueue = visibleQueueKpis.callsInQueue;
       const loggedInAgents = data.agents?.loggedIn ?? 0;
       const availableAgents = data.agents?.available ?? 0;
 
       this.shadowRoot.getElementById("kpiCallsInQueue").textContent = callsInQueue;
-      this.shadowRoot.getElementById("kpiActiveCalls").textContent = data.queue?.activeCalls ?? 0;
-      this.shadowRoot.getElementById("kpiLongestWaiting").textContent = this.formatDuration(data.queue?.longestWaitingSeconds);
-      this.shadowRoot.getElementById("kpiAvgWait").textContent = this.formatDuration(data.queue?.avgWaitSeconds);
-      this.shadowRoot.getElementById("kpiAvgHandle").textContent = this.formatDuration(data.queue?.avgHandleSeconds);
+      this.shadowRoot.getElementById("kpiActiveCalls").textContent = visibleQueueKpis.activeCalls;
+      this.shadowRoot.getElementById("kpiLongestWaiting").textContent = this.formatDuration(visibleQueueKpis.longestWaitingSeconds);
+      this.shadowRoot.getElementById("kpiAvgWait").textContent = this.formatDuration(visibleQueueKpis.avgWaitSeconds);
+      this.shadowRoot.getElementById("kpiAvgHandle").textContent = this.formatDuration(visibleQueueKpis.avgHandleSeconds);
       this.shadowRoot.getElementById("kpiLoggedIn").textContent = loggedInAgents;
       this.shadowRoot.getElementById("kpiAvailable").textContent = availableAgents;
 
@@ -1141,15 +1488,15 @@ class SupervisorAccessWidget extends HTMLElement {
         });
       }
 
-      this.renderWaitingCalls(Array.isArray(data.waitingTaskList) ? data.waitingTaskList : []);
+      this.renderWaitingCalls(visibleWaitingCalls);
+      this.renderActiveCalls(visibleActiveCalls);
 
-      const activeCalls = Array.isArray(data.taskList)
-        ? data.taskList.filter(t => String(t.status || "").toLowerCase() === "connected")
-        : [];
+      const visibleQueues = this.getVisibleQueueNames();
+      const queueFilterInfo = visibleQueues.length
+        ? ` • Queue: ${visibleQueues.join(", ")}`
+        : "";
 
-      this.renderActiveCalls(activeCalls);
-
-      this.setWallboardStatus(`Updated ${new Date().toLocaleTimeString()}`);
+      this.setWallboardStatus(`Updated ${new Date().toLocaleTimeString()}${queueFilterInfo}`);
     } catch (err) {
       this.setWallboardStatus(`Dashboard failed: ${err.message}`);
     }

@@ -19,21 +19,19 @@ class SupervisorAccessWidget extends HTMLElement {
     this.themeMode = localStorage.getItem("supervisorWidgetTheme") || "dark";
 
     /*
-      Dynamic queue visibility:
-      Queues are now detected automatically from backend wallboard/session data.
-      Preferred backend fields:
-      - data.allowedQueues
-      - data.user.allowedQueues
-      - data.user.queues
-
-      Static fallback mappings can still be added if required.
+      Queue visibility filter:
+      - The widget only displays calls for queues assigned to the current user's team.
+      - Adjust this map if additional team-to-queue assignments are needed.
+      - Matching is case-insensitive.
     */
-
-    this.TEAM_QUEUE_MAP = {};
+    this.TEAM_QUEUE_MAP = {
+      service: ["service"],
+      sales: ["sales"]
+    };
 
     this.currentUserTeam = "";
     this.allowedQueueNames = [];
-    this.selectedQueueFilter = localStorage.getItem("supervisorWidgetSelectedQueue") || "";
+    this.selectedQueueFilters = this.readSelectedQueueFilters();
   }
 
   connectedCallback() {
@@ -413,6 +411,97 @@ class SupervisorAccessWidget extends HTMLElement {
         }
 
 
+
+        .kpi.calls-in-queue-card {
+          position: relative;
+          overflow: visible;
+        }
+
+        .kpi-topline {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 10px;
+        }
+
+        .queue-filter-inline {
+          position: relative;
+          display: none;
+          flex: 0 0 auto;
+        }
+
+        .queue-filter-inline.visible {
+          display: block;
+        }
+
+        .queue-filter-button {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          min-height: 24px;
+          max-width: 145px;
+          padding: 4px 8px;
+          border-radius: 999px;
+          border: 1px solid var(--cardBorder);
+          background: rgba(255,255,255,0.10);
+          color: var(--text) !important;
+          font-size: 11px;
+          line-height: 1;
+          cursor: pointer;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        :host(.theme-light) .queue-filter-button {
+          background: rgba(0,0,0,0.06);
+        }
+
+        .queue-filter-menu {
+          position: absolute;
+          top: 30px;
+          left: 0;
+          z-index: 50;
+          display: none;
+          min-width: 190px;
+          padding: 10px;
+          border-radius: 12px;
+          border: 1px solid var(--cardBorder);
+          background: var(--card);
+          box-shadow: 0 12px 30px rgba(0,0,0,0.35);
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+        }
+
+        .queue-filter-inline.open .queue-filter-menu {
+          display: block;
+        }
+
+        .queue-filter-option {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 7px 4px;
+          color: var(--text);
+          font-size: 12px;
+          cursor: pointer;
+        }
+
+        .queue-filter-option input {
+          width: auto;
+          margin: 0;
+        }
+
+        .queue-filter-hint {
+          margin-top: 6px;
+          padding-top: 8px;
+          border-top: 1px solid var(--tableBorder);
+          color: var(--muted);
+          font-size: 11px;
+          line-height: 1.3;
+        }
+
+
         .kpis {
           display: grid;
           grid-template-columns: repeat(7, minmax(0,1fr));
@@ -625,6 +714,97 @@ class SupervisorAccessWidget extends HTMLElement {
         }
 
 
+
+        .kpi.calls-in-queue-card {
+          position: relative;
+          overflow: visible;
+        }
+
+        .kpi-topline {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 10px;
+        }
+
+        .queue-filter-inline {
+          position: relative;
+          display: none;
+          flex: 0 0 auto;
+        }
+
+        .queue-filter-inline.visible {
+          display: block;
+        }
+
+        .queue-filter-button {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          min-height: 24px;
+          max-width: 145px;
+          padding: 4px 8px;
+          border-radius: 999px;
+          border: 1px solid var(--cardBorder);
+          background: rgba(255,255,255,0.10);
+          color: var(--text) !important;
+          font-size: 11px;
+          line-height: 1;
+          cursor: pointer;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        :host(.theme-light) .queue-filter-button {
+          background: rgba(0,0,0,0.06);
+        }
+
+        .queue-filter-menu {
+          position: absolute;
+          top: 30px;
+          left: 0;
+          z-index: 50;
+          display: none;
+          min-width: 190px;
+          padding: 10px;
+          border-radius: 12px;
+          border: 1px solid var(--cardBorder);
+          background: var(--card);
+          box-shadow: 0 12px 30px rgba(0,0,0,0.35);
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+        }
+
+        .queue-filter-inline.open .queue-filter-menu {
+          display: block;
+        }
+
+        .queue-filter-option {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 7px 4px;
+          color: var(--text);
+          font-size: 12px;
+          cursor: pointer;
+        }
+
+        .queue-filter-option input {
+          width: auto;
+          margin: 0;
+        }
+
+        .queue-filter-hint {
+          margin-top: 6px;
+          padding-top: 8px;
+          border-top: 1px solid var(--tableBorder);
+          color: var(--muted);
+          font-size: 11px;
+          line-height: 1.3;
+        }
+
+
         .kpis {
             grid-template-columns: repeat(4, minmax(0,1fr));
           }
@@ -724,6 +904,97 @@ class SupervisorAccessWidget extends HTMLElement {
         }
 
 
+
+        .kpi.calls-in-queue-card {
+          position: relative;
+          overflow: visible;
+        }
+
+        .kpi-topline {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 10px;
+        }
+
+        .queue-filter-inline {
+          position: relative;
+          display: none;
+          flex: 0 0 auto;
+        }
+
+        .queue-filter-inline.visible {
+          display: block;
+        }
+
+        .queue-filter-button {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          min-height: 24px;
+          max-width: 145px;
+          padding: 4px 8px;
+          border-radius: 999px;
+          border: 1px solid var(--cardBorder);
+          background: rgba(255,255,255,0.10);
+          color: var(--text) !important;
+          font-size: 11px;
+          line-height: 1;
+          cursor: pointer;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        :host(.theme-light) .queue-filter-button {
+          background: rgba(0,0,0,0.06);
+        }
+
+        .queue-filter-menu {
+          position: absolute;
+          top: 30px;
+          left: 0;
+          z-index: 50;
+          display: none;
+          min-width: 190px;
+          padding: 10px;
+          border-radius: 12px;
+          border: 1px solid var(--cardBorder);
+          background: var(--card);
+          box-shadow: 0 12px 30px rgba(0,0,0,0.35);
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+        }
+
+        .queue-filter-inline.open .queue-filter-menu {
+          display: block;
+        }
+
+        .queue-filter-option {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 7px 4px;
+          color: var(--text);
+          font-size: 12px;
+          cursor: pointer;
+        }
+
+        .queue-filter-option input {
+          width: auto;
+          margin: 0;
+        }
+
+        .queue-filter-hint {
+          margin-top: 6px;
+          padding-top: 8px;
+          border-top: 1px solid var(--tableBorder);
+          color: var(--muted);
+          font-size: 11px;
+          line-height: 1.3;
+        }
+
+
         .kpis {
             grid-template-columns: repeat(2, minmax(0,1fr));
           }
@@ -793,6 +1064,97 @@ class SupervisorAccessWidget extends HTMLElement {
           .queue-filter select {
             width: 100%;
           }
+        }
+
+
+
+        .kpi.calls-in-queue-card {
+          position: relative;
+          overflow: visible;
+        }
+
+        .kpi-topline {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 10px;
+        }
+
+        .queue-filter-inline {
+          position: relative;
+          display: none;
+          flex: 0 0 auto;
+        }
+
+        .queue-filter-inline.visible {
+          display: block;
+        }
+
+        .queue-filter-button {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          min-height: 24px;
+          max-width: 145px;
+          padding: 4px 8px;
+          border-radius: 999px;
+          border: 1px solid var(--cardBorder);
+          background: rgba(255,255,255,0.10);
+          color: var(--text) !important;
+          font-size: 11px;
+          line-height: 1;
+          cursor: pointer;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        :host(.theme-light) .queue-filter-button {
+          background: rgba(0,0,0,0.06);
+        }
+
+        .queue-filter-menu {
+          position: absolute;
+          top: 30px;
+          left: 0;
+          z-index: 50;
+          display: none;
+          min-width: 190px;
+          padding: 10px;
+          border-radius: 12px;
+          border: 1px solid var(--cardBorder);
+          background: var(--card);
+          box-shadow: 0 12px 30px rgba(0,0,0,0.35);
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+        }
+
+        .queue-filter-inline.open .queue-filter-menu {
+          display: block;
+        }
+
+        .queue-filter-option {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 7px 4px;
+          color: var(--text);
+          font-size: 12px;
+          cursor: pointer;
+        }
+
+        .queue-filter-option input {
+          width: auto;
+          margin: 0;
+        }
+
+        .queue-filter-hint {
+          margin-top: 6px;
+          padding-top: 8px;
+          border-top: 1px solid var(--tableBorder);
+          color: var(--muted);
+          font-size: 11px;
+          line-height: 1.3;
         }
 
 
@@ -885,16 +1247,19 @@ class SupervisorAccessWidget extends HTMLElement {
           </div>
 
           <div class="dashboard">
-            <div class="dashboard-header">
-              <div class="dashboard-title">Dashboard</div>
-              <div class="queue-filter" id="queueFilterWrapper">
-                <label for="queueFilterSelect">Queue</label>
-                <select id="queueFilterSelect"></select>
-              </div>
-            </div>
+            <div class="dashboard-title">Dashboard</div>
 
             <div class="kpis">
-              <div class="kpi"><div class="kpi-label">Calls in Queue</div><div class="kpi-value" id="kpiCallsInQueue">0</div></div>
+              <div class="kpi calls-in-queue-card" id="kpiCardCallsInQueue">
+                <div class="kpi-topline">
+                  <div class="kpi-label">Calls in Queue</div>
+                  <div class="queue-filter-inline" id="queueFilterWrapper">
+                    <button class="queue-filter-button" id="queueFilterButton" type="button">Queues ▾</button>
+                    <div class="queue-filter-menu" id="queueFilterMenu"></div>
+                  </div>
+                </div>
+                <div class="kpi-value" id="kpiCallsInQueue">0</div>
+              </div>
               <div class="kpi"><div class="kpi-label">Active Calls</div><div class="kpi-value" id="kpiActiveCalls">0</div></div>
               <div class="kpi"><div class="kpi-label">Longest Waiting</div><div class="kpi-value" id="kpiLongestWaiting">0s</div></div>
               <div class="kpi"><div class="kpi-label">Avg Wait</div><div class="kpi-value" id="kpiAvgWait">0s</div></div>
@@ -994,12 +1359,19 @@ class SupervisorAccessWidget extends HTMLElement {
 
     this.$saveBtn().addEventListener("click", async () => await this.saveState());
 
-    const queueFilterSelect = this.$queueFilterSelect();
-    if (queueFilterSelect) {
-      queueFilterSelect.addEventListener("change", async () => {
-        this.selectedQueueFilter = queueFilterSelect.value || "";
-        localStorage.setItem("supervisorWidgetSelectedQueue", this.selectedQueueFilter);
-        await this.loadWallboard();
+    const queueFilterButton = this.$queueFilterButton();
+    const queueFilterWrapper = this.shadowRoot.getElementById("queueFilterWrapper");
+
+    if (queueFilterButton && queueFilterWrapper) {
+      queueFilterButton.addEventListener("click", event => {
+        event.stopPropagation();
+        queueFilterWrapper.classList.toggle("open");
+      });
+
+      this.shadowRoot.addEventListener("click", event => {
+        if (!queueFilterWrapper.contains(event.target)) {
+          queueFilterWrapper.classList.remove("open");
+        }
       });
     }
 
@@ -1047,7 +1419,8 @@ class SupervisorAccessWidget extends HTMLElement {
   $saveBtn() { return this.shadowRoot.getElementById("saveBtn"); }
   $stateLabel() { return this.shadowRoot.getElementById("stateLabel"); }
   $status() { return this.shadowRoot.getElementById("status"); }
-  $queueFilterSelect() { return this.shadowRoot.getElementById("queueFilterSelect"); }
+  $queueFilterButton() { return this.shadowRoot.getElementById("queueFilterButton"); }
+  $queueFilterMenu() { return this.shadowRoot.getElementById("queueFilterMenu"); }
 
   setStatus(msg) {
     this.$status().textContent = msg || "";
@@ -1273,89 +1646,93 @@ class SupervisorAccessWidget extends HTMLElement {
     return this.TEAM_QUEUE_MAP[normalizedTeam] || [];
   }
 
-  extractAllowedQueuesFromWallboardData(data = {}) {
-    const directQueues =
-      data.allowedQueues ||
-      data.user?.allowedQueues ||
-      data.user?.queues ||
-      data.queues ||
-      [];
-
-    const normalized = Array.from(
-      new Set(
-        (Array.isArray(directQueues) ? directQueues : [])
-          .map(q => String(q || "").trim())
-          .filter(Boolean)
-      )
-    );
-
-    return normalized;
-  }
-
-  getCallQueueName(call) {
-    return (
-      call?.queue ||
-      call?.queueName ||
-      call?.firstQueue ||
-      call?.firstQueueName ||
-      call?.originalQueue ||
-      call?.lastQueue ||
-      call?.destinationQueue ||
-      call?.queueDisplayName ||
-      ""
-    );
-  }
-
-  queueMatchesAllowedQueue(queueName, allowedQueueName) {
-    const queue = this.normalizeText(queueName);
-    const allowed = this.normalizeText(allowedQueueName);
-
-    if (!queue || !allowed) return false;
-
-    return (
-      queue === allowed ||
-      queue.includes(allowed) ||
-      allowed.includes(queue)
-    );
-  }
-
   updateQueueFilterOptions() {
     const wrapper = this.shadowRoot.getElementById("queueFilterWrapper");
-    const select = this.$queueFilterSelect();
+    const button = this.$queueFilterButton();
+    const menu = this.$queueFilterMenu();
 
-    if (!wrapper || !select) return;
+    if (!wrapper || !button || !menu) return;
 
-    select.innerHTML = "";
+    menu.innerHTML = "";
 
-    if (!Array.isArray(this.allowedQueueNames) || this.allowedQueueNames.length <= 1) {
-      wrapper.classList.remove("visible");
-      this.selectedQueueFilter = this.allowedQueueNames[0] || "";
-      select.innerHTML = "";
-      if (this.selectedQueueFilter) {
-        const option = document.createElement("option");
-        option.value = this.selectedQueueFilter;
-        option.textContent = this.selectedQueueFilter;
-        select.appendChild(option);
-        select.value = this.selectedQueueFilter;
-      }
+    const allowedQueues = Array.isArray(this.allowedQueueNames)
+      ? this.allowedQueueNames.filter(Boolean)
+      : [];
+
+    if (allowedQueues.length <= 1) {
+      wrapper.classList.remove("visible", "open");
+      this.selectedQueueFilters = allowedQueues.length === 1 ? [allowedQueues[0]] : [];
+      this.saveSelectedQueueFilters();
+      button.textContent = allowedQueues.length === 1 ? allowedQueues[0] : "Queues ▾";
       return;
     }
 
     wrapper.classList.add("visible");
 
-    this.allowedQueueNames.forEach(queueName => {
-      const option = document.createElement("option");
-      option.value = queueName;
-      option.textContent = queueName;
-      select.appendChild(option);
+    const selected = Array.isArray(this.selectedQueueFilters)
+      ? this.selectedQueueFilters.filter(q => allowedQueues.includes(q))
+      : [];
+
+    this.selectedQueueFilters = selected.length ? selected : [allowedQueues[0]];
+    this.saveSelectedQueueFilters();
+
+    allowedQueues.forEach(queueName => {
+      const label = document.createElement("label");
+      label.className = "queue-filter-option";
+
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.value = queueName;
+      checkbox.checked = this.selectedQueueFilters.includes(queueName);
+
+      checkbox.addEventListener("change", async () => {
+        const checkedValues = Array.from(
+          menu.querySelectorAll('input[type="checkbox"]:checked')
+        ).map(input => input.value);
+
+        // At least one queue must stay selected.
+        if (!checkedValues.length) {
+          checkbox.checked = true;
+          return;
+        }
+
+        this.selectedQueueFilters = checkedValues;
+        this.saveSelectedQueueFilters();
+        this.updateQueueFilterButtonLabel();
+        await this.loadWallboard();
+      });
+
+      const text = document.createElement("span");
+      text.textContent = queueName;
+
+      label.appendChild(checkbox);
+      label.appendChild(text);
+      menu.appendChild(label);
     });
 
-    if (!this.allowedQueueNames.includes(this.selectedQueueFilter)) {
-      this.selectedQueueFilter = this.allowedQueueNames[0];
-      localStorage.setItem("supervisorWidgetSelectedQueue", this.selectedQueueFilter);
-    }
+    const hint = document.createElement("div");
+    hint.className = "queue-filter-hint";
+    hint.textContent = "Mehrere Queues können gleichzeitig ausgewählt werden.";
+    menu.appendChild(hint);
 
-    select.value = this.selectedQueueFilter;
+    this.updateQueueFilterButtonLabel();
+  }
+
+  updateQueueFilterButtonLabel() {
+    const button = this.$queueFilterButton();
+    if (!button) return;
+
+    const selected = Array.isArray(this.selectedQueueFilters)
+      ? this.selectedQueueFilters
+      : [];
+
+    if (!selected.length) {
+      button.textContent = "Queues ▾";
+    } else if (selected.length === 1) {
+      button.textContent = `${selected[0]} ▾`;
+    } else {
+      button.textContent = `${selected.length} Queues ▾`;
+    }
   }
 
   getVisibleQueueNames() {
@@ -1363,9 +1740,14 @@ class SupervisorAccessWidget extends HTMLElement {
 
     if (!allowedQueues.length) return [];
 
-    if (this.selectedQueueFilter && allowedQueues.includes(this.selectedQueueFilter)) {
-      return [this.selectedQueueFilter];
-    }
+    const selected = Array.isArray(this.selectedQueueFilters)
+      ? this.selectedQueueFilters.filter(q => allowedQueues.includes(q))
+      : [];
+
+    if (selected.length) return selected;
+
+    return [allowedQueues[0]];
+  }
 
     return [allowedQueues[0]];
   }
@@ -1373,20 +1755,20 @@ class SupervisorAccessWidget extends HTMLElement {
   isQueueVisibleForCurrentUser(queueName) {
     const allowedQueues = Array.isArray(this.allowedQueueNames) ? this.allowedQueueNames : [];
 
-    // Important: do NOT show all calls when no team/queue mapping is available.
-    // Otherwise a Service user could still see Sales calls if the backend returns global wallboard data.
-    if (!allowedQueues.length) return false;
+    // If the backend/session does not provide a team, keep existing behavior instead of hiding everything.
+    if (!allowedQueues.length) return true;
 
     const visibleQueues = this.getVisibleQueueNames();
+    const normalizedQueue = this.normalizeText(queueName);
 
-    return visibleQueues.some(q => this.queueMatchesAllowedQueue(queueName, q));
+    return visibleQueues.some(q => this.normalizeText(q) === normalizedQueue);
   }
 
   filterCallsByAllowedQueues(calls) {
     const list = Array.isArray(calls) ? calls : [];
 
     return list.filter(call => {
-      const queueName = this.getCallQueueName(call);
+      const queueName = call.queue || call.firstQueue || "";
       return this.isQueueVisibleForCurrentUser(queueName);
     });
   }
@@ -1438,7 +1820,7 @@ class SupervisorAccessWidget extends HTMLElement {
       row.className = "call-row";
       row.innerHTML = `
         <div>${call.status || "-"}</div>
-        <div>${this.getCallQueueName(call) || "-"}</div>
+        <div>${call.queue || call.firstQueue || "-"}</div>
         <div>${call.caller || "-"}</div>
         <div>${call.entryPoint || "-"}</div>
         <div>${this.formatDuration(call.waitingSeconds)}</div>
@@ -1469,7 +1851,7 @@ class SupervisorAccessWidget extends HTMLElement {
       row.className = "call-row active";
       row.innerHTML = `
         <div>${call.status || "-"}</div>
-        <div>${this.getCallQueueName(call) || "-"}</div>
+        <div>${call.queue || call.firstQueue || "-"}</div>
         <div>${call.caller || "-"}</div>
         <div>${call.agent || "-"}</div>
         <div>${this.formatDuration(Math.round(Number(call.connectedDuration || 0) / 1000))}</div>
@@ -1485,13 +1867,6 @@ class SupervisorAccessWidget extends HTMLElement {
       const data = await this.readJsonResponse(res);
 
       if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
-
-      // Dynamically detect queues assigned to the current user/team
-      const detectedQueues = this.extractAllowedQueuesFromWallboardData(data);
-
-      if (detectedQueues.length) {
-        this.allowedQueueNames = detectedQueues;
-      }
 
       this.updateQueueFilterOptions();
 
@@ -1557,7 +1932,7 @@ class SupervisorAccessWidget extends HTMLElement {
       const visibleQueues = this.getVisibleQueueNames();
       const queueFilterInfo = visibleQueues.length
         ? ` • Queue: ${visibleQueues.join(", ")}`
-        : ` • No queue assignment detected`;
+        : "";
 
       this.setWallboardStatus(`Updated ${new Date().toLocaleTimeString()}${queueFilterInfo}`);
     } catch (err) {

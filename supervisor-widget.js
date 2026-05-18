@@ -589,6 +589,61 @@ class SupervisorAccessWidget extends HTMLElement {
           background: rgba(255,255,255,0.02);
         }
 
+        .calls-card.collapsible {
+          padding: 0;
+          overflow: hidden;
+        }
+
+        .calls-toggle {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          padding: 16px 20px;
+          cursor: pointer;
+          user-select: none;
+          border-bottom: 1px solid var(--tableBorder);
+        }
+
+        .calls-toggle-title {
+          font-size: 18px;
+          font-weight: 700;
+          color: var(--text);
+        }
+
+        .calls-toggle-subtitle {
+          margin-top: 4px;
+          font-size: 12px;
+          color: var(--muted);
+          font-weight: 500;
+        }
+
+        .calls-toggle-icon {
+          transition: transform 0.25s ease;
+          color: var(--text);
+          font-size: 16px;
+        }
+
+        .calls-toggle.collapsed .calls-toggle-icon {
+          transform: rotate(-90deg);
+        }
+
+        .calls-content {
+          overflow-x: auto;
+          overflow-y: hidden;
+          transition: max-height 0.35s ease, opacity 0.25s ease;
+          max-height: 900px;
+          opacity: 1;
+          padding: 0 20px 20px 20px;
+        }
+
+        .calls-content.collapsed {
+          max-height: 0;
+          opacity: 0;
+          pointer-events: none;
+          padding-bottom: 0;
+        }
+
         :host(.theme-light) .calls-card {
           background: rgba(0,0,0,0.02);
         }
@@ -622,6 +677,17 @@ class SupervisorAccessWidget extends HTMLElement {
             minmax(160px,1.1fr)
             minmax(140px,1fr)
             minmax(90px,0.7fr)
+            minmax(90px,0.7fr);
+        }
+
+        .call-row.history {
+          grid-template-columns:
+            minmax(90px,0.8fr)
+            minmax(140px,1fr)
+            minmax(150px,1fr)
+            minmax(140px,1fr)
+            minmax(110px,0.8fr)
+            minmax(100px,0.7fr)
             minmax(90px,0.7fr);
         }
 
@@ -929,6 +995,23 @@ class SupervisorAccessWidget extends HTMLElement {
               </div>
             </div>
 
+            <div class="calls-card collapsible">
+              <div class="calls-toggle" id="callHistoryToggle">
+                <div>
+                  <div class="calls-toggle-title">Call History</div>
+                  <div class="calls-toggle-subtitle">Current selected queues · Last 24h</div>
+                </div>
+                <div class="calls-toggle-icon">▼</div>
+              </div>
+              <div class="calls-content" id="callHistoryContent">
+                <div class="calls-table" id="callHistoryList">
+                  <div class="call-row history call-header">
+                    <div>Status</div><div>Queue</div><div>Caller</div><div>Agent</div><div>Started</div><div>Duration</div><div>Task</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <div class="calls-card">
               <div class="calls-title">Active Calls</div>
               <div class="calls-table" id="activeCallList">
@@ -1022,6 +1105,16 @@ class SupervisorAccessWidget extends HTMLElement {
       configToggle.addEventListener("click", () => {
         configContent.classList.toggle("collapsed");
         configToggle.classList.toggle("collapsed");
+      });
+    }
+
+    const callHistoryToggle = this.shadowRoot.getElementById("callHistoryToggle");
+    const callHistoryContent = this.shadowRoot.getElementById("callHistoryContent");
+
+    if (callHistoryToggle && callHistoryContent) {
+      callHistoryToggle.addEventListener("click", () => {
+        callHistoryContent.classList.toggle("collapsed");
+        callHistoryToggle.classList.toggle("collapsed");
       });
     }
   }
@@ -1252,6 +1345,21 @@ class SupervisorAccessWidget extends HTMLElement {
     return id ? String(id).slice(0, 8) : "-";
   }
 
+  formatDateTime(timestamp) {
+    const value = Number(timestamp || 0);
+    if (!value) return "-";
+
+    try {
+      return new Date(value).toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit"
+      });
+    } catch {
+      return "-";
+    }
+  }
+
   getAgentDuration(agent) {
     const base = Number(agent.lastActivityTime || agent.startTime || 0);
     return base > 0 ? Math.max(0, Math.floor((Date.now() - base) / 1000)) : 0;
@@ -1474,6 +1582,44 @@ class SupervisorAccessWidget extends HTMLElement {
     });
   }
 
+  renderCallHistory(calls) {
+    const list = this.shadowRoot.getElementById("callHistoryList");
+    if (!list) return;
+
+    const maxRows = 75;
+    const rows = (Array.isArray(calls) ? calls : []).slice(0, maxRows);
+
+    list.innerHTML = `
+      <div class="call-row history call-header">
+        <div>Status</div><div>Queue</div><div>Caller</div><div>Agent</div><div>Started</div><div>Duration</div><div>Task</div>
+      </div>
+    `;
+
+    if (!rows.length) {
+      const row = document.createElement("div");
+      row.className = "call-row history";
+      row.innerHTML = `<div>No calls in the last 24h</div><div></div><div></div><div></div><div></div><div></div><div></div>`;
+      list.appendChild(row);
+      return;
+    }
+
+    rows.forEach(call => {
+      const row = document.createElement("div");
+      row.className = "call-row history";
+      const durationMs = Number(call.totalDuration || call.connectedDuration || call.queueDuration || 0);
+      row.innerHTML = `
+        <div>${call.status || "-"}</div>
+        <div>${this.getCallQueueName(call) || "-"}</div>
+        <div>${call.caller || "-"}</div>
+        <div>${call.agent || "-"}</div>
+        <div>${this.formatDateTime(call.createdTime)}</div>
+        <div>${this.formatDuration(Math.round(durationMs / 1000))}</div>
+        <div>${this.shortId(call.id)}</div>
+      `;
+      list.appendChild(row);
+    });
+  }
+
   renderActiveCalls(calls) {
     const list = this.shadowRoot.getElementById("activeCallList");
     list.innerHTML = `
@@ -1519,8 +1665,11 @@ class SupervisorAccessWidget extends HTMLElement {
       ? data.taskList.filter(t => String(t.status || "").toLowerCase() === "connected")
       : [];
 
+    const rawCallHistory = Array.isArray(data.callHistoryList) ? data.callHistoryList : [];
+
     const visibleWaitingCalls = this.filterCallsByAllowedQueues(rawWaitingCalls);
     const visibleActiveCalls = this.filterCallsByAllowedQueues(rawActiveCalls);
+    const visibleCallHistory = this.filterCallsByAllowedQueues(rawCallHistory);
     const visibleQueueKpis = this.calculateQueueKpisFromVisibleCalls(
       visibleWaitingCalls,
       visibleActiveCalls,
@@ -1579,6 +1728,7 @@ class SupervisorAccessWidget extends HTMLElement {
     }
 
     this.renderWaitingCalls(visibleWaitingCalls);
+    this.renderCallHistory(visibleCallHistory);
     this.renderActiveCalls(visibleActiveCalls);
 
     const visibleQueues = this.getVisibleQueueNames();

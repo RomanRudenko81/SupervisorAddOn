@@ -652,6 +652,10 @@ class SupervisorAccessWidget extends HTMLElement {
           min-width: 760px;
         }
 
+        #callHistoryList {
+          min-width: 1080px;
+        }
+
         .call-row {
           display: grid;
           grid-template-columns:
@@ -686,6 +690,7 @@ class SupervisorAccessWidget extends HTMLElement {
             minmax(140px,1fr)
             minmax(150px,1fr)
             minmax(140px,1fr)
+            minmax(180px,1.15fr)
             minmax(110px,0.8fr)
             minmax(100px,0.7fr)
             minmax(90px,0.7fr);
@@ -995,6 +1000,15 @@ class SupervisorAccessWidget extends HTMLElement {
               </div>
             </div>
 
+            <div class="calls-card">
+              <div class="calls-title">Active Calls</div>
+              <div class="calls-table" id="activeCallList">
+                <div class="call-row active call-header">
+                  <div>Status</div><div>Queue</div><div>Caller</div><div>Agent</div><div>Handle</div><div>Task</div>
+                </div>
+              </div>
+            </div>
+
             <div class="calls-card collapsible">
               <div class="calls-toggle" id="callHistoryToggle">
                 <div>
@@ -1006,17 +1020,8 @@ class SupervisorAccessWidget extends HTMLElement {
               <div class="calls-content" id="callHistoryContent">
                 <div class="calls-table" id="callHistoryList">
                   <div class="call-row history call-header">
-                    <div>Status</div><div>Queue</div><div>Caller</div><div>Agent</div><div>Started</div><div>Duration</div><div>Task</div>
+                    <div>Status</div><div>Queue</div><div>Caller</div><div>Agent</div><div>Wrapup Reason</div><div>Started</div><div>Duration</div><div>Task</div>
                   </div>
-                </div>
-              </div>
-            </div>
-
-            <div class="calls-card">
-              <div class="calls-title">Active Calls</div>
-              <div class="calls-table" id="activeCallList">
-                <div class="call-row active call-header">
-                  <div>Status</div><div>Queue</div><div>Caller</div><div>Agent</div><div>Handle</div><div>Task</div>
                 </div>
               </div>
             </div>
@@ -1400,6 +1405,20 @@ class SupervisorAccessWidget extends HTMLElement {
     );
   }
 
+  getWrapupReason(call) {
+    return (
+      call?.wrapupReason ||
+      call?.wrapUpReason ||
+      call?.wrapUpCodeName ||
+      call?.wrapupCodeName ||
+      call?.wrapUpCode ||
+      call?.wrapupCode ||
+      call?.wrapUpData?.name ||
+      call?.wrapupData?.name ||
+      "-"
+    );
+  }
+
   updateQueueFilterOptions() {
     const wrapper = this.shadowRoot.getElementById("queueFilterWrapper");
     const button = this.$queueFilterButton();
@@ -1591,14 +1610,14 @@ class SupervisorAccessWidget extends HTMLElement {
 
     list.innerHTML = `
       <div class="call-row history call-header">
-        <div>Status</div><div>Queue</div><div>Caller</div><div>Agent</div><div>Started</div><div>Duration</div><div>Task</div>
+        <div>Status</div><div>Queue</div><div>Caller</div><div>Agent</div><div>Wrapup Reason</div><div>Started</div><div>Duration</div><div>Task</div>
       </div>
     `;
 
     if (!rows.length) {
       const row = document.createElement("div");
       row.className = "call-row history";
-      row.innerHTML = `<div>No calls in the last 24h</div><div></div><div></div><div></div><div></div><div></div><div></div>`;
+      row.innerHTML = `<div>No calls in the last 24h</div><div></div><div></div><div></div><div></div><div></div><div></div><div></div>`;
       list.appendChild(row);
       return;
     }
@@ -1612,6 +1631,7 @@ class SupervisorAccessWidget extends HTMLElement {
         <div>${this.getCallQueueName(call) || "-"}</div>
         <div>${call.caller || "-"}</div>
         <div>${call.agent || "-"}</div>
+        <div>${this.getWrapupReason(call)}</div>
         <div>${this.formatDateTime(call.createdTime)}</div>
         <div>${this.formatDuration(Math.round(durationMs / 1000))}</div>
         <div>${this.shortId(call.id)}</div>

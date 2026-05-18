@@ -576,8 +576,22 @@ class SupervisorAccessWidget extends HTMLElement {
         .calls-wrapper {
           margin-top: 34px;
           display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(min(100%, 720px), 1fr));
+          grid-template-columns: repeat(2, minmax(0, 1fr));
           gap: 18px;
+        }
+
+        .calls-card.call-history-card {
+          grid-column: 1 / -1;
+        }
+
+        @media (max-width: 1200px) {
+          .calls-wrapper {
+            grid-template-columns: 1fr;
+          }
+
+          .calls-card.call-history-card {
+            grid-column: auto;
+          }
         }
 
         .calls-card {
@@ -1009,7 +1023,7 @@ class SupervisorAccessWidget extends HTMLElement {
               </div>
             </div>
 
-            <div class="calls-card collapsible">
+            <div class="calls-card collapsible call-history-card">
               <div class="calls-toggle" id="callHistoryToggle">
                 <div>
                   <div class="calls-toggle-title">Call History</div>
@@ -1405,17 +1419,25 @@ class SupervisorAccessWidget extends HTMLElement {
     );
   }
 
+  normalizeEmpty(value) {
+    const text = String(value || "").trim();
+    return text || "-";
+  }
+
   getWrapupReason(call) {
-    return (
+    return this.normalizeEmpty(
       call?.wrapupReason ||
       call?.wrapUpReason ||
       call?.wrapUpCodeName ||
       call?.wrapupCodeName ||
       call?.wrapUpCode ||
       call?.wrapupCode ||
+      call?.wrapUpReasonName ||
+      call?.wrapupReasonName ||
       call?.wrapUpData?.name ||
       call?.wrapupData?.name ||
-      "-"
+      call?.wrapUp?.name ||
+      call?.wrapup?.name
     );
   }
 

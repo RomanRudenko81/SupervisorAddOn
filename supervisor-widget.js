@@ -974,7 +974,7 @@ class SupervisorAccessWidget extends HTMLElement {
           </div>
 
           <div class="dashboard">
-            <div class="dashboard-title">Dashboard</div>
+            <div class="dashboard-title">Dashboard_V03</div>
 
             <div class="kpis">
               <div class="kpi calls-in-queue-card" id="kpiCardCallsInQueue">

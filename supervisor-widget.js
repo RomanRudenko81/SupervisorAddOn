@@ -1,4 +1,3 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-frontend-2026-05-19-v12";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -402,7 +401,7 @@ class SupervisorAccessWidget extends HTMLElement {
         }
 
         .section-title,
-        .-title,
+        .dashboard-title,
         .agents-title,
         .calls-title {
           font-size: 22px;
@@ -463,7 +462,7 @@ class SupervisorAccessWidget extends HTMLElement {
           min-height: 18px;
         }
 
-        . {
+        .dashboard {
           margin-top: 34px;
         }
 
@@ -717,23 +716,6 @@ class SupervisorAccessWidget extends HTMLElement {
           margin-top: 12px;
           font-size: 13px;
           color: var(--muted);
-        }
-
-        .frontend-build-id {
-          margin-top: 18px;
-          padding: 10px 12px;
-          border-radius: 10px;
-          background: var(--kpi);
-          border: 1px solid var(--cardBorder);
-          color: var(--muted);
-          font-size: 12px;
-          line-height: 1.4;
-          word-break: break-all;
-        }
-
-        .frontend-build-id strong {
-          color: var(--text);
-          font-weight: 700;
         }
 
         @media (max-width: 1400px) {
@@ -992,7 +974,7 @@ class SupervisorAccessWidget extends HTMLElement {
           </div>
 
           <div class="dashboard">
-            <div class="dashboard-title">Dashboard_V02</div>
+            <div class="dashboard-title">Dashboard</div>
 
             <div class="kpis">
               <div class="kpi calls-in-queue-card" id="kpiCardCallsInQueue">
@@ -1059,10 +1041,6 @@ class SupervisorAccessWidget extends HTMLElement {
                 </div>
               </div>
             </div>
-          </div>
-
-          <div class="frontend-build-id" id="frontendBuildId">
-            <strong>Frontend Build:</strong> ${FRONTEND_BUILD_ID}
           </div>
         </div>
       </div>
@@ -1449,7 +1427,7 @@ class SupervisorAccessWidget extends HTMLElement {
   }
 
   getWrapupReason(call) {
-    return this.normalizeEmpty(
+    const value =
       call?.wrapupReason ||
       call?.wrapUpReason ||
       call?.wrapUpCodeName ||
@@ -1461,8 +1439,10 @@ class SupervisorAccessWidget extends HTMLElement {
       call?.wrapUpData?.name ||
       call?.wrapupData?.name ||
       call?.wrapUp?.name ||
-      call?.wrapup?.name
-    );
+      call?.wrapup?.name ||
+      "";
+
+    return String(value || "").trim() || "-";
   }
 
   getHandleType(call) {
@@ -1479,6 +1459,7 @@ class SupervisorAccessWidget extends HTMLElement {
     const value =
       call?.terminationReason ||
       call?.taskLegTerminationReason ||
+      call?.taskLegStatus ||
       "";
 
     return String(value || "").trim() || "-";
@@ -1947,7 +1928,5 @@ class SupervisorAccessWidget extends HTMLElement {
 }
 
 if (!customElements.get("supervisor-access-widget-v2")) {
-  console.info("Supervisor widget frontend build:", FRONTEND_BUILD_ID);
-
-customElements.define("supervisor-access-widget-v2", SupervisorAccessWidget);
+  customElements.define("supervisor-access-widget-v2", SupervisorAccessWidget);
 }

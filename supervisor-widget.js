@@ -1,3 +1,4 @@
+const FRONTEND_BUILD_ID = "wxcc-widget-frontend-2026-05-19-v12";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -718,6 +719,23 @@ class SupervisorAccessWidget extends HTMLElement {
           color: var(--muted);
         }
 
+        .frontend-build-id {
+          margin-top: 18px;
+          padding: 10px 12px;
+          border-radius: 10px;
+          background: var(--kpi);
+          border: 1px solid var(--cardBorder);
+          color: var(--muted);
+          font-size: 12px;
+          line-height: 1.4;
+          word-break: break-all;
+        }
+
+        .frontend-build-id strong {
+          color: var(--text);
+          font-weight: 700;
+        }
+
         @media (max-width: 1400px) {
           .kpis {
             grid-template-columns: repeat(4, minmax(0,1fr));
@@ -1041,6 +1059,10 @@ class SupervisorAccessWidget extends HTMLElement {
                 </div>
               </div>
             </div>
+          </div>
+
+          <div class="frontend-build-id" id="frontendBuildId">
+            <strong>Frontend Build:</strong> ${FRONTEND_BUILD_ID}
           </div>
         </div>
       </div>
@@ -1925,5 +1947,7 @@ class SupervisorAccessWidget extends HTMLElement {
 }
 
 if (!customElements.get("supervisor-access-widget-v2")) {
-  customElements.define("supervisor-access-widget-v2", SupervisorAccessWidget);
+  console.info("Supervisor widget frontend build:", FRONTEND_BUILD_ID);
+
+customElements.define("supervisor-access-widget-v2", SupervisorAccessWidget);
 }

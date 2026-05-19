@@ -667,7 +667,7 @@ class SupervisorAccessWidget extends HTMLElement {
         }
 
         #callHistoryList {
-          min-width: 1220px;
+          min-width: 1400px;
         }
 
         .call-row {
@@ -708,7 +708,8 @@ class SupervisorAccessWidget extends HTMLElement {
             minmax(140px,0.9fr)
             minmax(110px,0.8fr)
             minmax(100px,0.7fr)
-            minmax(90px,0.7fr);
+            minmax(90px,0.7fr)
+            minmax(160px,1fr);
         }
 
         #wallboardStatus {
@@ -1035,7 +1036,7 @@ class SupervisorAccessWidget extends HTMLElement {
               <div class="calls-content" id="callHistoryContent">
                 <div class="calls-table" id="callHistoryList">
                   <div class="call-row history call-header">
-                    <div>Status</div><div>Queue</div><div>Caller</div><div>Agent</div><div>Wrapup Reason</div><div>Handle / Type</div><div>Started</div><div>Duration</div><div>Task</div>
+                    <div>Status</div><div>Queue</div><div>Caller</div><div>Agent</div><div>Wrapup Reason</div><div>Handle / Type</div><div>Termination Reason</div><div>Started</div><div>Duration</div><div>Task</div>
                   </div>
                 </div>
               </div>
@@ -1452,6 +1453,15 @@ class SupervisorAccessWidget extends HTMLElement {
     return String(value || "").trim() || "-";
   }
 
+  getTerminationReason(call) {
+    const value =
+      call?.terminationReason ||
+      call?.taskLegTerminationReason ||
+      "";
+
+    return String(value || "").trim() || "-";
+  }
+
   updateQueueFilterOptions() {
     const wrapper = this.shadowRoot.getElementById("queueFilterWrapper");
     const button = this.$queueFilterButton();
@@ -1643,14 +1653,14 @@ class SupervisorAccessWidget extends HTMLElement {
 
     list.innerHTML = `
       <div class="call-row history call-header">
-        <div>Status</div><div>Queue</div><div>Caller</div><div>Agent</div><div>Wrapup Reason</div><div>Handle / Type</div><div>Started</div><div>Duration</div><div>Task</div>
+        <div>Status</div><div>Queue</div><div>Caller</div><div>Agent</div><div>Wrapup Reason</div><div>Handle / Type</div><div>Termination Reason</div><div>Started</div><div>Duration</div><div>Task</div>
       </div>
     `;
 
     if (!rows.length) {
       const row = document.createElement("div");
       row.className = "call-row history";
-      row.innerHTML = `<div>No calls in the last 24h</div><div></div><div></div><div></div><div></div><div></div><div></div><div></div><div></div>`;
+      row.innerHTML = `<div>No calls in the last 24h</div><div></div><div></div><div></div><div></div><div></div><div></div><div></div><div></div><div></div>`;
       list.appendChild(row);
       return;
     }
@@ -1666,6 +1676,7 @@ class SupervisorAccessWidget extends HTMLElement {
         <div>${call.agent || "-"}</div>
         <div>${this.getWrapupReason(call)}</div>
         <div>${this.getHandleType(call)}</div>
+        <div>${this.getTerminationReason(call)}</div>
         <div>${this.formatDateTime(call.createdTime)}</div>
         <div>${this.formatDuration(Math.round(durationMs / 1000))}</div>
         <div>${this.shortId(call.id)}</div>

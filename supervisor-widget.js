@@ -974,7 +974,7 @@ class SupervisorAccessWidget extends HTMLElement {
           </div>
 
           <div class="dashboard">
-            <div class="dashboard-title">Dashboard_V03</div>
+            <div class="dashboard-title">Dashboard</div>
 
             <div class="kpis">
               <div class="kpi calls-in-queue-card" id="kpiCardCallsInQueue">
@@ -1671,6 +1671,7 @@ class SupervisorAccessWidget extends HTMLElement {
     rows.forEach(call => {
       const row = document.createElement("div");
       row.className = "call-row history";
+      const liveSeconds = Number(call.liveDurationSeconds || 0);
       const durationMs = Number(call.totalDuration || call.connectedDuration || call.queueDuration || 0);
       row.innerHTML = `
         <div>${call.status || "-"}</div>
@@ -1681,7 +1682,7 @@ class SupervisorAccessWidget extends HTMLElement {
         <div>${this.getHandleType(call)}</div>
         <div>${this.getTerminationReason(call)}</div>
         <div>${this.formatDateTime(call.createdTime)}</div>
-        <div>${this.formatDuration(Math.round(durationMs / 1000))}</div>
+        <div>${this.formatDuration(liveSeconds || Math.round(durationMs / 1000))}</div>
         <div>${this.shortId(call.id)}</div>
       `;
       list.appendChild(row);
@@ -1707,12 +1708,14 @@ class SupervisorAccessWidget extends HTMLElement {
     calls.forEach(call => {
       const row = document.createElement("div");
       row.className = "call-row active";
+      const handleSeconds = Number(call.handleSeconds || call.liveHandleSeconds || 0);
+      const fallbackSeconds = Math.round(Number(call.connectedDuration || 0) / 1000);
       row.innerHTML = `
         <div>${call.status || "-"}</div>
         <div>${this.getCallQueueName(call) || "-"}</div>
         <div>${call.caller || "-"}</div>
         <div>${call.agent || "-"}</div>
-        <div>${this.formatDuration(Math.round(Number(call.connectedDuration || 0) / 1000))}</div>
+        <div>${this.formatDuration(handleSeconds || fallbackSeconds)}</div>
         <div>${this.shortId(call.id)}</div>
       `;
       list.appendChild(row);

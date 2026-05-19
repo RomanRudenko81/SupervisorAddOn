@@ -17,6 +17,7 @@ class SupervisorAccessWidget extends HTMLElement {
     this.wallboardPollHandle = null;
     this.wallboardEventSource = null;
     this.wallboardReconnectHandle = null;
+    this.activeCallTimerHandle = null;
     this.lastWallboardData = null;
     this.hasUnsavedChanges = false;
     this.themeMode = localStorage.getItem("supervisorWidgetTheme") || "dark";
@@ -30,12 +31,14 @@ class SupervisorAccessWidget extends HTMLElement {
     this.populateStaticOptions();
     this.bindEvents();
     this.init();
+    this.startActiveCallTimer();
   }
 
   disconnectedCallback() {
     if (this.pollHandle) clearInterval(this.pollHandle);
     if (this.wallboardPollHandle) clearInterval(this.wallboardPollHandle);
     if (this.wallboardReconnectHandle) clearTimeout(this.wallboardReconnectHandle);
+    if (this.activeCallTimerHandle) clearInterval(this.activeCallTimerHandle);
     if (this.wallboardEventSource) this.wallboardEventSource.close();
   }
 
@@ -1671,7 +1674,7 @@ class SupervisorAccessWidget extends HTMLElement {
     rows.forEach(call => {
       const row = document.createElement("div");
       row.className = "call-row history";
-      const liveSeconds = Number(call.liveDurationSeconds || 0);
+      const liveSeconds = this.getLiveDisplaySeconds(call);
       const durationMs = Number(call.totalDuration || call.connectedDuration || call.queueDuration || 0);
       row.innerHTML = `
         <div>${call.status || "-"}</div>
@@ -1708,7 +1711,7 @@ class SupervisorAccessWidget extends HTMLElement {
     calls.forEach(call => {
       const row = document.createElement("div");
       row.className = "call-row active";
-      const handleSeconds = Number(call.handleSeconds || call.liveHandleSeconds || 0);
+      const handleSeconds = this.getLiveDisplaySeconds(call);
       const fallbackSeconds = Math.round(Number(call.connectedDuration || 0) / 1000);
       row.innerHTML = `
         <div>${call.status || "-"}</div>
@@ -1832,6 +1835,7 @@ class SupervisorAccessWidget extends HTMLElement {
     if (this.wallboardReconnectHandle) {
       clearTimeout(this.wallboardReconnectHandle);
       this.wallboardReconnectHandle = null;
+    this.activeCallTimerHandle = null;
     }
 
     if (!this.sessionToken) {

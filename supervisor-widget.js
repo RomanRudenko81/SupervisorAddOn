@@ -402,7 +402,7 @@ class SupervisorAccessWidget extends HTMLElement {
         }
 
         .section-title,
-        .dashboard-title,
+        .-title,
         .agents-title,
         .calls-title {
           font-size: 22px;
@@ -463,7 +463,7 @@ class SupervisorAccessWidget extends HTMLElement {
           min-height: 18px;
         }
 
-        .dashboard {
+        . {
           margin-top: 34px;
         }
 
@@ -992,7 +992,7 @@ class SupervisorAccessWidget extends HTMLElement {
           </div>
 
           <div class="dashboard">
-            <div class="dashboard-title">Dashboard_PROOF</div>
+            <div class="dashboard-title">Dashboard_V02</div>
 
             <div class="kpis">
               <div class="kpi calls-in-queue-card" id="kpiCardCallsInQueue">

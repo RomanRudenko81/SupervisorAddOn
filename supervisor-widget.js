@@ -1,3 +1,4 @@
+const FRONTEND_BUILD_ID = "wxcc-widget-frontend-timer-history-cache-2026-05-19-v16";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -19,6 +20,9 @@ class SupervisorAccessWidget extends HTMLElement {
     this.wallboardReconnectHandle = null;
     this.activeCallTimerHandle = null;
     this.lastWallboardData = null;
+    this.activeCallRenderCache = new Map();
+    this.callHistoryRenderCache = [];
+    this.callHistoryCacheTs = 0;
     this.hasUnsavedChanges = false;
     this.themeMode = localStorage.getItem("supervisorWidgetTheme") || "dark";
     this.allowedQueueNames = [];
@@ -31,7 +35,7 @@ class SupervisorAccessWidget extends HTMLElement {
     this.populateStaticOptions();
     this.bindEvents();
     this.init();
-    this.startActiveCallTimer();
+    this.startRobustActiveCallTimer();
   }
 
   disconnectedCallback() {
@@ -1650,6 +1654,117 @@ class SupervisorAccessWidget extends HTMLElement {
     });
   }
 
+
+  mergeActiveCallsForTimer(calls) {
+    const now = Date.now();
+    const incoming = Array.isArray(calls) ? calls : [];
+    const next = new Map();
+
+    incoming.forEach(call => {
+      const id = String(call?.id || "");
+      if (!id) return;
+
+      const previous = this.activeCallRenderCache.get(id);
+      const incomingSeconds = Number(call.handleSeconds || call.liveHandleSeconds || call.liveDurationSeconds || 0);
+
+      let localStartMs = previous?.localStartMs;
+      if (!localStartMs) {
+        localStartMs = now - Math.max(0, incomingSeconds) * 1000;
+      }
+
+      next.set(id, {
+        ...call,
+        localStartMs,
+        localLastSeenMs: now
+      });
+    });
+
+    this.activeCallRenderCache = next;
+    return Array.from(next.values());
+  }
+
+  rememberCallHistory(calls) {
+    const rows = Array.isArray(calls) ? calls : [];
+
+    if (rows.length > 0) {
+      const existing = new Map(this.callHistoryRenderCache.map(row => [String(row.id || row.taskId || ""), row]));
+
+      rows.forEach(row => {
+        const id = String(row.id || row.taskId || "");
+        if (!id) return;
+        existing.set(id, row);
+      });
+
+      this.callHistoryRenderCache = Array.from(existing.values())
+        .sort((a, b) => Number(b.createdTime || 0) - Number(a.createdTime || 0))
+        .slice(0, 100);
+      this.callHistoryCacheTs = Date.now();
+      return this.callHistoryRenderCache;
+    }
+
+    if (this.callHistoryRenderCache.length && Date.now() - this.callHistoryCacheTs < 300000) {
+      return this.callHistoryRenderCache;
+    }
+
+    return [];
+  }
+
+  getLiveDisplaySeconds(call) {
+    const status = String(call?.status || "").toLowerCase();
+
+    if (status === "connected" && Number(call?.localStartMs || 0) > 0) {
+      return Math.max(0, Math.floor((Date.now() - Number(call.localStartMs)) / 1000));
+    }
+
+    const baseSeconds = Number(call?.handleSeconds || call?.liveHandleSeconds || call?.liveDurationSeconds || 0);
+    const baseTimestamp = Number(call?.handleBaseTimestamp || 0);
+
+    if (status === "connected" && baseTimestamp > 0) {
+      return Math.max(0, baseSeconds + Math.floor((Date.now() - baseTimestamp) / 1000));
+    }
+
+    const start = Number(call?.connectedStartTime || call?.lastActivityTime || call?.createdTime || 0);
+    if (status === "connected" && start > 0) {
+      return Math.max(0, Math.floor((Date.now() - start) / 1000));
+    }
+
+    return baseSeconds;
+  }
+
+  updateActiveDurationCells() {
+    const cells = this.shadowRoot.querySelectorAll(".live-duration");
+    cells.forEach(cell => {
+      const callId = String(cell.getAttribute("data-call-id") || "");
+      const call = Array.from(this.activeCallRenderCache.values()).find(item => this.shortId(item.id) === callId);
+      if (!call) return;
+      cell.textContent = this.formatDuration(this.getLiveDisplaySeconds(call));
+    });
+  }
+
+  startRobustActiveCallTimer() {
+    if (this.activeCallTimerHandle) {
+      clearInterval(this.activeCallTimerHandle);
+    }
+
+    this.activeCallTimerHandle = setInterval(() => {
+      this.updateActiveDurationCells();
+
+      if (!this.lastWallboardData) return;
+
+      const rawActiveCalls = Array.isArray(this.lastWallboardData.taskList)
+        ? this.lastWallboardData.taskList.filter(t => String(t.status || "").toLowerCase() === "connected")
+        : [];
+      const visibleActiveCalls = this.mergeActiveCallsForTimer(this.filterCallsByAllowedQueues(rawActiveCalls));
+      this.renderActiveCalls(visibleActiveCalls);
+
+      const rawCallHistory = Array.isArray(this.lastWallboardData.callHistoryList)
+        ? this.lastWallboardData.callHistoryList
+        : [];
+      const visibleCallHistory = this.rememberCallHistory(this.filterCallsByAllowedQueues(rawCallHistory));
+      this.renderCallHistory(visibleCallHistory);
+    }, 1000);
+  }
+
   renderCallHistory(calls) {
     const list = this.shadowRoot.getElementById("callHistoryList");
     if (!list) return;
@@ -1718,7 +1833,7 @@ class SupervisorAccessWidget extends HTMLElement {
         <div>${this.getCallQueueName(call) || "-"}</div>
         <div>${call.caller || "-"}</div>
         <div>${call.agent || "-"}</div>
-        <div>${this.formatDuration(handleSeconds || fallbackSeconds)}</div>
+        <div><span class="live-duration" data-call-id="${this.shortId(call.id)}">${this.formatDuration(handleSeconds || fallbackSeconds)}</span></div>
         <div>${this.shortId(call.id)}</div>
       `;
       list.appendChild(row);
@@ -1742,8 +1857,8 @@ class SupervisorAccessWidget extends HTMLElement {
     const rawCallHistory = Array.isArray(data.callHistoryList) ? data.callHistoryList : [];
 
     const visibleWaitingCalls = this.filterCallsByAllowedQueues(rawWaitingCalls);
-    const visibleActiveCalls = this.filterCallsByAllowedQueues(rawActiveCalls);
-    const visibleCallHistory = this.filterCallsByAllowedQueues(rawCallHistory);
+    const visibleActiveCalls = this.mergeActiveCallsForTimer(this.filterCallsByAllowedQueues(rawActiveCalls));
+    const visibleCallHistory = this.rememberCallHistory(this.filterCallsByAllowedQueues(rawCallHistory));
     const visibleQueueKpis = this.calculateQueueKpisFromVisibleCalls(
       visibleWaitingCalls,
       visibleActiveCalls,

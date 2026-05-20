@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-subscription-debug-safe-2026-05-20-v26";
+const FRONTEND_BUILD_ID = "wxcc-widget-subscription-cleanup-full-2026-05-20-v27";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();

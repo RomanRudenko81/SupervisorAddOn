@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-duration-source-policy-2026-05-19-v17";
+const FRONTEND_BUILD_ID = "wxcc-widget-history-connected-stale-2026-05-19-v20";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -18,6 +18,13 @@ class SupervisorAccessWidget extends HTMLElement {
     this.wallboardPollHandle = null;
     this.wallboardEventSource = null;
     this.wallboardReconnectHandle = null;
+    this.wallboardWatchdogHandle = null;
+    this.wallboardLastDataTs = 0;
+    this.wallboardLastEventTs = 0;
+    this.wallboardManualRefreshInFlight = false;
+    this.wallboardLastManualRefreshTs = 0;
+    this.historyConnectedMismatchSinceTs = 0;
+    this.historyConnectedMismatchLastRefreshTs = 0;
     this.activeCallTimerHandle = null;
     this.lastWallboardData = null;
     this.activeCallRenderCache = new Map();
@@ -35,6 +42,7 @@ class SupervisorAccessWidget extends HTMLElement {
     this.populateStaticOptions();
     this.bindEvents();
     this.init();
+    this.startWallboardWatchdog();
     this.startRobustActiveCallTimer();
   }
 
@@ -42,6 +50,7 @@ class SupervisorAccessWidget extends HTMLElement {
     if (this.pollHandle) clearInterval(this.pollHandle);
     if (this.wallboardPollHandle) clearInterval(this.wallboardPollHandle);
     if (this.wallboardReconnectHandle) clearTimeout(this.wallboardReconnectHandle);
+    if (this.wallboardWatchdogHandle) clearInterval(this.wallboardWatchdogHandle);
     if (this.activeCallTimerHandle) clearInterval(this.activeCallTimerHandle);
     if (this.wallboardEventSource) this.wallboardEventSource.close();
   }
@@ -1841,6 +1850,7 @@ class SupervisorAccessWidget extends HTMLElement {
   }
 
   processWallboardData(data) {
+    this.wallboardLastDataTs = Date.now();
     this.lastWallboardData = data;
 
     const detectedQueues = this.extractAllowedQueuesFromWallboardData(data);
@@ -1926,9 +1936,90 @@ class SupervisorAccessWidget extends HTMLElement {
       : " • No queue assignment detected";
 
     this.setWallboardStatus(`Live • Updated ${new Date().toLocaleTimeString()}${queueFilterInfo}`);
+
+    setTimeout(() => {
+      this.runWallboardWatchdog().catch(() => {});
+    }, 500);
   }
 
-  async loadWallboard() {
+
+  startWallboardWatchdog() {
+    if (this.wallboardWatchdogHandle) {
+      clearInterval(this.wallboardWatchdogHandle);
+    }
+
+    this.wallboardWatchdogHandle = setInterval(() => {
+      this.runWallboardWatchdog();
+    }, 5000);
+  }
+
+  async runWallboardWatchdog() {
+    if (!this.sessionToken) return;
+
+    const now = Date.now();
+    const hasEventSource = !!this.wallboardEventSource;
+    const staleData = !this.wallboardLastDataTs || now - this.wallboardLastDataTs > 15000;
+
+    const hasConnectedAgent = Array.isArray(this.lastWallboardData?.agents)
+      && this.lastWallboardData.agents.some(agent => String(agent.state || "").toLowerCase() === "connected");
+
+    const hasActiveCall = Array.isArray(this.lastWallboardData?.taskList)
+      && this.lastWallboardData.taskList.some(task => String(task.status || "").toLowerCase() === "connected");
+
+    const historyHasConnectedCall = Array.isArray(this.lastWallboardData?.callHistoryList)
+      && this.lastWallboardData.callHistoryList.some(call => String(call.status || "").toLowerCase() === "connected");
+
+    const activeMismatch = hasConnectedAgent && !hasActiveCall;
+    const historyConnectedMismatch = historyHasConnectedCall && !hasActiveCall && !hasConnectedAgent;
+
+    if (historyConnectedMismatch) {
+      if (!this.historyConnectedMismatchSinceTs) {
+        this.historyConnectedMismatchSinceTs = now;
+      }
+    } else {
+      this.historyConnectedMismatchSinceTs = 0;
+    }
+
+    const historyConnectedStale =
+      historyConnectedMismatch
+      && this.historyConnectedMismatchSinceTs
+      && now - this.historyConnectedMismatchSinceTs > 3500
+      && now - this.historyConnectedMismatchLastRefreshTs > 6000;
+
+    if (!hasEventSource || staleData || activeMismatch || historyConnectedStale) {
+      const reason = !hasEventSource
+        ? "sse-disconnected"
+        : activeMismatch
+          ? "connected-agent-without-active-call"
+          : historyConnectedStale
+            ? "history-connected-stale"
+            : "stale-data";
+
+      if (historyConnectedStale) {
+        this.historyConnectedMismatchLastRefreshTs = now;
+      }
+
+      await this.safeWallboardRefresh(reason);
+    }
+  }
+
+  async safeWallboardRefresh(reason = "watchdog") {
+    const now = Date.now();
+
+    if (this.wallboardManualRefreshInFlight) return;
+    if (now - this.wallboardLastManualRefreshTs < 4500) return;
+
+    this.wallboardManualRefreshInFlight = true;
+    this.wallboardLastManualRefreshTs = now;
+
+    try {
+      await this.loadWallboard(`watchdog:${reason}`);
+    } finally {
+      this.wallboardManualRefreshInFlight = false;
+    }
+  }
+
+  async loadWallboard(reason = "manual") {
     try {
       const res = await this.authorizedFetch(`/api/wallboard`);
       const data = await this.readJsonResponse(res);
@@ -1936,6 +2027,9 @@ class SupervisorAccessWidget extends HTMLElement {
       if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
 
       this.processWallboardData(data);
+      if (reason && reason !== "manual") {
+        this.setWallboardStatus(`Recovered via ${reason} ${new Date().toLocaleTimeString()}`);
+      }
     } catch (err) {
       this.setWallboardStatus(`Dashboard failed: ${err.message}`);
     }
@@ -1950,7 +2044,6 @@ class SupervisorAccessWidget extends HTMLElement {
     if (this.wallboardReconnectHandle) {
       clearTimeout(this.wallboardReconnectHandle);
       this.wallboardReconnectHandle = null;
-    this.activeCallTimerHandle = null;
     }
 
     if (!this.sessionToken) {
@@ -1963,10 +2056,12 @@ class SupervisorAccessWidget extends HTMLElement {
     this.wallboardEventSource = source;
 
     source.addEventListener("ready", () => {
+      this.wallboardLastEventTs = Date.now();
       this.setWallboardStatus("Live dashboard connected");
     });
 
     source.addEventListener("wallboard", event => {
+      this.wallboardLastEventTs = Date.now();
       try {
         const data = JSON.parse(event.data);
         this.processWallboardData(data);
@@ -1976,10 +2071,13 @@ class SupervisorAccessWidget extends HTMLElement {
     });
 
     source.addEventListener("wxcc-event", () => {
+      this.wallboardLastEventTs = Date.now();
       this.setWallboardStatus("WXCC event received. Refreshing...");
+      setTimeout(() => this.safeWallboardRefresh("wxcc-event"), 1200);
     });
 
     source.addEventListener("event-refresh", () => {
+      this.wallboardLastEventTs = Date.now();
       this.setWallboardStatus(`Event refresh completed ${new Date().toLocaleTimeString()}`);
     });
 
@@ -1990,6 +2088,7 @@ class SupervisorAccessWidget extends HTMLElement {
       }
 
       this.setWallboardStatus("Live dashboard disconnected. Reconnecting...");
+      this.safeWallboardRefresh("sse-error");
 
       this.wallboardReconnectHandle = setTimeout(() => {
         this.startWallboardStream();

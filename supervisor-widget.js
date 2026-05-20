@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-wallboard-500-resilience-2026-05-19-v22";
+const FRONTEND_BUILD_ID = "wxcc-widget-sse-event-deep-debug-2026-05-19-v23";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -28,6 +28,8 @@ class SupervisorAccessWidget extends HTMLElement {
     this.focusResumeRefreshHandle = null;
     this.focusResumeLastRefreshTs = 0;
     this.boundFocusResumeRefresh = null;
+    this.sseClientDebugEvents = [];
+    this.sseClientDebugMax = 120;
     this.activeCallTimerHandle = null;
     this.lastWallboardData = null;
     this.activeCallRenderCache = new Map();
@@ -2074,12 +2076,14 @@ class SupervisorAccessWidget extends HTMLElement {
   }
 
   async loadWallboard(reason = "manual") {
+    this.recordClientSseDebug("wallboard-fetch-start", { reason });
     try {
       const res = await this.authorizedFetch(`/api/wallboard`);
       const data = await this.readJsonResponse(res);
 
       if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
 
+      this.recordClientSseDebug("wallboard-fetch-success", { reason, stale: data?.stale === true, status: res.status });
       this.processWallboardData(data);
       if (data.stale === true) {
         this.setWallboardStatus(`Recovered with cached data ${new Date().toLocaleTimeString()} • ${data.lastError || data.staleReason || ""}`.trim());
@@ -2087,8 +2091,38 @@ class SupervisorAccessWidget extends HTMLElement {
         this.setWallboardStatus(`Recovered via ${reason} ${new Date().toLocaleTimeString()}`);
       }
     } catch (err) {
+      this.recordClientSseDebug("wallboard-fetch-error", { reason, message: err.message });
       this.setWallboardStatus(`Dashboard failed: ${err.message}`);
     }
+  }
+
+
+  recordClientSseDebug(type, details = {}) {
+    const item = {
+      ts: Date.now(),
+      iso: new Date().toISOString(),
+      type,
+      ...details
+    };
+
+    this.sseClientDebugEvents.push(item);
+    while (this.sseClientDebugEvents.length > this.sseClientDebugMax) {
+      this.sseClientDebugEvents.shift();
+    }
+
+    try {
+      window.__WXCC_SUPERVISOR_WIDGET_DEBUG__ = {
+        frontendBuildId: typeof FRONTEND_BUILD_ID !== "undefined" ? FRONTEND_BUILD_ID : "",
+        events: this.sseClientDebugEvents,
+        lastWallboardData: this.lastWallboardData,
+        eventSourceReadyState: this.wallboardEventSource ? this.wallboardEventSource.readyState : null,
+        lastDataAgeMs: this.wallboardLastDataTs ? Date.now() - this.wallboardLastDataTs : null
+      };
+    } catch {
+      // ignore
+    }
+
+    return item;
   }
 
   startWallboardStream() {
@@ -2108,15 +2142,18 @@ class SupervisorAccessWidget extends HTMLElement {
     }
 
     const url = `${this.API_URL}/api/wallboard/stream?token=${encodeURIComponent(this.sessionToken)}`;
+    this.recordClientSseDebug("eventsource-open-start", { url: url.replace(/token=[^&]+/, "token=***") });
     const source = new EventSource(url);
     this.wallboardEventSource = source;
 
     source.addEventListener("ready", () => {
+      this.recordClientSseDebug("eventsource-ready", { readyState: source.readyState });
       this.wallboardLastEventTs = Date.now();
       this.setWallboardStatus("Live dashboard connected");
     });
 
     source.addEventListener("wallboard", event => {
+      this.recordClientSseDebug("eventsource-wallboard", { bytes: event?.data ? event.data.length : 0, readyState: source.readyState });
       this.wallboardLastEventTs = Date.now();
       try {
         const data = JSON.parse(event.data);
@@ -2127,6 +2164,7 @@ class SupervisorAccessWidget extends HTMLElement {
     });
 
     source.addEventListener("wxcc-event", () => {
+      this.recordClientSseDebug("eventsource-wxcc-event", { readyState: source.readyState });
       this.wallboardLastEventTs = Date.now();
       this.setWallboardStatus("WXCC event received. Refreshing...");
       this.safeWallboardRefresh("wxcc-event-immediate");
@@ -2134,11 +2172,13 @@ class SupervisorAccessWidget extends HTMLElement {
     });
 
     source.addEventListener("event-refresh", () => {
+      this.recordClientSseDebug("eventsource-event-refresh", { readyState: source.readyState });
       this.wallboardLastEventTs = Date.now();
       this.setWallboardStatus(`Event refresh completed ${new Date().toLocaleTimeString()}`);
     });
 
-    source.addEventListener("error", () => {
+    source.addEventListener("error", event => {
+      this.recordClientSseDebug("eventsource-error", { readyState: source.readyState, message: event?.message || "" });
       if (this.wallboardEventSource) {
         this.wallboardEventSource.close();
         this.wallboardEventSource = null;

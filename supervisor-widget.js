@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-subscription-cleanup-full-2026-05-20-v27";
+const FRONTEND_BUILD_ID = "wxcc-widget-realtime-sse-initial-payload-2026-05-20-v28";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -2210,6 +2210,13 @@ class SupervisorAccessWidget extends HTMLElement {
       this.recordClientSseDebug("eventsource-ready", { readyState: source.readyState });
       this.wallboardLastEventTs = Date.now();
       this.setWallboardStatus("Live dashboard connected");
+
+      setTimeout(() => {
+        if (!this.lastWallboardData) {
+          this.recordClientSseDebug("ready-followup-if-empty", {});
+          this.safeWallboardRefresh("ready-followup-if-empty");
+        }
+      }, 2000);
     });
 
     source.addEventListener("wallboard", event => {
@@ -2235,6 +2242,16 @@ class SupervisorAccessWidget extends HTMLElement {
       this.recordClientSseDebug("eventsource-event-refresh", { readyState: source.readyState });
       this.wallboardLastEventTs = Date.now();
       this.setWallboardStatus(`Event refresh completed ${new Date().toLocaleTimeString()}`);
+    });
+
+
+    source.addEventListener("heartbeat", event => {
+      this.recordClientSseDebug("eventsource-heartbeat", { bytes: event?.data ? event.data.length : 0, readyState: source.readyState });
+    });
+
+    source.addEventListener("wallboard-error", event => {
+      this.recordClientSseDebug("eventsource-wallboard-error", { data: event?.data || "", readyState: source.readyState });
+      this.setWallboardStatus(`Live dashboard stream error ${new Date().toLocaleTimeString()}`);
     });
 
     source.addEventListener("error", event => {

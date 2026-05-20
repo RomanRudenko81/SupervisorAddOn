@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-focus-resume-refresh-2026-05-19-v21";
+const FRONTEND_BUILD_ID = "wxcc-widget-wallboard-500-resilience-2026-05-19-v22";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -2081,7 +2081,9 @@ class SupervisorAccessWidget extends HTMLElement {
       if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
 
       this.processWallboardData(data);
-      if (reason && reason !== "manual") {
+      if (data.stale === true) {
+        this.setWallboardStatus(`Recovered with cached data ${new Date().toLocaleTimeString()} • ${data.lastError || data.staleReason || ""}`.trim());
+      } else if (reason && reason !== "manual") {
         this.setWallboardStatus(`Recovered via ${reason} ${new Date().toLocaleTimeString()}`);
       }
     } catch (err) {

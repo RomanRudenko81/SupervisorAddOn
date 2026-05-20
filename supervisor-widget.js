@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-realtime-sse-initial-payload-2026-05-20-v28";
+const FRONTEND_BUILD_ID = "wxcc-widget-stable-rollback-baseline-2026-05-20-v29";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -18,22 +18,6 @@ class SupervisorAccessWidget extends HTMLElement {
     this.wallboardPollHandle = null;
     this.wallboardEventSource = null;
     this.wallboardReconnectHandle = null;
-    this.wallboardWatchdogHandle = null;
-    this.wallboardLastDataTs = 0;
-    this.wallboardLastEventTs = 0;
-    this.wallboardManualRefreshInFlight = false;
-    this.wallboardLastManualRefreshTs = 0;
-    this.historyConnectedMismatchSinceTs = 0;
-    this.historyConnectedMismatchLastRefreshTs = 0;
-    this.focusResumeRefreshHandle = null;
-    this.focusResumeLastRefreshTs = 0;
-    this.boundFocusResumeRefresh = null;
-    this.sseClientDebugEvents = [];
-    this.sseClientDebugMax = 120;
-    this.widgetWatchdogCounters = {};
-    this.widgetLastSignature = "";
-    this.widgetLastSignatureTs = 0;
-    this.widgetAnomalySince = {};
     this.activeCallTimerHandle = null;
     this.lastWallboardData = null;
     this.activeCallRenderCache = new Map();
@@ -51,8 +35,6 @@ class SupervisorAccessWidget extends HTMLElement {
     this.populateStaticOptions();
     this.bindEvents();
     this.init();
-    this.startWallboardWatchdog();
-    this.bindFocusResumeRefresh();
     this.startRobustActiveCallTimer();
   }
 
@@ -60,10 +42,7 @@ class SupervisorAccessWidget extends HTMLElement {
     if (this.pollHandle) clearInterval(this.pollHandle);
     if (this.wallboardPollHandle) clearInterval(this.wallboardPollHandle);
     if (this.wallboardReconnectHandle) clearTimeout(this.wallboardReconnectHandle);
-    if (this.wallboardWatchdogHandle) clearInterval(this.wallboardWatchdogHandle);
     if (this.activeCallTimerHandle) clearInterval(this.activeCallTimerHandle);
-    if (this.focusResumeRefreshHandle) clearTimeout(this.focusResumeRefreshHandle);
-    this.removeFocusResumeRefresh();
     if (this.wallboardEventSource) this.wallboardEventSource.close();
   }
 
@@ -1810,7 +1789,7 @@ class SupervisorAccessWidget extends HTMLElement {
     rows.forEach(call => {
       const row = document.createElement("div");
       row.className = "call-row history";
-      const liveSeconds = Number(call.liveDurationSeconds || 0);
+      const liveSeconds = this.getLiveDisplaySeconds(call);
       const durationMs = Number(call.totalDuration || call.connectedDuration || call.queueDuration || 0);
       row.innerHTML = `
         <div>${call.status || "-"}</div>
@@ -1862,7 +1841,6 @@ class SupervisorAccessWidget extends HTMLElement {
   }
 
   processWallboardData(data) {
-    this.wallboardLastDataTs = Date.now();
     this.lastWallboardData = data;
 
     const detectedQueues = this.extractAllowedQueuesFromWallboardData(data);
@@ -1948,241 +1926,19 @@ class SupervisorAccessWidget extends HTMLElement {
       : " • No queue assignment detected";
 
     this.setWallboardStatus(`Live • Updated ${new Date().toLocaleTimeString()}${queueFilterInfo}`);
-
-    setTimeout(() => {
-      this.runWallboardWatchdog().catch(() => {});
-    }, 500);
   }
 
-
-
-  bindFocusResumeRefresh() {
-    if (this.boundFocusResumeRefresh) return;
-
-    this.boundFocusResumeRefresh = () => {
-      this.scheduleFocusResumeRefresh("focus-resume");
-    };
-
-    window.addEventListener("focus", this.boundFocusResumeRefresh, true);
-    window.addEventListener("pageshow", this.boundFocusResumeRefresh, true);
-    document.addEventListener("visibilitychange", this.boundFocusResumeRefresh, true);
-
-    // WXCC can switch between internal widgets without browser focus changing.
-    this.addEventListener("pointerenter", this.boundFocusResumeRefresh);
-    this.addEventListener("mouseenter", this.boundFocusResumeRefresh);
-  }
-
-  removeFocusResumeRefresh() {
-    if (!this.boundFocusResumeRefresh) return;
-
-    window.removeEventListener("focus", this.boundFocusResumeRefresh, true);
-    window.removeEventListener("pageshow", this.boundFocusResumeRefresh, true);
-    document.removeEventListener("visibilitychange", this.boundFocusResumeRefresh, true);
-    this.removeEventListener("pointerenter", this.boundFocusResumeRefresh);
-    this.removeEventListener("mouseenter", this.boundFocusResumeRefresh);
-    this.boundFocusResumeRefresh = null;
-  }
-
-  scheduleFocusResumeRefresh(reason = "focus-resume") {
-    if (document.visibilityState && document.visibilityState === "hidden") return;
-    if (!this.sessionToken) return;
-
-    const now = Date.now();
-    if (now - this.focusResumeLastRefreshTs < 2500) return;
-
-    if (this.focusResumeRefreshHandle) {
-      clearTimeout(this.focusResumeRefreshHandle);
-    }
-
-    this.focusResumeRefreshHandle = setTimeout(async () => {
-      this.focusResumeRefreshHandle = null;
-      this.focusResumeLastRefreshTs = Date.now();
-
-      await this.safeWallboardRefresh(`${reason}-immediate`);
-      setTimeout(() => this.safeWallboardRefresh(`${reason}-followup`), 1200);
-    }, 150);
-  }
-
-
-  getWallboardArrays(data = this.lastWallboardData) {
-    const agents = Array.isArray(data?.agents) ? data.agents : Array.isArray(data?.agentList) ? data.agentList : [];
-    return {
-      agents,
-      activeCalls: Array.isArray(data?.taskList) ? data.taskList : [],
-      waitingCalls: Array.isArray(data?.waitingTaskList) ? data.waitingTaskList : [],
-      callHistory: Array.isArray(data?.callHistoryList) ? data.callHistoryList : []
-    };
-  }
-
-  buildWidgetSignature(data = this.lastWallboardData) {
-    const { agents, activeCalls, waitingCalls, callHistory } = this.getWallboardArrays(data);
-    return [
-      agents.map(a => `${a.name || a.login || ""}:${a.state || ""}`).sort().join("|"),
-      activeCalls.map(c => `${c.id || ""}:${c.status || ""}`).sort().join("|"),
-      waitingCalls.map(c => `${c.id || ""}:${c.waitingSeconds || 0}`).sort().join("|"),
-      callHistory.slice(0, 10).map(c => `${c.id || ""}:${c.status || ""}:${c.endedTime || ""}`).sort().join("|")
-    ].join("#");
-  }
-
-  analyzeWidgetState() {
-    const now = Date.now();
-    const { agents, activeCalls, waitingCalls, callHistory } = this.getWallboardArrays();
-    const connectedAgents = agents.filter(a => String(a.state || "").toLowerCase() === "connected");
-    const liveActive = activeCalls.filter(c => String(c.status || "").toLowerCase() === "connected");
-    const connectedHistory = callHistory.filter(c => String(c.status || "").toLowerCase() === "connected");
-    const anomalies = [];
-
-    if (!this.lastWallboardData) anomalies.push("no-wallboard-data");
-    if (!agents.length) anomalies.push("no-agent-data");
-    if (connectedAgents.length && !liveActive.length) anomalies.push("connected-agent-without-active-call");
-    if (connectedHistory.length && !liveActive.length && !connectedAgents.length) anomalies.push("history-connected-stale");
-    if (waitingCalls.some(c => Number(c.waitingSeconds || 0) < 0)) anomalies.push("negative-waiting-time");
-
-    const signature = this.buildWidgetSignature();
-    if (signature !== this.widgetLastSignature) {
-      this.widgetLastSignature = signature;
-      this.widgetLastSignatureTs = now;
-    }
-    if (this.widgetLastSignatureTs && now - this.widgetLastSignatureTs > 15000) anomalies.push("unchanged-ui-signature");
-
-    return {
-      now,
-      counts: {
-        agents: agents.length,
-        connectedAgents: connectedAgents.length,
-        activeCalls: activeCalls.length,
-        liveActive: liveActive.length,
-        waitingCalls: waitingCalls.length,
-        callHistory: callHistory.length,
-        connectedHistory: connectedHistory.length
-      },
-      anomalies,
-      lastDataAgeMs: this.wallboardLastDataTs ? now - this.wallboardLastDataTs : null,
-      eventSourceReadyState: this.wallboardEventSource ? this.wallboardEventSource.readyState : null
-    };
-  }
-
-  async refreshForAnomalies(analysis) {
-    const now = Date.now();
-    for (const anomaly of analysis.anomalies) {
-      if (!this.widgetAnomalySince[anomaly]) this.widgetAnomalySince[anomaly] = now;
-    }
-    Object.keys(this.widgetAnomalySince).forEach(key => {
-      if (!analysis.anomalies.includes(key)) delete this.widgetAnomalySince[key];
-    });
-
-    const trigger = analysis.anomalies.find(anomaly => {
-      const age = now - (this.widgetAnomalySince[anomaly] || now);
-      if (anomaly === "connected-agent-without-active-call") return age > 1500;
-      if (anomaly === "history-connected-stale") return age > 2500;
-      if (anomaly === "no-agent-data") return age > 5000;
-      if (anomaly === "unchanged-ui-signature") return age > 0;
-      if (anomaly === "no-wallboard-data") return age > 0;
-      return age > 4000;
-    });
-
-    if (trigger) {
-      this.widgetWatchdogCounters[trigger] = (this.widgetWatchdogCounters[trigger] || 0) + 1;
-      this.recordClientSseDebug("watchdog-anomaly-refresh", { trigger, analysis });
-      await this.safeWallboardRefresh(`anomaly:${trigger}`);
-    }
-  }
-
-  startWallboardWatchdog() {
-    if (this.wallboardWatchdogHandle) {
-      clearInterval(this.wallboardWatchdogHandle);
-    }
-
-    this.wallboardWatchdogHandle = setInterval(() => {
-      this.runWallboardWatchdog();
-    }, 5000);
-  }
-
-  async runWallboardWatchdog() {
-    if (!this.sessionToken) return;
-
-    const now = Date.now();
-    const hasEventSource = !!this.wallboardEventSource;
-    const staleData = !this.wallboardLastDataTs || now - this.wallboardLastDataTs > 8000;
-    const analysis = this.analyzeWidgetState();
-
-    this.recordClientSseDebug("watchdog-check", analysis);
-
-    if (!hasEventSource || staleData) {
-      await this.safeWallboardRefresh(!hasEventSource ? "sse-disconnected" : "stale-data");
-    }
-
-    await this.refreshForAnomalies(analysis);
-  }
-
-  async safeWallboardRefresh(reason = "watchdog") {
-    const now = Date.now();
-
-    if (this.wallboardManualRefreshInFlight) return;
-    if (now - this.wallboardLastManualRefreshTs < 2000) return;
-
-    this.wallboardManualRefreshInFlight = true;
-    this.wallboardLastManualRefreshTs = now;
-
-    try {
-      await this.loadWallboard(`watchdog:${reason}`);
-    } finally {
-      this.wallboardManualRefreshInFlight = false;
-    }
-  }
-
-  async loadWallboard(reason = "manual") {
-    this.recordClientSseDebug("wallboard-fetch-start", { reason });
+  async loadWallboard() {
     try {
       const res = await this.authorizedFetch(`/api/wallboard`);
       const data = await this.readJsonResponse(res);
 
       if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
 
-      this.recordClientSseDebug("wallboard-fetch-success", { reason, stale: data?.stale === true, status: res.status });
       this.processWallboardData(data);
-      if (data.stale === true) {
-        this.setWallboardStatus(`Recovered with cached data ${new Date().toLocaleTimeString()} • ${data.lastError || data.staleReason || ""}`.trim());
-      } else if (reason && reason !== "manual") {
-        this.setWallboardStatus(`Recovered via ${reason} ${new Date().toLocaleTimeString()}`);
-      }
     } catch (err) {
-      this.recordClientSseDebug("wallboard-fetch-error", { reason, message: err.message });
       this.setWallboardStatus(`Dashboard failed: ${err.message}`);
     }
-  }
-
-
-  recordClientSseDebug(type, details = {}) {
-    const item = {
-      ts: Date.now(),
-      iso: new Date().toISOString(),
-      type,
-      ...details
-    };
-
-    this.sseClientDebugEvents.push(item);
-    while (this.sseClientDebugEvents.length > this.sseClientDebugMax) {
-      this.sseClientDebugEvents.shift();
-    }
-
-    try {
-      window.__WXCC_SUPERVISOR_WIDGET_DEBUG__ = {
-        frontendBuildId: typeof FRONTEND_BUILD_ID !== "undefined" ? FRONTEND_BUILD_ID : "",
-        events: this.sseClientDebugEvents,
-        lastWallboardData: this.lastWallboardData,
-        agentCount: Array.isArray(this.lastWallboardData?.agents) ? this.lastWallboardData.agents.length : null,
-        agentListCount: Array.isArray(this.lastWallboardData?.agentList) ? this.lastWallboardData.agentList.length : null,
-        eventSourceReadyState: this.wallboardEventSource ? this.wallboardEventSource.readyState : null,
-        lastDataAgeMs: this.wallboardLastDataTs ? Date.now() - this.wallboardLastDataTs : null,
-        watchdogCounters: this.widgetWatchdogCounters,
-        watchdogAnalysis: this.analyzeWidgetState ? this.analyzeWidgetState() : null
-      };
-    } catch {
-      // ignore
-    }
-
-    return item;
   }
 
   startWallboardStream() {
@@ -2194,6 +1950,7 @@ class SupervisorAccessWidget extends HTMLElement {
     if (this.wallboardReconnectHandle) {
       clearTimeout(this.wallboardReconnectHandle);
       this.wallboardReconnectHandle = null;
+    this.activeCallTimerHandle = null;
     }
 
     if (!this.sessionToken) {
@@ -2202,26 +1959,14 @@ class SupervisorAccessWidget extends HTMLElement {
     }
 
     const url = `${this.API_URL}/api/wallboard/stream?token=${encodeURIComponent(this.sessionToken)}`;
-    this.recordClientSseDebug("eventsource-open-start", { url: url.replace(/token=[^&]+/, "token=***") });
     const source = new EventSource(url);
     this.wallboardEventSource = source;
 
     source.addEventListener("ready", () => {
-      this.recordClientSseDebug("eventsource-ready", { readyState: source.readyState });
-      this.wallboardLastEventTs = Date.now();
       this.setWallboardStatus("Live dashboard connected");
-
-      setTimeout(() => {
-        if (!this.lastWallboardData) {
-          this.recordClientSseDebug("ready-followup-if-empty", {});
-          this.safeWallboardRefresh("ready-followup-if-empty");
-        }
-      }, 2000);
     });
 
     source.addEventListener("wallboard", event => {
-      this.recordClientSseDebug("eventsource-wallboard", { bytes: event?.data ? event.data.length : 0, readyState: source.readyState });
-      this.wallboardLastEventTs = Date.now();
       try {
         const data = JSON.parse(event.data);
         this.processWallboardData(data);
@@ -2231,38 +1976,20 @@ class SupervisorAccessWidget extends HTMLElement {
     });
 
     source.addEventListener("wxcc-event", () => {
-      this.recordClientSseDebug("eventsource-wxcc-event", { readyState: source.readyState });
-      this.wallboardLastEventTs = Date.now();
       this.setWallboardStatus("WXCC event received. Refreshing...");
-      this.safeWallboardRefresh("wxcc-event-immediate");
-      setTimeout(() => this.safeWallboardRefresh("wxcc-event-followup"), 1200);
     });
 
     source.addEventListener("event-refresh", () => {
-      this.recordClientSseDebug("eventsource-event-refresh", { readyState: source.readyState });
-      this.wallboardLastEventTs = Date.now();
       this.setWallboardStatus(`Event refresh completed ${new Date().toLocaleTimeString()}`);
     });
 
-
-    source.addEventListener("heartbeat", event => {
-      this.recordClientSseDebug("eventsource-heartbeat", { bytes: event?.data ? event.data.length : 0, readyState: source.readyState });
-    });
-
-    source.addEventListener("wallboard-error", event => {
-      this.recordClientSseDebug("eventsource-wallboard-error", { data: event?.data || "", readyState: source.readyState });
-      this.setWallboardStatus(`Live dashboard stream error ${new Date().toLocaleTimeString()}`);
-    });
-
-    source.addEventListener("error", event => {
-      this.recordClientSseDebug("eventsource-error", { readyState: source.readyState, message: event?.message || "" });
+    source.addEventListener("error", () => {
       if (this.wallboardEventSource) {
         this.wallboardEventSource.close();
         this.wallboardEventSource = null;
       }
 
       this.setWallboardStatus("Live dashboard disconnected. Reconnecting...");
-      this.safeWallboardRefresh("sse-error");
 
       this.wallboardReconnectHandle = setTimeout(() => {
         this.startWallboardStream();

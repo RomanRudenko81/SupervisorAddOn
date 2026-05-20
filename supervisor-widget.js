@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-sse-event-deep-debug-2026-05-19-v23";
+const FRONTEND_BUILD_ID = "wxcc-widget-comprehensive-event-watchdog-debug-2026-05-20-v25";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -30,6 +30,10 @@ class SupervisorAccessWidget extends HTMLElement {
     this.boundFocusResumeRefresh = null;
     this.sseClientDebugEvents = [];
     this.sseClientDebugMax = 120;
+    this.widgetWatchdogCounters = {};
+    this.widgetLastSignature = "";
+    this.widgetLastSignatureTs = 0;
+    this.widgetAnomalySince = {};
     this.activeCallTimerHandle = null;
     this.lastWallboardData = null;
     this.activeCallRenderCache = new Map();
@@ -1999,6 +2003,91 @@ class SupervisorAccessWidget extends HTMLElement {
     }, 150);
   }
 
+
+  getWallboardArrays(data = this.lastWallboardData) {
+    const agents = Array.isArray(data?.agents) ? data.agents : Array.isArray(data?.agentList) ? data.agentList : [];
+    return {
+      agents,
+      activeCalls: Array.isArray(data?.taskList) ? data.taskList : [],
+      waitingCalls: Array.isArray(data?.waitingTaskList) ? data.waitingTaskList : [],
+      callHistory: Array.isArray(data?.callHistoryList) ? data.callHistoryList : []
+    };
+  }
+
+  buildWidgetSignature(data = this.lastWallboardData) {
+    const { agents, activeCalls, waitingCalls, callHistory } = this.getWallboardArrays(data);
+    return [
+      agents.map(a => `${a.name || a.login || ""}:${a.state || ""}`).sort().join("|"),
+      activeCalls.map(c => `${c.id || ""}:${c.status || ""}`).sort().join("|"),
+      waitingCalls.map(c => `${c.id || ""}:${c.waitingSeconds || 0}`).sort().join("|"),
+      callHistory.slice(0, 10).map(c => `${c.id || ""}:${c.status || ""}:${c.endedTime || ""}`).sort().join("|")
+    ].join("#");
+  }
+
+  analyzeWidgetState() {
+    const now = Date.now();
+    const { agents, activeCalls, waitingCalls, callHistory } = this.getWallboardArrays();
+    const connectedAgents = agents.filter(a => String(a.state || "").toLowerCase() === "connected");
+    const liveActive = activeCalls.filter(c => String(c.status || "").toLowerCase() === "connected");
+    const connectedHistory = callHistory.filter(c => String(c.status || "").toLowerCase() === "connected");
+    const anomalies = [];
+
+    if (!this.lastWallboardData) anomalies.push("no-wallboard-data");
+    if (!agents.length) anomalies.push("no-agent-data");
+    if (connectedAgents.length && !liveActive.length) anomalies.push("connected-agent-without-active-call");
+    if (connectedHistory.length && !liveActive.length && !connectedAgents.length) anomalies.push("history-connected-stale");
+    if (waitingCalls.some(c => Number(c.waitingSeconds || 0) < 0)) anomalies.push("negative-waiting-time");
+
+    const signature = this.buildWidgetSignature();
+    if (signature !== this.widgetLastSignature) {
+      this.widgetLastSignature = signature;
+      this.widgetLastSignatureTs = now;
+    }
+    if (this.widgetLastSignatureTs && now - this.widgetLastSignatureTs > 15000) anomalies.push("unchanged-ui-signature");
+
+    return {
+      now,
+      counts: {
+        agents: agents.length,
+        connectedAgents: connectedAgents.length,
+        activeCalls: activeCalls.length,
+        liveActive: liveActive.length,
+        waitingCalls: waitingCalls.length,
+        callHistory: callHistory.length,
+        connectedHistory: connectedHistory.length
+      },
+      anomalies,
+      lastDataAgeMs: this.wallboardLastDataTs ? now - this.wallboardLastDataTs : null,
+      eventSourceReadyState: this.wallboardEventSource ? this.wallboardEventSource.readyState : null
+    };
+  }
+
+  async refreshForAnomalies(analysis) {
+    const now = Date.now();
+    for (const anomaly of analysis.anomalies) {
+      if (!this.widgetAnomalySince[anomaly]) this.widgetAnomalySince[anomaly] = now;
+    }
+    Object.keys(this.widgetAnomalySince).forEach(key => {
+      if (!analysis.anomalies.includes(key)) delete this.widgetAnomalySince[key];
+    });
+
+    const trigger = analysis.anomalies.find(anomaly => {
+      const age = now - (this.widgetAnomalySince[anomaly] || now);
+      if (anomaly === "connected-agent-without-active-call") return age > 1500;
+      if (anomaly === "history-connected-stale") return age > 2500;
+      if (anomaly === "no-agent-data") return age > 5000;
+      if (anomaly === "unchanged-ui-signature") return age > 0;
+      if (anomaly === "no-wallboard-data") return age > 0;
+      return age > 4000;
+    });
+
+    if (trigger) {
+      this.widgetWatchdogCounters[trigger] = (this.widgetWatchdogCounters[trigger] || 0) + 1;
+      this.recordClientSseDebug("watchdog-anomaly-refresh", { trigger, analysis });
+      await this.safeWallboardRefresh(`anomaly:${trigger}`);
+    }
+  }
+
   startWallboardWatchdog() {
     if (this.wallboardWatchdogHandle) {
       clearInterval(this.wallboardWatchdogHandle);
@@ -2015,48 +2104,15 @@ class SupervisorAccessWidget extends HTMLElement {
     const now = Date.now();
     const hasEventSource = !!this.wallboardEventSource;
     const staleData = !this.wallboardLastDataTs || now - this.wallboardLastDataTs > 8000;
+    const analysis = this.analyzeWidgetState();
 
-    const hasConnectedAgent = Array.isArray(this.lastWallboardData?.agents)
-      && this.lastWallboardData.agents.some(agent => String(agent.state || "").toLowerCase() === "connected");
+    this.recordClientSseDebug("watchdog-check", analysis);
 
-    const hasActiveCall = Array.isArray(this.lastWallboardData?.taskList)
-      && this.lastWallboardData.taskList.some(task => String(task.status || "").toLowerCase() === "connected");
-
-    const historyHasConnectedCall = Array.isArray(this.lastWallboardData?.callHistoryList)
-      && this.lastWallboardData.callHistoryList.some(call => String(call.status || "").toLowerCase() === "connected");
-
-    const activeMismatch = hasConnectedAgent && !hasActiveCall;
-    const historyConnectedMismatch = historyHasConnectedCall && !hasActiveCall && !hasConnectedAgent;
-
-    if (historyConnectedMismatch) {
-      if (!this.historyConnectedMismatchSinceTs) {
-        this.historyConnectedMismatchSinceTs = now;
-      }
-    } else {
-      this.historyConnectedMismatchSinceTs = 0;
+    if (!hasEventSource || staleData) {
+      await this.safeWallboardRefresh(!hasEventSource ? "sse-disconnected" : "stale-data");
     }
 
-    const historyConnectedStale =
-      historyConnectedMismatch
-      && this.historyConnectedMismatchSinceTs
-      && now - this.historyConnectedMismatchSinceTs > 3500
-      && now - this.historyConnectedMismatchLastRefreshTs > 6000;
-
-    if (!hasEventSource || staleData || activeMismatch || historyConnectedStale) {
-      const reason = !hasEventSource
-        ? "sse-disconnected"
-        : activeMismatch
-          ? "connected-agent-without-active-call"
-          : historyConnectedStale
-            ? "history-connected-stale"
-            : "stale-data";
-
-      if (historyConnectedStale) {
-        this.historyConnectedMismatchLastRefreshTs = now;
-      }
-
-      await this.safeWallboardRefresh(reason);
-    }
+    await this.refreshForAnomalies(analysis);
   }
 
   async safeWallboardRefresh(reason = "watchdog") {
@@ -2115,8 +2171,12 @@ class SupervisorAccessWidget extends HTMLElement {
         frontendBuildId: typeof FRONTEND_BUILD_ID !== "undefined" ? FRONTEND_BUILD_ID : "",
         events: this.sseClientDebugEvents,
         lastWallboardData: this.lastWallboardData,
+        agentCount: Array.isArray(this.lastWallboardData?.agents) ? this.lastWallboardData.agents.length : null,
+        agentListCount: Array.isArray(this.lastWallboardData?.agentList) ? this.lastWallboardData.agentList.length : null,
         eventSourceReadyState: this.wallboardEventSource ? this.wallboardEventSource.readyState : null,
-        lastDataAgeMs: this.wallboardLastDataTs ? Date.now() - this.wallboardLastDataTs : null
+        lastDataAgeMs: this.wallboardLastDataTs ? Date.now() - this.wallboardLastDataTs : null,
+        watchdogCounters: this.widgetWatchdogCounters,
+        watchdogAnalysis: this.analyzeWidgetState ? this.analyzeWidgetState() : null
       };
     } catch {
       // ignore

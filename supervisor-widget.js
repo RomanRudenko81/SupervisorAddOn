@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-frontend-timer-history-cache-2026-05-19-v16";
+const FRONTEND_BUILD_ID = "wxcc-widget-duration-source-policy-2026-05-19-v17";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -1789,7 +1789,7 @@ class SupervisorAccessWidget extends HTMLElement {
     rows.forEach(call => {
       const row = document.createElement("div");
       row.className = "call-row history";
-      const liveSeconds = this.getLiveDisplaySeconds(call);
+      const liveSeconds = Number(call.liveDurationSeconds || 0);
       const durationMs = Number(call.totalDuration || call.connectedDuration || call.queueDuration || 0);
       row.innerHTML = `
         <div>${call.status || "-"}</div>

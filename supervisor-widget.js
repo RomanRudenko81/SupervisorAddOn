@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-history-connected-stale-2026-05-19-v20";
+const FRONTEND_BUILD_ID = "wxcc-widget-focus-resume-refresh-2026-05-19-v21";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -25,6 +25,9 @@ class SupervisorAccessWidget extends HTMLElement {
     this.wallboardLastManualRefreshTs = 0;
     this.historyConnectedMismatchSinceTs = 0;
     this.historyConnectedMismatchLastRefreshTs = 0;
+    this.focusResumeRefreshHandle = null;
+    this.focusResumeLastRefreshTs = 0;
+    this.boundFocusResumeRefresh = null;
     this.activeCallTimerHandle = null;
     this.lastWallboardData = null;
     this.activeCallRenderCache = new Map();
@@ -43,6 +46,7 @@ class SupervisorAccessWidget extends HTMLElement {
     this.bindEvents();
     this.init();
     this.startWallboardWatchdog();
+    this.bindFocusResumeRefresh();
     this.startRobustActiveCallTimer();
   }
 
@@ -52,6 +56,8 @@ class SupervisorAccessWidget extends HTMLElement {
     if (this.wallboardReconnectHandle) clearTimeout(this.wallboardReconnectHandle);
     if (this.wallboardWatchdogHandle) clearInterval(this.wallboardWatchdogHandle);
     if (this.activeCallTimerHandle) clearInterval(this.activeCallTimerHandle);
+    if (this.focusResumeRefreshHandle) clearTimeout(this.focusResumeRefreshHandle);
+    this.removeFocusResumeRefresh();
     if (this.wallboardEventSource) this.wallboardEventSource.close();
   }
 
@@ -1943,6 +1949,54 @@ class SupervisorAccessWidget extends HTMLElement {
   }
 
 
+
+  bindFocusResumeRefresh() {
+    if (this.boundFocusResumeRefresh) return;
+
+    this.boundFocusResumeRefresh = () => {
+      this.scheduleFocusResumeRefresh("focus-resume");
+    };
+
+    window.addEventListener("focus", this.boundFocusResumeRefresh, true);
+    window.addEventListener("pageshow", this.boundFocusResumeRefresh, true);
+    document.addEventListener("visibilitychange", this.boundFocusResumeRefresh, true);
+
+    // WXCC can switch between internal widgets without browser focus changing.
+    this.addEventListener("pointerenter", this.boundFocusResumeRefresh);
+    this.addEventListener("mouseenter", this.boundFocusResumeRefresh);
+  }
+
+  removeFocusResumeRefresh() {
+    if (!this.boundFocusResumeRefresh) return;
+
+    window.removeEventListener("focus", this.boundFocusResumeRefresh, true);
+    window.removeEventListener("pageshow", this.boundFocusResumeRefresh, true);
+    document.removeEventListener("visibilitychange", this.boundFocusResumeRefresh, true);
+    this.removeEventListener("pointerenter", this.boundFocusResumeRefresh);
+    this.removeEventListener("mouseenter", this.boundFocusResumeRefresh);
+    this.boundFocusResumeRefresh = null;
+  }
+
+  scheduleFocusResumeRefresh(reason = "focus-resume") {
+    if (document.visibilityState && document.visibilityState === "hidden") return;
+    if (!this.sessionToken) return;
+
+    const now = Date.now();
+    if (now - this.focusResumeLastRefreshTs < 2500) return;
+
+    if (this.focusResumeRefreshHandle) {
+      clearTimeout(this.focusResumeRefreshHandle);
+    }
+
+    this.focusResumeRefreshHandle = setTimeout(async () => {
+      this.focusResumeRefreshHandle = null;
+      this.focusResumeLastRefreshTs = Date.now();
+
+      await this.safeWallboardRefresh(`${reason}-immediate`);
+      setTimeout(() => this.safeWallboardRefresh(`${reason}-followup`), 1200);
+    }, 150);
+  }
+
   startWallboardWatchdog() {
     if (this.wallboardWatchdogHandle) {
       clearInterval(this.wallboardWatchdogHandle);
@@ -1958,7 +2012,7 @@ class SupervisorAccessWidget extends HTMLElement {
 
     const now = Date.now();
     const hasEventSource = !!this.wallboardEventSource;
-    const staleData = !this.wallboardLastDataTs || now - this.wallboardLastDataTs > 15000;
+    const staleData = !this.wallboardLastDataTs || now - this.wallboardLastDataTs > 8000;
 
     const hasConnectedAgent = Array.isArray(this.lastWallboardData?.agents)
       && this.lastWallboardData.agents.some(agent => String(agent.state || "").toLowerCase() === "connected");
@@ -2007,7 +2061,7 @@ class SupervisorAccessWidget extends HTMLElement {
     const now = Date.now();
 
     if (this.wallboardManualRefreshInFlight) return;
-    if (now - this.wallboardLastManualRefreshTs < 4500) return;
+    if (now - this.wallboardLastManualRefreshTs < 2000) return;
 
     this.wallboardManualRefreshInFlight = true;
     this.wallboardLastManualRefreshTs = now;
@@ -2073,7 +2127,8 @@ class SupervisorAccessWidget extends HTMLElement {
     source.addEventListener("wxcc-event", () => {
       this.wallboardLastEventTs = Date.now();
       this.setWallboardStatus("WXCC event received. Refreshing...");
-      setTimeout(() => this.safeWallboardRefresh("wxcc-event"), 1200);
+      this.safeWallboardRefresh("wxcc-event-immediate");
+      setTimeout(() => this.safeWallboardRefresh("wxcc-event-followup"), 1200);
     });
 
     source.addEventListener("event-refresh", () => {

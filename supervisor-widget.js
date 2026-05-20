@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-stable-rollback-baseline-2026-05-20-v29";
+const FRONTEND_BUILD_ID = "wxcc-widget-wallboard-500-isolation-2026-05-20-v30";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -1936,6 +1936,9 @@ class SupervisorAccessWidget extends HTMLElement {
       if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
 
       this.processWallboardData(data);
+      if (data.stale === true) {
+        this.setWallboardStatus(`Dashboard recovered with cached data ${new Date().toLocaleTimeString()}`);
+      }
     } catch (err) {
       this.setWallboardStatus(`Dashboard failed: ${err.message}`);
     }

@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-wallboard-500-isolation-2026-05-20-v30";
+const FRONTEND_BUILD_ID = "wxcc-widget-gui-diagnostic-log-2026-05-20-v32";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -23,6 +23,12 @@ class SupervisorAccessWidget extends HTMLElement {
     this.activeCallRenderCache = new Map();
     this.callHistoryRenderCache = [];
     this.callHistoryCacheTs = 0;
+    this.historyEndMismatchSinceTs = 0;
+    this.historyEndMismatchLastRefreshTs = 0;
+    this.historyEndWatchdogHandle = null;
+    this.diagLogEntries = [];
+    this.diagLogMax = 250;
+    this.diagLogVisible = false;
     this.hasUnsavedChanges = false;
     this.themeMode = localStorage.getItem("supervisorWidgetTheme") || "dark";
     this.allowedQueueNames = [];
@@ -30,12 +36,14 @@ class SupervisorAccessWidget extends HTMLElement {
   }
 
   connectedCallback() {
+    setTimeout(() => this.addDiagLog("widget-connected", { frontendBuildId: FRONTEND_BUILD_ID }), 0);
     this.render();
     this.applyTheme();
     this.populateStaticOptions();
     this.bindEvents();
     this.init();
     this.startRobustActiveCallTimer();
+    this.startHistoryEndWatchdog();
   }
 
   disconnectedCallback() {
@@ -43,6 +51,7 @@ class SupervisorAccessWidget extends HTMLElement {
     if (this.wallboardPollHandle) clearInterval(this.wallboardPollHandle);
     if (this.wallboardReconnectHandle) clearTimeout(this.wallboardReconnectHandle);
     if (this.activeCallTimerHandle) clearInterval(this.activeCallTimerHandle);
+    if (this.historyEndWatchdogHandle) clearInterval(this.historyEndWatchdogHandle);
     if (this.wallboardEventSource) this.wallboardEventSource.close();
   }
 
@@ -901,7 +910,15 @@ class SupervisorAccessWidget extends HTMLElement {
             grid-template-columns: 1fr;
           }
         }
-      </style>
+      
+      .diag-card { border: 1px solid var(--border-color, #c7c7c7); border-radius: 12px; padding: 12px; margin: 14px 0; background: rgba(127,127,127,0.06); }
+      .diag-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+      .diag-subtitle { font-size: 11px; opacity: .75; margin-left: 8px; }
+      .diag-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+      .diag-actions button { border: 1px solid var(--border-color, #bbb); border-radius: 8px; background: transparent; padding: 4px 8px; font-size: 11px; cursor: pointer; }
+      .diag-log { max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; font-size: 11px; line-height: 1.35; margin: 10px 0 0; padding: 10px; border-radius: 8px; background: rgba(0,0,0,.08); }
+
+    </style>
 
       <div class="wrapper">
         <div class="card">
@@ -1035,7 +1052,23 @@ class SupervisorAccessWidget extends HTMLElement {
             <div class="calls-card collapsible call-history-card">
               <div class="calls-toggle" id="callHistoryToggle">
                 <div>
-                  <div class="calls-toggle-title">Call History</div>
+                  <div class="calls-toggle-title">
+        <div class="diag-card">
+          <div class="diag-header">
+            <div>
+              <strong>Diagnostics</strong>
+              <span class="diag-subtitle">Frontend + Wallboard Log · Entries: <span id="diagLogCount">0</span></span>
+            </div>
+            <div class="diag-actions">
+              <button type="button" id="diagToggle">Show Diagnostics</button>
+              <button type="button" id="diagCopy">Copy Log</button>
+              <button type="button" id="diagClear">Clear</button>
+            </div>
+          </div>
+          <pre id="diagLogPanel" class="diag-log" style="display:none;"><code id="diagLogText"></code></pre>
+        </div>
+
+Call History</div>
                   <div class="calls-toggle-subtitle">Current selected queues · Last 24h</div>
                 </div>
                 <div class="calls-toggle-icon">▼</div>
@@ -1087,6 +1120,7 @@ class SupervisorAccessWidget extends HTMLElement {
   }
 
   bindEvents() {
+    this.bindDiagLogEvents();
     this.$themeToggleBtn().addEventListener("click", () => this.toggleTheme());
 
     this.$toggle().addEventListener("change", () => {
@@ -1741,6 +1775,160 @@ class SupervisorAccessWidget extends HTMLElement {
     });
   }
 
+
+
+  addDiagLog(type, details = {}) {
+    if (!this.diagLogEntries) this.diagLogEntries = [];
+    const entry = { ts: Date.now(), time: new Date().toLocaleTimeString(), type, ...details };
+    this.diagLogEntries.push(entry);
+    while (this.diagLogEntries.length > (this.diagLogMax || 250)) this.diagLogEntries.shift();
+    this.renderDiagLog();
+    try { window.__WXCC_WIDGET_DIAG_LOG__ = this.diagLogEntries; } catch {}
+    return entry;
+  }
+
+  getWallboardSummary(data = this.lastWallboardData) {
+    const agents = Array.isArray(data?.agents) ? data.agents : Array.isArray(data?.agentList) ? data.agentList : [];
+    const activeCalls = Array.isArray(data?.taskList) ? data.taskList : [];
+    const waitingCalls = Array.isArray(data?.waitingTaskList) ? data.waitingTaskList : [];
+    const history = Array.isArray(data?.callHistoryList) ? data.callHistoryList : [];
+    return {
+      backendBuildId: data?.backendBuildId || data?.buildId || "",
+      requestId: data?.requestId || "",
+      stale: data?.stale === true,
+      staleReason: data?.staleReason || "",
+      lastError: data?.lastError ? String(data.lastError).slice(0, 300) : "",
+      agents: agents.length,
+      connectedAgents: agents.filter(agent => String(agent.state || "").toLowerCase() === "connected").length,
+      activeCalls: activeCalls.length,
+      waitingCalls: waitingCalls.length,
+      history: history.length,
+      connectedHistory: history.filter(call => String(call.status || "").toLowerCase() === "connected").length,
+      firstAgentState: agents[0]?.state || "",
+      firstActiveStatus: activeCalls[0]?.status || "",
+      firstHistoryStatus: history[0]?.status || ""
+    };
+  }
+
+  formatDiagEntry(entry) {
+    const details = { ...entry };
+    delete details.ts; delete details.time; delete details.type;
+    let suffix = "";
+    try { suffix = Object.keys(details).length ? " " + JSON.stringify(details) : ""; } catch {}
+    return `[${entry.time}] ${entry.type}${suffix}`;
+  }
+
+  getDiagText() {
+    return (this.diagLogEntries || []).map(entry => this.formatDiagEntry(entry)).join("\n");
+  }
+
+  renderDiagLog() {
+    const textNode = this.shadowRoot?.getElementById("diagLogText");
+    const countNode = this.shadowRoot?.getElementById("diagLogCount");
+    const panel = this.shadowRoot?.getElementById("diagLogPanel");
+    if (countNode) countNode.textContent = String((this.diagLogEntries || []).length);
+    if (textNode) textNode.textContent = this.getDiagText();
+    if (panel) panel.scrollTop = panel.scrollHeight;
+  }
+
+  bindDiagLogEvents() {
+    const toggle = this.shadowRoot.getElementById("diagToggle");
+    const copy = this.shadowRoot.getElementById("diagCopy");
+    const clear = this.shadowRoot.getElementById("diagClear");
+    const panel = this.shadowRoot.getElementById("diagLogPanel");
+    if (toggle && panel && !toggle.dataset.bound) {
+      toggle.dataset.bound = "1";
+      toggle.addEventListener("click", () => {
+        this.diagLogVisible = !this.diagLogVisible;
+        panel.style.display = this.diagLogVisible ? "block" : "none";
+        toggle.textContent = this.diagLogVisible ? "Hide Diagnostics" : "Show Diagnostics";
+        this.renderDiagLog();
+      });
+    }
+    if (copy && !copy.dataset.bound) {
+      copy.dataset.bound = "1";
+      copy.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(this.getDiagText());
+          this.setWallboardStatus("Diagnostic log copied");
+        } catch {
+          this.setWallboardStatus("Copy failed. Select log manually.");
+        }
+      });
+    }
+    if (clear && !clear.dataset.bound) {
+      clear.dataset.bound = "1";
+      clear.addEventListener("click", () => {
+        this.diagLogEntries = [];
+        this.addDiagLog("frontend-log-cleared", {});
+      });
+    }
+  }
+
+  startHistoryEndWatchdog() {
+    if (this.historyEndWatchdogHandle) {
+      clearInterval(this.historyEndWatchdogHandle);
+    }
+
+    this.historyEndWatchdogHandle = setInterval(() => {
+      this.checkHistoryEndMismatch().catch(() => {});
+    }, 1500);
+  }
+
+  async checkHistoryEndMismatch() {
+    if (!this.sessionToken || !this.lastWallboardData) return;
+
+    const now = Date.now();
+
+    const activeCalls = Array.isArray(this.lastWallboardData.taskList)
+      ? this.lastWallboardData.taskList.filter(call => String(call.status || "").toLowerCase() === "connected")
+      : [];
+
+    const agents = Array.isArray(this.lastWallboardData.agents)
+      ? this.lastWallboardData.agents
+      : Array.isArray(this.lastWallboardData.agentList)
+        ? this.lastWallboardData.agentList
+        : [];
+
+    const connectedAgents = agents.filter(agent => String(agent.state || "").toLowerCase() === "connected");
+
+    const history = Array.isArray(this.lastWallboardData.callHistoryList)
+      ? this.lastWallboardData.callHistoryList
+      : [];
+
+    const hasConnectedHistory = history.some(call => String(call.status || "").toLowerCase() === "connected");
+
+    const mismatch = hasConnectedHistory && activeCalls.length === 0 && connectedAgents.length === 0;
+
+    if (mismatch) {
+      if (!this.historyEndMismatchSinceTs) {
+        this.historyEndMismatchSinceTs = now;
+      }
+    } else {
+      this.historyEndMismatchSinceTs = 0;
+      return;
+    }
+
+    const mismatchAge = now - this.historyEndMismatchSinceTs;
+    const refreshAge = now - this.historyEndMismatchLastRefreshTs;
+
+    if (mismatchAge > 2500 && refreshAge > 5000) {
+      this.historyEndMismatchLastRefreshTs = now;
+
+      if (typeof this.recordClientSseDebug === "function") {
+        this.recordClientSseDebug("history-end-mismatch-refresh", {
+          mismatchAge,
+          activeCalls: activeCalls.length,
+          connectedAgents: connectedAgents.length,
+          connectedHistory: true
+        });
+      }
+
+      this.addDiagLog("history-end-mismatch-refresh", { mismatchAge, activeCalls: activeCalls.length, connectedAgents: connectedAgents.length, hasConnectedHistory });
+      await this.loadWallboard("history-end-mismatch");
+    }
+  }
+
   startRobustActiveCallTimer() {
     if (this.activeCallTimerHandle) {
       clearInterval(this.activeCallTimerHandle);
@@ -1842,6 +2030,7 @@ class SupervisorAccessWidget extends HTMLElement {
 
   processWallboardData(data) {
     this.lastWallboardData = data;
+    this.addDiagLog("process-wallboard", { summary: this.getWallboardSummary(data) });
 
     const detectedQueues = this.extractAllowedQueuesFromWallboardData(data);
     this.allowedQueueNames = detectedQueues;
@@ -1928,18 +2117,31 @@ class SupervisorAccessWidget extends HTMLElement {
     this.setWallboardStatus(`Live • Updated ${new Date().toLocaleTimeString()}${queueFilterInfo}`);
   }
 
-  async loadWallboard() {
+  async loadWallboard(reason = "manual") {
+    this.addDiagLog("fetch-start", { reason });
+
     try {
       const res = await this.authorizedFetch(`/api/wallboard`);
       const data = await this.readJsonResponse(res);
 
-      if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
+      if (!res.ok || data.ok === false) {
+        this.addDiagLog("fetch-http-error", { reason, status: res.status, error: data?.error || "" });
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+
+      this.addDiagLog("fetch-success", {
+        reason,
+        status: res.status,
+        summary: this.getWallboardSummary(data)
+      });
 
       this.processWallboardData(data);
+
       if (data.stale === true) {
         this.setWallboardStatus(`Dashboard recovered with cached data ${new Date().toLocaleTimeString()}`);
       }
     } catch (err) {
+      this.addDiagLog("fetch-error", { reason, message: err.message });
       this.setWallboardStatus(`Dashboard failed: ${err.message}`);
     }
   }

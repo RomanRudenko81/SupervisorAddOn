@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-gui-diagnostic-log-2026-05-20-v32";
+const FRONTEND_BUILD_ID = "wxcc-widget-technical-diagnostics-2026-05-21-v35";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -18,16 +18,25 @@ class SupervisorAccessWidget extends HTMLElement {
     this.wallboardPollHandle = null;
     this.wallboardEventSource = null;
     this.wallboardReconnectHandle = null;
+    this.wallboardReconnectAttempt = 0;
+    this.wallboardPollFallbackHandle = null;
     this.activeCallTimerHandle = null;
     this.lastWallboardData = null;
     this.activeCallRenderCache = new Map();
     this.callHistoryRenderCache = [];
     this.callHistoryCacheTs = 0;
+    this.lastNonEmptyCallHistory = [];
+    this.lastNonEmptyCallHistoryTs = 0;
+    this.lastNonEmptyWallboardTs = 0;
     this.historyEndMismatchSinceTs = 0;
     this.historyEndMismatchLastRefreshTs = 0;
     this.historyEndWatchdogHandle = null;
     this.diagLogEntries = [];
-    this.diagLogMax = 250;
+    this.diagLogMax = 600;
+    this.techDiagnosticsInstalled = false;
+    this.windowErrorHandler = null;
+    this.windowRejectionHandler = null;
+    this.consoleErrorOriginal = null;
     this.diagLogVisible = false;
     this.hasUnsavedChanges = false;
     this.themeMode = localStorage.getItem("supervisorWidgetTheme") || "dark";
@@ -36,7 +45,12 @@ class SupervisorAccessWidget extends HTMLElement {
   }
 
   connectedCallback() {
-    setTimeout(() => this.addDiagLog("widget-connected", { frontendBuildId: FRONTEND_BUILD_ID }), 0);
+    this.installTechnicalDiagnostics();
+    setTimeout(() => this.addDiagLog("widget-connected", {
+      frontendBuildId: FRONTEND_BUILD_ID,
+      userAgent: navigator.userAgent,
+      href: location.href
+    }), 0);
     this.render();
     this.applyTheme();
     this.populateStaticOptions();
@@ -50,9 +64,11 @@ class SupervisorAccessWidget extends HTMLElement {
     if (this.pollHandle) clearInterval(this.pollHandle);
     if (this.wallboardPollHandle) clearInterval(this.wallboardPollHandle);
     if (this.wallboardReconnectHandle) clearTimeout(this.wallboardReconnectHandle);
+    if (this.wallboardPollFallbackHandle) clearInterval(this.wallboardPollFallbackHandle);
     if (this.activeCallTimerHandle) clearInterval(this.activeCallTimerHandle);
     if (this.historyEndWatchdogHandle) clearInterval(this.historyEndWatchdogHandle);
     if (this.wallboardEventSource) this.wallboardEventSource.close();
+    this.uninstallTechnicalDiagnostics();
   }
 
   readSelectedQueueFilters() {
@@ -1253,7 +1269,13 @@ Call History</div>
     if (!text) return {};
     try {
       return JSON.parse(text);
-    } catch {
+    } catch (err) {
+      this.addDiagLog("response-json-parse-failed", {
+        status: res?.status,
+        url: res?.url || "",
+        message: err?.message || String(err),
+        bodyPreview: String(text).slice(0, 1200)
+      });
       return { error: text };
     }
   }
@@ -1264,6 +1286,8 @@ Call History</div>
 
     try {
       const identity = await this.resolveDesktopIdentity();
+      this.addDiagLog("bootstrap-start", { identity });
+      const bootstrapStart = performance.now();
 
       const res = await fetch(`${this.API_URL}/api/session/bootstrap`, {
         method: "POST",
@@ -1272,6 +1296,7 @@ Call History</div>
       });
 
       const data = await this.readJsonResponse(res);
+      this.addDiagLog("bootstrap-response", { status: res.status, durationMs: Math.round(performance.now() - bootstrapStart), role: data?.role || "", hasToken: Boolean(data?.sessionToken), error: data?.error || "" });
 
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       if (!data.sessionToken) throw new Error("Bootstrap response did not include a session token");
@@ -1305,19 +1330,46 @@ Call History</div>
   async authorizedFetch(path, options = {}, retryOn401 = true) {
     if (!this.sessionToken) await this.bootstrapSession();
 
-    const makeRequest = () => fetch(`${this.API_URL}${path}`, {
-      ...options,
-      headers: {
-        ...(options.headers || {}),
-        Authorization: `Bearer ${this.sessionToken}`
+    const method = options.method || "GET";
+    const makeRequest = async attempt => {
+      const start = performance.now();
+      this.addDiagLog("fetch-request", { path, method, attempt, hasSessionToken: Boolean(this.sessionToken) });
+      try {
+        const res = await fetch(`${this.API_URL}${path}`, {
+          ...options,
+          headers: {
+            ...(options.headers || {}),
+            Authorization: `Bearer ${this.sessionToken}`
+          }
+        });
+        this.addDiagLog("fetch-response", {
+          path,
+          method,
+          attempt,
+          status: res.status,
+          ok: res.ok,
+          durationMs: Math.round(performance.now() - start),
+          url: res.url || ""
+        });
+        return res;
+      } catch (err) {
+        this.addDiagLog("fetch-exception", {
+          path,
+          method,
+          attempt,
+          durationMs: Math.round(performance.now() - start),
+          error: this.serializeError(err)
+        });
+        throw err;
       }
-    });
+    };
 
-    let res = await makeRequest();
+    let res = await makeRequest(1);
 
     if (res.status === 401 && retryOn401) {
+      this.addDiagLog("fetch-401-rebootstrap", { path, method });
       await this.bootstrapSession();
-      res = await makeRequest();
+      res = await makeRequest(2);
     }
 
     return res;
@@ -1777,9 +1829,94 @@ Call History</div>
 
 
 
+  serializeError(err) {
+    if (!err) return { message: "" };
+    if (typeof err === "string") return { message: err };
+    const result = {
+      name: err.name || "Error",
+      message: err.message || String(err),
+      stack: String(err.stack || "").slice(0, 2500)
+    };
+    if (err.filename) result.filename = err.filename;
+    if (err.lineno) result.lineno = err.lineno;
+    if (err.colno) result.colno = err.colno;
+    return result;
+  }
+
+  safeDiagDetails(details = {}) {
+    try {
+      return JSON.parse(JSON.stringify(details, (key, value) => {
+        if (typeof value === "function") return `[Function ${value.name || "anonymous"}]`;
+        if (value instanceof Error) return this.serializeError(value);
+        if (typeof value === "string" && value.length > 3000) return value.slice(0, 3000) + "…";
+        return value;
+      }));
+    } catch (err) {
+      return { serializationFailed: true, message: err?.message || String(err) };
+    }
+  }
+
+  installTechnicalDiagnostics() {
+    if (this.techDiagnosticsInstalled) return;
+    this.techDiagnosticsInstalled = true;
+
+    this.windowErrorHandler = event => {
+      this.addDiagLog("window-error", {
+        message: event?.message || "",
+        source: event?.filename || "",
+        line: event?.lineno || 0,
+        column: event?.colno || 0,
+        error: this.serializeError(event?.error)
+      });
+    };
+
+    this.windowRejectionHandler = event => {
+      this.addDiagLog("unhandled-rejection", {
+        reason: this.serializeError(event?.reason),
+        promise: String(event?.promise || "")
+      });
+    };
+
+    window.addEventListener("error", this.windowErrorHandler, true);
+    window.addEventListener("unhandledrejection", this.windowRejectionHandler, true);
+
+    try {
+      if (!window.__WXCC_WIDGET_CONSOLE_ERROR_PATCHED__) {
+        window.__WXCC_WIDGET_CONSOLE_ERROR_PATCHED__ = true;
+        this.consoleErrorOriginal = console.error.bind(console);
+        const original = this.consoleErrorOriginal;
+        console.error = (...args) => {
+          try {
+            const widgets = document.querySelectorAll("supervisor-access-widget");
+            widgets.forEach(widget => {
+              if (widget?.addDiagLog) {
+                widget.addDiagLog("console-error", {
+                  args: args.map(arg => arg instanceof Error ? widget.serializeError(arg) : String(arg).slice(0, 1000))
+                });
+              }
+            });
+          } catch {}
+          original(...args);
+        };
+      }
+    } catch (err) {
+      this.addDiagLog("console-patch-failed", this.serializeError(err));
+    }
+  }
+
+  uninstallTechnicalDiagnostics() {
+    try {
+      if (this.windowErrorHandler) window.removeEventListener("error", this.windowErrorHandler, true);
+      if (this.windowRejectionHandler) window.removeEventListener("unhandledrejection", this.windowRejectionHandler, true);
+    } catch {}
+    this.windowErrorHandler = null;
+    this.windowRejectionHandler = null;
+  }
+
+
   addDiagLog(type, details = {}) {
     if (!this.diagLogEntries) this.diagLogEntries = [];
-    const entry = { ts: Date.now(), time: new Date().toLocaleTimeString(), type, ...details };
+    const entry = { ts: Date.now(), iso: new Date().toISOString(), time: new Date().toLocaleTimeString(), type, ...this.safeDiagDetails(details) };
     this.diagLogEntries.push(entry);
     while (this.diagLogEntries.length > (this.diagLogMax || 250)) this.diagLogEntries.shift();
     this.renderDiagLog();
@@ -1871,7 +2008,7 @@ Call History</div>
     }
 
     this.historyEndWatchdogHandle = setInterval(() => {
-      this.checkHistoryEndMismatch().catch(() => {});
+      this.checkHistoryEndMismatch().catch(err => this.addDiagLog("history-watchdog-exception", { error: this.serializeError(err) }));
     }, 1500);
   }
 
@@ -1935,6 +2072,7 @@ Call History</div>
     }
 
     this.activeCallTimerHandle = setInterval(() => {
+      try {
       this.updateActiveDurationCells();
 
       if (!this.lastWallboardData) return;
@@ -1950,6 +2088,9 @@ Call History</div>
         : [];
       const visibleCallHistory = this.rememberCallHistory(this.filterCallsByAllowedQueues(rawCallHistory));
       this.renderCallHistory(visibleCallHistory);
+      } catch (err) {
+        this.addDiagLog("active-timer-exception", { error: this.serializeError(err) });
+      }
     }, 1000);
   }
 
@@ -2028,9 +2169,54 @@ Call History</div>
     });
   }
 
+
+  stabilizeWallboardSnapshot(data) {
+    const snapshot = data && typeof data === "object" ? { ...data } : {};
+    const now = Date.now();
+
+    const incomingHistory = Array.isArray(snapshot.callHistoryList) ? snapshot.callHistoryList : [];
+    const incomingTasks = Array.isArray(snapshot.taskList) ? snapshot.taskList : [];
+    const incomingAgents = Array.isArray(snapshot.agentList) ? snapshot.agentList : [];
+
+    if (incomingHistory.length > 0) {
+      this.lastNonEmptyCallHistory = incomingHistory;
+      this.lastNonEmptyCallHistoryTs = now;
+    } else if (
+      this.lastNonEmptyCallHistory.length > 0 &&
+      now - this.lastNonEmptyCallHistoryTs < 120000 &&
+      incomingTasks.length === 0 &&
+      incomingAgents.length > 0
+    ) {
+      // WXCC sometimes sends a transient empty history snapshot directly after
+      // Connected -> Wrapup -> Post Call Survey -> ended. Keep the last known
+      // rows for a short time so the widget does not visually reset or crash.
+      snapshot.callHistoryList = this.lastNonEmptyCallHistory;
+      snapshot.historyPreservedByFrontend = true;
+      snapshot.historyPreservedReason = "transient-empty-history-after-call-end";
+      this.addDiagLog("history-preserved", {
+        preservedRows: this.lastNonEmptyCallHistory.length,
+        ageMs: now - this.lastNonEmptyCallHistoryTs
+      });
+    }
+
+    snapshot.taskList = incomingTasks;
+    snapshot.waitingTaskList = Array.isArray(snapshot.waitingTaskList) ? snapshot.waitingTaskList : [];
+    snapshot.agentList = incomingAgents;
+    snapshot.agents = snapshot.agents || {};
+    this.lastNonEmptyWallboardTs = now;
+    return snapshot;
+  }
+
+  safeSetText(id, value) {
+    const el = this.shadowRoot?.getElementById(id);
+    if (el) el.textContent = value == null ? "" : String(value);
+  }
+
   processWallboardData(data) {
-    this.lastWallboardData = data;
-    this.addDiagLog("process-wallboard", { summary: this.getWallboardSummary(data) });
+    try {
+      data = this.stabilizeWallboardSnapshot(data);
+      this.lastWallboardData = data;
+      this.addDiagLog("process-wallboard", { summary: this.getWallboardSummary(data) });
 
     const detectedQueues = this.extractAllowedQueuesFromWallboardData(data);
     this.allowedQueueNames = detectedQueues;
@@ -2058,13 +2244,13 @@ Call History</div>
     const loggedInAgents = data.agents?.loggedIn ?? 0;
     const availableAgents = data.agents?.available ?? 0;
 
-    this.shadowRoot.getElementById("kpiCallsInQueue").textContent = callsInQueue;
-    this.shadowRoot.getElementById("kpiActiveCalls").textContent = visibleQueueKpis.activeCalls;
-    this.shadowRoot.getElementById("kpiLongestWaiting").textContent = this.formatDuration(visibleQueueKpis.longestWaitingSeconds);
-    this.shadowRoot.getElementById("kpiAvgWait").textContent = this.formatDuration(visibleQueueKpis.avgWaitSeconds);
-    this.shadowRoot.getElementById("kpiAvgHandle").textContent = this.formatDuration(visibleQueueKpis.avgHandleSeconds);
-    this.shadowRoot.getElementById("kpiLoggedIn").textContent = loggedInAgents;
-    this.shadowRoot.getElementById("kpiAvailable").textContent = availableAgents;
+    this.safeSetText("kpiCallsInQueue", callsInQueue);
+    this.safeSetText("kpiActiveCalls", visibleQueueKpis.activeCalls);
+    this.safeSetText("kpiLongestWaiting", this.formatDuration(visibleQueueKpis.longestWaitingSeconds));
+    this.safeSetText("kpiAvgWait", this.formatDuration(visibleQueueKpis.avgWaitSeconds));
+    this.safeSetText("kpiAvgHandle", this.formatDuration(visibleQueueKpis.avgHandleSeconds));
+    this.safeSetText("kpiLoggedIn", loggedInAgents);
+    this.safeSetText("kpiAvailable", availableAgents);
 
     if (typeof this.updateKpiState === "function") {
       this.updateKpiState("kpiCardCallsInQueue", callsInQueue, "queue");
@@ -2115,6 +2301,14 @@ Call History</div>
       : " • No queue assignment detected";
 
     this.setWallboardStatus(`Live • Updated ${new Date().toLocaleTimeString()}${queueFilterInfo}`);
+    } catch (err) {
+      this.addDiagLog("process-wallboard-failed", {
+        message: err?.message || String(err),
+        stack: String(err?.stack || "").slice(0, 800),
+        summary: this.getWallboardSummary(data)
+      });
+      this.setWallboardStatus(`Dashboard render recovered after frontend error: ${err?.message || err}`);
+    }
   }
 
   async loadWallboard(reason = "manual") {
@@ -2146,59 +2340,144 @@ Call History</div>
     }
   }
 
+  startWallboardPollFallback(reason = "sse-disconnected") {
+    if (this.wallboardPollFallbackHandle) return;
+
+    this.addDiagLog("poll-fallback-start", { reason });
+    this.wallboardPollFallbackHandle = setInterval(() => {
+      if (!this.sessionToken) return;
+      this.loadWallboard("poll-fallback").catch(err => {
+        this.addDiagLog("poll-fallback-error", { message: err.message });
+      });
+    }, this.WALLBOARD_POLL_INTERVAL_MS || 5000);
+  }
+
+  stopWallboardPollFallback(reason = "sse-connected") {
+    if (!this.wallboardPollFallbackHandle) return;
+    clearInterval(this.wallboardPollFallbackHandle);
+    this.wallboardPollFallbackHandle = null;
+    this.addDiagLog("poll-fallback-stop", { reason });
+  }
+
+  scheduleWallboardReconnect(reason = "sse-error") {
+    if (this.wallboardReconnectHandle || !this.sessionToken) return;
+
+    this.wallboardReconnectAttempt = (this.wallboardReconnectAttempt || 0) + 1;
+    const delay = Math.min(30000, 2000 * this.wallboardReconnectAttempt);
+
+    this.addDiagLog("sse-reconnect-scheduled", {
+      reason,
+      attempt: this.wallboardReconnectAttempt,
+      delay
+    });
+
+    this.wallboardReconnectHandle = setTimeout(() => {
+      this.wallboardReconnectHandle = null;
+      this.startWallboardStream();
+    }, delay);
+  }
+
   startWallboardStream() {
     if (this.wallboardEventSource) {
-      this.wallboardEventSource.close();
+      try { this.wallboardEventSource.close(); } catch {}
       this.wallboardEventSource = null;
     }
 
     if (this.wallboardReconnectHandle) {
       clearTimeout(this.wallboardReconnectHandle);
       this.wallboardReconnectHandle = null;
-    this.activeCallTimerHandle = null;
     }
 
     if (!this.sessionToken) {
+      this.addDiagLog("sse-start-failed", { reason: "missing-session-token" });
       this.setWallboardStatus("Live dashboard failed: missing session token");
+      this.startWallboardPollFallback("missing-session-token");
       return;
     }
 
     const url = `${this.API_URL}/api/wallboard/stream?token=${encodeURIComponent(this.sessionToken)}`;
-    const source = new EventSource(url);
+    this.addDiagLog("sse-open", { url: `${this.API_URL}/api/wallboard/stream?token=***` });
+
+    let source;
+    try {
+      source = new EventSource(url);
+    } catch (err) {
+      this.addDiagLog("sse-constructor-exception", { error: this.serializeError(err) });
+      this.startWallboardPollFallback("sse-constructor-exception");
+      this.scheduleWallboardReconnect("sse-constructor-exception");
+      return;
+    }
     this.wallboardEventSource = source;
 
-    source.addEventListener("ready", () => {
+    source.addEventListener("open", () => {
+      this.wallboardReconnectAttempt = 0;
+      this.addDiagLog("sse-opened", { readyState: source.readyState });
+    });
+
+    source.addEventListener("ready", event => {
+      let details = {};
+      try { details = JSON.parse(event.data || "{}"); } catch {}
+      this.wallboardReconnectAttempt = 0;
+      this.stopWallboardPollFallback("sse-ready");
+      this.addDiagLog("sse-ready", details);
       this.setWallboardStatus("Live dashboard connected");
     });
 
     source.addEventListener("wallboard", event => {
       try {
         const data = JSON.parse(event.data);
+        this.addDiagLog("sse-wallboard", { summary: this.getWallboardSummary(data) });
         this.processWallboardData(data);
       } catch (err) {
+        this.addDiagLog("sse-wallboard-parse-error", { message: err.message });
         this.setWallboardStatus(`Live dashboard parse failed: ${err.message}`);
       }
     });
 
-    source.addEventListener("wxcc-event", () => {
+    source.addEventListener("wallboard-error", event => {
+      let payload = {};
+      try { payload = JSON.parse(event.data || "{}"); } catch {}
+      this.addDiagLog("sse-wallboard-error", {
+        reason: payload.reason || "",
+        error: String(payload.error || "").slice(0, 500)
+      });
+      this.setWallboardStatus("Live event warning. Keeping dashboard alive and refreshing...");
+      this.loadWallboard("sse-wallboard-error").catch(err => {
+        this.addDiagLog("sse-wallboard-error-refresh-failed", { message: err.message });
+      });
+    });
+
+    source.addEventListener("wxcc-event", event => {
+      let details = {};
+      try { details = JSON.parse(event.data || "{}"); } catch {}
+      this.addDiagLog("sse-wxcc-event", details);
       this.setWallboardStatus("WXCC event received. Refreshing...");
     });
 
-    source.addEventListener("event-refresh", () => {
+    source.addEventListener("event-refresh", event => {
+      let details = {};
+      try { details = JSON.parse(event.data || "{}"); } catch {}
+      this.addDiagLog("sse-event-refresh", details);
       this.setWallboardStatus(`Event refresh completed ${new Date().toLocaleTimeString()}`);
     });
 
     source.addEventListener("error", () => {
-      if (this.wallboardEventSource) {
-        this.wallboardEventSource.close();
-        this.wallboardEventSource = null;
+      const readyState = source.readyState;
+      this.addDiagLog("sse-native-error", { readyState, attempt: this.wallboardReconnectAttempt || 0 });
+
+      if (readyState === EventSource.CLOSED) {
+        if (this.wallboardEventSource === source) {
+          this.wallboardEventSource = null;
+        }
+        this.setWallboardStatus("Live dashboard disconnected. Reconnecting with polling fallback...");
+        this.startWallboardPollFallback("sse-native-closed");
+        this.scheduleWallboardReconnect("sse-native-closed");
+        return;
       }
 
-      this.setWallboardStatus("Live dashboard disconnected. Reconnecting...");
-
-      this.wallboardReconnectHandle = setTimeout(() => {
-        this.startWallboardStream();
-      }, 5000);
+      // CONNECTING is often temporary. Keep EventSource alive and use HTTP polling as safety net.
+      this.setWallboardStatus("Live dashboard reconnecting. Polling fallback active...");
+      this.startWallboardPollFallback("sse-native-connecting");
     });
   }
 
@@ -2230,6 +2509,7 @@ Call History</div>
       });
 
       const data = await this.readJsonResponse(res);
+      this.addDiagLog("bootstrap-response", { status: res.status, durationMs: Math.round(performance.now() - bootstrapStart), role: data?.role || "", hasToken: Boolean(data?.sessionToken), error: data?.error || "" });
 
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
 

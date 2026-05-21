@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-v53-analytics-probe-2026-05-21";
+const FRONTEND_BUILD_ID = "wxcc-widget-v54-queue-all-fields-kpis-2026-05-21";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -66,6 +66,7 @@ class SupervisorAccessWidget extends HTMLElement {
     this.themeMode = localStorage.getItem("supervisorWidgetTheme") || "dark";
     this.allowedQueueNames = [];
     this.selectedQueueFilters = this.readSelectedQueueFilters();
+    this.kpiDurationRange = this.readKpiDurationRange();
     this.currentIdentity = null;
     this.currentUserById = new Map();
     this.configCollapsedSessionKey = "wxccSupervisorWidgetConfigCollapsedV52";
@@ -109,6 +110,7 @@ class SupervisorAccessWidget extends HTMLElement {
     this.applyTheme();
     this.applySessionCollapseState();
     this.populateStaticOptions();
+    this.updateKpiDurationFilterControl();
     this.bindEvents();
     this.init(runtimeId);
     this.startRobustActiveCallTimer(runtimeId);
@@ -504,6 +506,33 @@ class SupervisorAccessWidget extends HTMLElement {
 
         :host(.theme-light) .queue-filter-button {
           background: rgba(0,0,0,0.06);
+        }
+
+
+        .kpi-controls {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          flex-wrap: nowrap;
+          justify-content: flex-end;
+        }
+
+        .kpi-duration-select {
+          width: auto !important;
+          min-height: 24px;
+          max-width: 120px;
+          padding: 4px 8px !important;
+          border-radius: 999px !important;
+          border: 1px solid var(--cardBorder) !important;
+          background: rgba(255,255,255,0.10) !important;
+          color: var(--text) !important;
+          font-size: 11px !important;
+          line-height: 1 !important;
+          cursor: pointer;
+        }
+
+        :host(.theme-light) .kpi-duration-select {
+          background: rgba(0,0,0,0.06) !important;
         }
 
         .queue-filter-menu {
@@ -998,6 +1027,33 @@ class SupervisorAccessWidget extends HTMLElement {
           background: rgba(0,0,0,0.06);
         }
 
+
+        .kpi-controls {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          flex-wrap: nowrap;
+          justify-content: flex-end;
+        }
+
+        .kpi-duration-select {
+          width: auto !important;
+          min-height: 24px;
+          max-width: 120px;
+          padding: 4px 8px !important;
+          border-radius: 999px !important;
+          border: 1px solid var(--cardBorder) !important;
+          background: rgba(255,255,255,0.10) !important;
+          color: var(--text) !important;
+          font-size: 11px !important;
+          line-height: 1 !important;
+          cursor: pointer;
+        }
+
+        :host(.theme-light) .kpi-duration-select {
+          background: rgba(0,0,0,0.06) !important;
+        }
+
         .queue-filter-menu {
           position: absolute;
           top: 30px;
@@ -1174,9 +1230,16 @@ class SupervisorAccessWidget extends HTMLElement {
               <div class="kpi calls-in-queue-card" id="kpiCardCallsInQueue">
                 <div class="kpi-topline">
                   <div class="kpi-label">Calls in Queue</div>
-                  <div class="queue-filter-inline" id="queueFilterWrapper">
-                    <button class="queue-filter-button" id="queueFilterButton" type="button">Queues ▾</button>
-                    <div class="queue-filter-menu" id="queueFilterMenu"></div>
+                  <div class="kpi-controls">
+                    <div class="queue-filter-inline" id="queueFilterWrapper">
+                      <button class="queue-filter-button" id="queueFilterButton" type="button">Queues ▾</button>
+                      <div class="queue-filter-menu" id="queueFilterMenu"></div>
+                    </div>
+                    <select class="kpi-duration-select" id="kpiDurationFilter" title="KPI Zeitraum">
+                      <option value="today">Heute</option>
+                      <option value="60m">60 min</option>
+                      <option value="30m">30 min</option>
+                    </select>
                   </div>
                 </div>
                 <div class="kpi-value" id="kpiCallsInQueue">0</div>
@@ -1365,6 +1428,18 @@ Call History</div>
         if (!queueFilterWrapper.contains(event.target)) {
           queueFilterWrapper.classList.remove("open");
         }
+      });
+    }
+
+    const kpiDurationFilter = this.shadowRoot.getElementById("kpiDurationFilter");
+    if (kpiDurationFilter) {
+      kpiDurationFilter.value = this.kpiDurationRange || "60m";
+      kpiDurationFilter.addEventListener("change", async () => {
+        this.kpiDurationRange = kpiDurationFilter.value || "60m";
+        this.saveKpiDurationRange();
+        this.addDiagLog("analytics-duration-filter-changed", { range: this.kpiDurationRange });
+        await this.loadAnalyticsMetrics("duration-filter-change", this.runtimeId);
+        if (this.lastWallboardData) this.processWallboardData(this.lastWallboardData);
       });
     }
 
@@ -1863,6 +1938,7 @@ Call History</div>
         this.selectedQueueFilters = checkedValues;
         this.saveSelectedQueueFilters();
         this.updateQueueFilterButtonLabel();
+        await this.loadAnalyticsMetrics("queue-filter-change", this.runtimeId);
 
         if (this.lastWallboardData) {
           this.processWallboardData(this.lastWallboardData);
@@ -3945,6 +4021,8 @@ Call History</div>
       range: metrics.range || "",
       queueCount: Array.isArray(metrics.queues) ? metrics.queues.length : 0,
       sample: metrics.sample || {},
+      durationFilter: metrics.durationFilter || {},
+      reportFields: metrics.reportFields || {},
       metrics: merged
     });
 
@@ -3968,7 +4046,7 @@ Call History</div>
     if (!this.guardRuntime(runtimeId)) return;
 
     const visibleQueues = this.getVisibleQueueNames();
-    const params = new URLSearchParams({ range: "60m" });
+    const params = new URLSearchParams({ range: this.kpiDurationRange || "60m" });
     if (visibleQueues.length) params.set("queues", visibleQueues.join(","));
 
     const path = `/api/analytics/queue-metrics?${params.toString()}`;
@@ -3988,6 +4066,8 @@ Call History</div>
       range: data.range || "",
       queues: data.queues || [],
       source: data.source || "",
+      durationFilter: data.durationFilter || {},
+      reportFields: data.reportFields || {},
       metrics: data.metrics || {},
       sample: data.sample || {}
     });

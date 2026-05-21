@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-v41-active-call-reconstruction-2026-05-21";
+const FRONTEND_BUILD_ID = "wxcc-widget-v42-event-state-authority-2026-05-21";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -36,11 +36,15 @@ class SupervisorAccessWidget extends HTMLElement {
     this.diagRemoteQueue = [];
     this.diagRemoteFlushHandle = null;
     this.diagHeartbeatHandle = null;
-    this.diagStorageKey = "wxccSupervisorWidgetDiagLogV41";
-    this.diagQueueStorageKey = "wxccSupervisorWidgetDiagQueueV41";
-    this.activeCallPersistenceKey = "wxccSupervisorWidgetActiveCallsV41";
+    this.diagStorageKey = "wxccSupervisorWidgetDiagLogV42";
+    this.diagQueueStorageKey = "wxccSupervisorWidgetDiagQueueV42";
+    this.activeCallPersistenceKey = "wxccSupervisorWidgetActiveCallsV42";
     this.activeCallEvictionDelayMs = 30000;
     this.activeCallPersistenceTtlMs = 600000;
+    this.agentStateEventCache = new Map();
+    this.agentStatePersistenceKey = "wxccSupervisorWidgetAgentStatesV42";
+    this.agentStateEventTtlMs = 120000;
+    this.agentSnapshotStaleRejectMs = 90000;
     this.techDiagnosticsInstalled = false;
     this.windowErrorHandler = null;
     this.windowRejectionHandler = null;
@@ -69,6 +73,7 @@ class SupervisorAccessWidget extends HTMLElement {
 
     this.restorePersistentDiagnostics();
     this.restorePersistentActiveCalls();
+    this.restorePersistentAgentStates();
     this.installTechnicalDiagnostics();
     this.startPersistentDiagHeartbeat();
     this.addDiagLog("cold-start-after-disconnect", { runtimeId: this.runtimeId });
@@ -1933,6 +1938,149 @@ Call History</div>
     };
   }
 
+
+  getAgentEventDisplayState(state, data = {}) {
+    const normalized = String(state || "").toLowerCase();
+    if (normalized === "available" || normalized === "wrapup-done") return "Available";
+    if (normalized === "ringing") return "Ringing";
+    if (normalized === "connected") return "Connected";
+    if (normalized === "wrapup") return "Wrapup";
+    // Do not force custom idle-code display names from events because the event only
+    // carries the idleCodeId. The Search API snapshot remains better for custom idle labels.
+    return "";
+  }
+
+  restorePersistentAgentStates() {
+    try {
+      const raw = localStorage.getItem(this.agentStatePersistenceKey);
+      const parsed = JSON.parse(raw || "[]");
+      const now = Date.now();
+      this.agentStateEventCache = new Map();
+      if (Array.isArray(parsed)) {
+        parsed.forEach(row => {
+          const agentId = String(row?.agentId || "");
+          const receivedAtMs = Number(row?.receivedAtMs || 0);
+          if (!agentId || !receivedAtMs || now - receivedAtMs > this.agentStateEventTtlMs) return;
+          this.agentStateEventCache.set(agentId, row);
+        });
+      }
+      this.addDiagLog("agent-state-cache-restored", { rows: this.agentStateEventCache.size });
+    } catch (err) {
+      this.agentStateEventCache = new Map();
+      this.addDiagLog("agent-state-cache-restore-failed", { message: err.message });
+    }
+  }
+
+  persistAgentStates() {
+    try {
+      localStorage.setItem(this.agentStatePersistenceKey, JSON.stringify(Array.from(this.agentStateEventCache.values()).slice(-100)));
+    } catch {}
+  }
+
+  rememberAgentStateFromWxccEvent(details = {}) {
+    try {
+      const normalized = this.normalizeWxccEventBody(this.extractWxccEventBody(details));
+      const data = normalized.data || {};
+      const type = String(normalized.type || "");
+      if (type !== "agent:state_change") return;
+
+      const agentId = String(data.agentId || data.ownerId || data.userId || data.ciUserId || "");
+      const currentState = String(data.currentState || data.state || data.status || "").toLowerCase();
+      if (!agentId || !currentState) return;
+
+      const displayState = this.getAgentEventDisplayState(currentState, data);
+      if (!displayState) {
+        this.addDiagLog("agent-state-event-observed-not-authoritative", { agentId, currentState, taskId: data.taskId || "" });
+        return;
+      }
+
+      const now = Date.now();
+      const createdTime = Number(data.createdTime || 0);
+      const previous = this.agentStateEventCache.get(agentId);
+      const previousCreatedTime = Number(previous?.createdTime || 0);
+
+      // WXCC can deliver retries/out-of-order events. Never let an older event roll back a newer state.
+      if (previousCreatedTime && createdTime && createdTime < previousCreatedTime) {
+        this.addDiagLog("agent-state-event-older-ignored", { agentId, currentState, createdTime, previousCreatedTime });
+        return;
+      }
+
+      const row = {
+        agentId,
+        currentState,
+        displayState,
+        taskId: String(data.taskId || ""),
+        queueId: String(data.queueId || ""),
+        teamId: String(data.teamId || ""),
+        createdTime: createdTime || now,
+        receivedAtMs: now,
+        source: "wxcc-event-authority"
+      };
+
+      this.agentStateEventCache.set(agentId, row);
+      this.persistAgentStates();
+      this.addDiagLog("agent-state-event-authority-updated", { agentId, currentState, displayState, taskId: row.taskId });
+
+      if (this.lastWallboardData) {
+        this.processWallboardData(this.lastWallboardData);
+      }
+    } catch (err) {
+      this.addDiagLog("agent-state-event-authority-failed", { message: err.message });
+    }
+  }
+
+  applyAgentStateAuthority(snapshot) {
+    const now = Date.now();
+    const agents = Array.isArray(snapshot.agentList) ? snapshot.agentList : [];
+    let applied = 0;
+    let ignoredOlderSnapshot = 0;
+
+    for (const agent of agents) {
+      const agentId = String(agent.agentId || agent.id || agent.userId || "");
+      if (!agentId) continue;
+      const override = this.agentStateEventCache.get(agentId);
+      if (!override) continue;
+
+      const ageMs = now - Number(override.receivedAtMs || 0);
+      if (!Number.isFinite(ageMs) || ageMs > this.agentStateEventTtlMs) {
+        this.agentStateEventCache.delete(agentId);
+        continue;
+      }
+
+      const snapshotActivity = Number(agent.lastActivityTime || agent.startTime || 0);
+      const eventCreated = Number(override.createdTime || 0);
+      const snapshotLooksNewer = snapshotActivity && eventCreated && snapshotActivity > eventCreated + this.agentSnapshotStaleRejectMs;
+      if (snapshotLooksNewer) continue;
+
+      const sourceState = String(agent.state || "");
+      if (sourceState !== override.displayState) ignoredOlderSnapshot += 1;
+      agent.state = override.displayState;
+      agent.currentState = override.currentState;
+      agent.eventAuthority = {
+        applied: true,
+        sourceState,
+        eventState: override.currentState,
+        ageMs,
+        taskId: override.taskId || ""
+      };
+      applied += 1;
+    }
+
+    if (snapshot.agents && Array.isArray(snapshot.agentList)) {
+      snapshot.agents.loggedIn = snapshot.agentList.length;
+      snapshot.agents.available = snapshot.agentList.filter(agent => String(agent.state || "").toLowerCase() === "available").length;
+    }
+
+    if (applied || ignoredOlderSnapshot) {
+      snapshot.agentStateAuthorityApplied = applied;
+      snapshot.agentStateAuthorityIgnoredOlderSnapshot = ignoredOlderSnapshot;
+      this.addDiagLog("agent-state-authority-applied", { applied, ignoredOlderSnapshot });
+    }
+
+    this.persistAgentStates();
+    return snapshot;
+  }
+
   rememberActiveCallFromWxccEvent(details = {}) {
     try {
       const normalized = this.normalizeWxccEventBody(this.extractWxccEventBody(details));
@@ -2631,6 +2779,7 @@ Call History</div>
     snapshot.waitingTaskList = Array.isArray(snapshot.waitingTaskList) ? snapshot.waitingTaskList : [];
     snapshot.agentList = incomingAgents;
     snapshot.agents = snapshot.agents || {};
+    this.applyAgentStateAuthority(snapshot);
     this.lastNonEmptyWallboardTs = now;
     return snapshot;
   }
@@ -2890,6 +3039,7 @@ Call History</div>
       let details = {};
       try { details = JSON.parse(event.data || "{}"); } catch {}
       this.addDiagLog("sse-wxcc-event", details);
+      this.rememberAgentStateFromWxccEvent(details);
       this.rememberActiveCallFromWxccEvent(details);
       this.setWallboardStatus("WXCC event received. Refreshing...");
     });

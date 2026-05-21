@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-technical-diagnostics-2026-05-21-v35";
+const FRONTEND_BUILD_ID = "wxcc-widget-architecture-concurrency-2026-05-21-v37";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();

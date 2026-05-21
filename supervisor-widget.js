@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-v54-queue-all-fields-kpis-2026-05-21";
+const FRONTEND_BUILD_ID = "wxcc-widget-v54-hotfix-kpi-duration-init-2026-05-21";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -213,6 +213,26 @@ class SupervisorAccessWidget extends HTMLElement {
         "supervisorWidgetSelectedQueues",
         JSON.stringify(Array.isArray(this.selectedQueueFilters) ? this.selectedQueueFilters : [])
       );
+    } catch {
+      // Ignore storage issues inside embedded desktop.
+    }
+  }
+
+
+  readKpiDurationRange() {
+    try {
+      const value = sessionStorage.getItem("wxccSupervisorWidgetKpiDurationRangeV54") || localStorage.getItem("wxccSupervisorWidgetKpiDurationRangeV54") || "today";
+      return ["today", "60m", "30m"].includes(value) ? value : "today";
+    } catch {
+      return "today";
+    }
+  }
+
+  saveKpiDurationRange() {
+    try {
+      const value = ["today", "60m", "30m"].includes(this.kpiDurationRange) ? this.kpiDurationRange : "today";
+      sessionStorage.setItem("wxccSupervisorWidgetKpiDurationRangeV54", value);
+      localStorage.setItem("wxccSupervisorWidgetKpiDurationRangeV54", value);
     } catch {
       // Ignore storage issues inside embedded desktop.
     }

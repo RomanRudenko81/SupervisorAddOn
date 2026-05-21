@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-persistent-crash-log-2026-05-21-v39";
+const FRONTEND_BUILD_ID = "wxcc-widget-hard-lifecycle-isolation-2026-05-21-v40";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -36,8 +36,8 @@ class SupervisorAccessWidget extends HTMLElement {
     this.diagRemoteQueue = [];
     this.diagRemoteFlushHandle = null;
     this.diagHeartbeatHandle = null;
-    this.diagStorageKey = "wxccSupervisorWidgetDiagLogV39";
-    this.diagQueueStorageKey = "wxccSupervisorWidgetDiagQueueV39";
+    this.diagStorageKey = "wxccSupervisorWidgetDiagLogV40";
+    this.diagQueueStorageKey = "wxccSupervisorWidgetDiagQueueV40";
     this.techDiagnosticsInstalled = false;
     this.windowErrorHandler = null;
     this.windowRejectionHandler = null;
@@ -47,40 +47,119 @@ class SupervisorAccessWidget extends HTMLElement {
     this.themeMode = localStorage.getItem("supervisorWidgetTheme") || "dark";
     this.allowedQueueNames = [];
     this.selectedQueueFilters = this.readSelectedQueueFilters();
+
+    // v40 hard lifecycle isolation: every mount gets a unique runtime.
+    // Async callbacks, timers and SSE events from older WXCC Desktop lifecycles must not update the UI.
+    this.runtimeId = null;
+    this.isDisposed = false;
+    this.cleanupCallbacks = [];
+    this.visibilityChangeHandler = null;
+    this.pageHideHandler = null;
+    this.beforeUnloadHandler = null;
+    this.entryPointRetryTimer = null;
   }
 
   connectedCallback() {
+    this.runtimeId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    this.isDisposed = false;
+    this.cleanupCallbacks = [];
+
     this.restorePersistentDiagnostics();
     this.installTechnicalDiagnostics();
     this.startPersistentDiagHeartbeat();
-    this.addDiagLog("widget-resume", { persistedEntries: (this.diagLogEntries || []).length });
-    setTimeout(() => this.addDiagLog("widget-connected", {
+    this.addDiagLog("cold-start-after-disconnect", { runtimeId: this.runtimeId });
+    this.addDiagLog("widget-resume", { persistedEntries: (this.diagLogEntries || []).length, runtimeId: this.runtimeId });
+    const runtimeId = this.runtimeId;
+    this.safeSetTimeout(() => this.addDiagLog("widget-connected", {
       frontendBuildId: FRONTEND_BUILD_ID,
       userAgent: navigator.userAgent,
-      href: location.href
-    }), 0);
+      href: location.href,
+      runtimeId
+    }), 0, runtimeId);
     this.render();
     this.applyTheme();
     this.populateStaticOptions();
     this.bindEvents();
-    this.init();
-    this.startRobustActiveCallTimer();
-    this.startHistoryEndWatchdog();
+    this.init(runtimeId);
+    this.startRobustActiveCallTimer(runtimeId);
+    this.startHistoryEndWatchdog(runtimeId);
   }
 
   disconnectedCallback() {
-    if (this.pollHandle) clearInterval(this.pollHandle);
-    if (this.wallboardPollHandle) clearInterval(this.wallboardPollHandle);
-    if (this.wallboardReconnectHandle) clearTimeout(this.wallboardReconnectHandle);
-    if (this.wallboardPollFallbackHandle) clearInterval(this.wallboardPollFallbackHandle);
-    if (this.activeCallTimerHandle) clearInterval(this.activeCallTimerHandle);
-    if (this.historyEndWatchdogHandle) clearInterval(this.historyEndWatchdogHandle);
-    if (this.wallboardEventSource) this.wallboardEventSource.close();
-    this.addDiagLog("widget-disconnected", { reason: "disconnectedCallback" });
+    this.addDiagLog("widget-disconnected", { reason: "disconnectedCallback", runtimeId: this.runtimeId });
+    this.hardLifecycleCleanup("disconnectedCallback");
+  }
+
+  isCurrentRuntime(runtimeId) {
+    return !this.isDisposed && runtimeId && runtimeId === this.runtimeId;
+  }
+
+  guardRuntime(runtimeId, eventName = "stale-runtime-ignored") {
+    const ok = this.isCurrentRuntime(runtimeId);
+    if (!ok) {
+      try { this.addDiagLog(eventName, { runtimeId, currentRuntimeId: this.runtimeId, disposed: this.isDisposed }); } catch {}
+    }
+    return ok;
+  }
+
+  safeSetTimeout(fn, delay, runtimeId = this.runtimeId) {
+    const handle = setTimeout(() => {
+      if (!this.guardRuntime(runtimeId)) return;
+      try { fn(); } catch (err) { this.addDiagLog("timer-exception", { error: this.serializeError(err), runtimeId }); }
+    }, delay);
+    this.cleanupCallbacks.push(() => clearTimeout(handle));
+    return handle;
+  }
+
+  safeSetInterval(fn, delay, runtimeId = this.runtimeId) {
+    const handle = setInterval(() => {
+      if (!this.guardRuntime(runtimeId)) return;
+      try { fn(); } catch (err) { this.addDiagLog("interval-exception", { error: this.serializeError(err), runtimeId }); }
+    }, delay);
+    this.cleanupCallbacks.push(() => clearInterval(handle));
+    return handle;
+  }
+
+  addManagedListener(target, type, handler, options) {
+    try {
+      target.addEventListener(type, handler, options);
+      this.cleanupCallbacks.push(() => {
+        try { target.removeEventListener(type, handler, options); } catch {}
+      });
+    } catch {}
+  }
+
+  hardLifecycleCleanup(reason = "unknown") {
+    const runtimeId = this.runtimeId;
+    this.addDiagLog("lifecycle-cleanup-start", { reason, runtimeId });
+    this.isDisposed = true;
+
+    const clearIntervalSafe = handle => { if (handle) { try { clearInterval(handle); } catch {} } };
+    const clearTimeoutSafe = handle => { if (handle) { try { clearTimeout(handle); } catch {} } };
+
+    clearIntervalSafe(this.pollHandle); this.pollHandle = null;
+    clearIntervalSafe(this.wallboardPollHandle); this.wallboardPollHandle = null;
+    clearIntervalSafe(this.wallboardPollFallbackHandle); this.wallboardPollFallbackHandle = null;
+    clearIntervalSafe(this.activeCallTimerHandle); this.activeCallTimerHandle = null;
+    clearIntervalSafe(this.historyEndWatchdogHandle); this.historyEndWatchdogHandle = null;
+    clearIntervalSafe(this.diagHeartbeatHandle); this.diagHeartbeatHandle = null;
+
+    clearTimeoutSafe(this.wallboardReconnectHandle); this.wallboardReconnectHandle = null;
+    clearTimeoutSafe(this.entryPointRetryTimer); this.entryPointRetryTimer = null;
+    clearTimeoutSafe(this.diagRemoteFlushHandle); this.diagRemoteFlushHandle = null;
+
+    if (this.wallboardEventSource) {
+      try { this.wallboardEventSource.close(); } catch {}
+      this.wallboardEventSource = null;
+    }
+
+    const callbacks = Array.isArray(this.cleanupCallbacks) ? this.cleanupCallbacks.splice(0) : [];
+    callbacks.forEach(cb => { try { cb(); } catch {} });
+
     this.flushDiagRemoteQueue(true);
     this.persistDiagLog();
     this.uninstallTechnicalDiagnostics();
-    if (this.diagHeartbeatHandle) clearInterval(this.diagHeartbeatHandle);
+    this.addDiagLog("lifecycle-cleanup-complete", { reason, runtimeId });
   }
 
   readSelectedQueueFilters() {
@@ -1214,9 +1293,11 @@ Call History</div>
     this.setStatus("Unsaved changes");
   }
 
-  async init() {
+  async init(runtimeId = this.runtimeId) {
     try {
+      if (!this.guardRuntime(runtimeId)) return;
       await this.bootstrapSession();
+      if (!this.guardRuntime(runtimeId)) return;
 
       // v38 lifecycle resilience:
       // The WXCC desktop can temporarily switch/park this iframe when the active user
@@ -1235,7 +1316,7 @@ Call History</div>
         this.scheduleEntryPointRetry("init-entrypoint-failed");
       }
 
-      this.startWallboardStream();
+      this.startWallboardStream(runtimeId);
     } catch (err) {
       this.addDiagLog("init-failed", { error: this.serializeError(err) });
       this.setStatus(`Load failed: ${err.message}`);
@@ -1437,30 +1518,34 @@ Call History</div>
     this.hasUnsavedChanges = false;
   }
 
-  scheduleEntryPointRetry(reason = "entrypoint-retry") {
+  scheduleEntryPointRetry(reason = "entrypoint-retry", runtimeId = this.runtimeId) {
+    if (!this.guardRuntime(runtimeId)) return;
     if (this.entryPointRetryTimer) {
-      this.addDiagLog("entrypoint-retry-already-scheduled", { reason });
+      this.addDiagLog("entrypoint-retry-already-scheduled", { reason, runtimeId });
       return;
     }
 
     const retryDelayMs = 5000;
-    this.addDiagLog("entrypoint-retry-scheduled", { reason, retryDelayMs });
+    this.addDiagLog("entrypoint-retry-scheduled", { reason, retryDelayMs, runtimeId });
 
-    this.entryPointRetryTimer = setTimeout(async () => {
+    this.entryPointRetryTimer = this.safeSetTimeout(async () => {
       this.entryPointRetryTimer = null;
+      if (!this.guardRuntime(runtimeId)) return;
       try {
-        this.addDiagLog("entrypoint-retry-start", { reason });
+        this.addDiagLog("entrypoint-retry-start", { reason, runtimeId });
         await this.loadEntryPoint(true);
-        this.addDiagLog("entrypoint-retry-success", { reason });
+        if (!this.guardRuntime(runtimeId)) return;
+        this.addDiagLog("entrypoint-retry-success", { reason, runtimeId });
         if (!this.hasUnsavedChanges) this.setStatus("Ready");
       } catch (err) {
         this.addDiagLog("entrypoint-retry-failed", {
           reason,
-          error: this.serializeError(err)
+          error: this.serializeError(err),
+          runtimeId
         });
-        this.scheduleEntryPointRetry("retry-failed");
+        this.scheduleEntryPointRetry("retry-failed", runtimeId);
       }
-    }, retryDelayMs);
+    }, retryDelayMs, runtimeId);
   }
 
   updateLabel() {
@@ -1971,33 +2056,41 @@ Call History</div>
 
   startPersistentDiagHeartbeat() {
     if (this.diagHeartbeatHandle) clearInterval(this.diagHeartbeatHandle);
-    this.diagHeartbeatHandle = setInterval(() => {
+    const runtimeId = this.runtimeId;
+    this.diagHeartbeatHandle = this.safeSetInterval(() => {
       this.addDiagLog("frontend-heartbeat", {
         visible: document.visibilityState,
         eventSourceReadyState: this.wallboardEventSource ? this.wallboardEventSource.readyState : null,
         hasLastWallboard: Boolean(this.lastWallboardData),
-        href: location.href
+        href: location.href,
+        runtimeId
       });
-    }, 15000);
+    }, 15000, runtimeId);
     try {
-      document.addEventListener("visibilitychange", () => {
-        this.addDiagLog("visibility-change", { visibilityState: document.visibilityState });
+      this.visibilityChangeHandler = () => {
+        this.addDiagLog("visibility-change", { visibilityState: document.visibilityState, runtimeId });
         if (document.visibilityState === "hidden") this.flushDiagRemoteQueue(true);
         if (document.visibilityState === "visible") {
-          this.addDiagLog("visibility-resume", { eventSourceReadyState: this.wallboardEventSource ? this.wallboardEventSource.readyState : null });
+          this.addDiagLog("visibility-resume", { eventSourceReadyState: this.wallboardEventSource ? this.wallboardEventSource.readyState : null, runtimeId });
           this.flushDiagRemoteQueue(false);
+          if (!this.wallboardEventSource && this.sessionToken && this.isCurrentRuntime(runtimeId)) {
+            this.startWallboardStream(runtimeId);
+          }
         }
-      }, true);
-      window.addEventListener("pagehide", () => {
-        this.addDiagLog("pagehide", { persisted: true });
+      };
+      this.pageHideHandler = () => {
+        this.addDiagLog("pagehide", { persisted: true, runtimeId });
         this.flushDiagRemoteQueue(true);
         this.persistDiagLog();
-      }, true);
-      window.addEventListener("beforeunload", () => {
-        this.addDiagLog("beforeunload", { persisted: true });
+      };
+      this.beforeUnloadHandler = () => {
+        this.addDiagLog("beforeunload", { persisted: true, runtimeId });
         this.flushDiagRemoteQueue(true);
         this.persistDiagLog();
-      }, true);
+      };
+      this.addManagedListener(document, "visibilitychange", this.visibilityChangeHandler, true);
+      this.addManagedListener(window, "pagehide", this.pageHideHandler, true);
+      this.addManagedListener(window, "beforeunload", this.beforeUnloadHandler, true);
     } catch {}
   }
 
@@ -2043,8 +2136,15 @@ Call History</div>
     };
 
     this.windowRejectionHandler = event => {
+      const serialized = this.serializeError(event?.reason);
+      const msg = `${serialized.name || ""} ${serialized.message || ""}`;
+      if (/AbortError/i.test(msg) && /play\(\).*pause\(\)/i.test(msg)) {
+        this.addDiagLog("audio-play-abort-ignored", { reason: serialized });
+        try { event.preventDefault(); } catch {}
+        return;
+      }
       this.addDiagLog("unhandled-rejection", {
-        reason: this.serializeError(event?.reason),
+        reason: serialized,
         promise: String(event?.promise || "")
       });
     };
@@ -2190,18 +2290,19 @@ Call History</div>
     }
   }
 
-  startHistoryEndWatchdog() {
+  startHistoryEndWatchdog(runtimeId = this.runtimeId) {
     if (this.historyEndWatchdogHandle) {
       clearInterval(this.historyEndWatchdogHandle);
     }
 
-    this.historyEndWatchdogHandle = setInterval(() => {
-      this.checkHistoryEndMismatch().catch(err => this.addDiagLog("history-watchdog-exception", { error: this.serializeError(err) }));
-    }, 1500);
+    this.historyEndWatchdogHandle = this.safeSetInterval(() => {
+      if (!this.guardRuntime(runtimeId)) return;
+      this.checkHistoryEndMismatch(runtimeId).catch(err => this.addDiagLog("history-watchdog-exception", { error: this.serializeError(err), runtimeId }));
+    }, 1500, runtimeId);
   }
 
-  async checkHistoryEndMismatch() {
-    if (!this.sessionToken || !this.lastWallboardData) return;
+  async checkHistoryEndMismatch(runtimeId = this.runtimeId) {
+    if (!this.guardRuntime(runtimeId) || !this.sessionToken || !this.lastWallboardData) return;
 
     const now = Date.now();
 
@@ -2250,16 +2351,17 @@ Call History</div>
       }
 
       this.addDiagLog("history-end-mismatch-refresh", { mismatchAge, activeCalls: activeCalls.length, connectedAgents: connectedAgents.length, hasConnectedHistory });
-      await this.loadWallboard("history-end-mismatch");
+      await this.loadWallboard("history-end-mismatch", runtimeId);
     }
   }
 
-  startRobustActiveCallTimer() {
+  startRobustActiveCallTimer(runtimeId = this.runtimeId) {
     if (this.activeCallTimerHandle) {
       clearInterval(this.activeCallTimerHandle);
     }
 
-    this.activeCallTimerHandle = setInterval(() => {
+    this.activeCallTimerHandle = this.safeSetInterval(() => {
+      if (!this.guardRuntime(runtimeId)) return;
       try {
       this.updateActiveDurationCells();
 
@@ -2499,12 +2601,14 @@ Call History</div>
     }
   }
 
-  async loadWallboard(reason = "manual") {
-    this.addDiagLog("fetch-start", { reason });
+  async loadWallboard(reason = "manual", runtimeId = this.runtimeId) {
+    if (!this.guardRuntime(runtimeId)) return;
+    this.addDiagLog("fetch-start", { reason, runtimeId });
 
     try {
       const res = await this.authorizedFetch(`/api/wallboard`);
       const data = await this.readJsonResponse(res);
+      if (!this.guardRuntime(runtimeId)) return;
 
       if (!res.ok || data.ok === false) {
         this.addDiagLog("fetch-http-error", { reason, status: res.status, error: data?.error || "" });
@@ -2517,6 +2621,7 @@ Call History</div>
         summary: this.getWallboardSummary(data)
       });
 
+      if (!this.guardRuntime(runtimeId)) return;
       this.processWallboardData(data);
 
       if (data.stale === true) {
@@ -2528,16 +2633,16 @@ Call History</div>
     }
   }
 
-  startWallboardPollFallback(reason = "sse-disconnected") {
+  startWallboardPollFallback(reason = "sse-disconnected", runtimeId = this.runtimeId) {
     if (this.wallboardPollFallbackHandle) return;
 
-    this.addDiagLog("poll-fallback-start", { reason });
-    this.wallboardPollFallbackHandle = setInterval(() => {
-      if (!this.sessionToken) return;
-      this.loadWallboard("poll-fallback").catch(err => {
-        this.addDiagLog("poll-fallback-error", { message: err.message });
+    this.addDiagLog("poll-fallback-start", { reason, runtimeId });
+    this.wallboardPollFallbackHandle = this.safeSetInterval(() => {
+      if (!this.sessionToken || !this.guardRuntime(runtimeId)) return;
+      this.loadWallboard("poll-fallback", runtimeId).catch(err => {
+        this.addDiagLog("poll-fallback-error", { message: err.message, runtimeId });
       });
-    }, this.WALLBOARD_POLL_INTERVAL_MS || 5000);
+    }, this.WALLBOARD_POLL_INTERVAL_MS || 5000, runtimeId);
   }
 
   stopWallboardPollFallback(reason = "sse-connected") {
@@ -2547,8 +2652,8 @@ Call History</div>
     this.addDiagLog("poll-fallback-stop", { reason });
   }
 
-  scheduleWallboardReconnect(reason = "sse-error") {
-    if (this.wallboardReconnectHandle || !this.sessionToken) return;
+  scheduleWallboardReconnect(reason = "sse-error", runtimeId = this.runtimeId) {
+    if (this.wallboardReconnectHandle || !this.sessionToken || !this.guardRuntime(runtimeId)) return;
 
     this.wallboardReconnectAttempt = (this.wallboardReconnectAttempt || 0) + 1;
     const delay = Math.min(30000, 2000 * this.wallboardReconnectAttempt);
@@ -2556,16 +2661,18 @@ Call History</div>
     this.addDiagLog("sse-reconnect-scheduled", {
       reason,
       attempt: this.wallboardReconnectAttempt,
-      delay
+      delay,
+      runtimeId
     });
 
-    this.wallboardReconnectHandle = setTimeout(() => {
+    this.wallboardReconnectHandle = this.safeSetTimeout(() => {
       this.wallboardReconnectHandle = null;
-      this.startWallboardStream();
-    }, delay);
+      this.startWallboardStream(runtimeId);
+    }, delay, runtimeId);
   }
 
-  startWallboardStream() {
+  startWallboardStream(runtimeId = this.runtimeId) {
+    if (!this.guardRuntime(runtimeId)) return;
     if (this.wallboardEventSource) {
       try { this.wallboardEventSource.close(); } catch {}
       this.wallboardEventSource = null;
@@ -2579,7 +2686,7 @@ Call History</div>
     if (!this.sessionToken) {
       this.addDiagLog("sse-start-failed", { reason: "missing-session-token" });
       this.setWallboardStatus("Live dashboard failed: missing session token");
-      this.startWallboardPollFallback("missing-session-token");
+      this.startWallboardPollFallback("missing-session-token", runtimeId);
       return;
     }
 
@@ -2591,18 +2698,20 @@ Call History</div>
       source = new EventSource(url);
     } catch (err) {
       this.addDiagLog("sse-constructor-exception", { error: this.serializeError(err) });
-      this.startWallboardPollFallback("sse-constructor-exception");
-      this.scheduleWallboardReconnect("sse-constructor-exception");
+      this.startWallboardPollFallback("sse-constructor-exception", runtimeId);
+      this.scheduleWallboardReconnect("sse-constructor-exception", runtimeId);
       return;
     }
     this.wallboardEventSource = source;
 
     source.addEventListener("open", () => {
+      if (!this.guardRuntime(runtimeId) || this.wallboardEventSource !== source) return;
       this.wallboardReconnectAttempt = 0;
       this.addDiagLog("sse-opened", { readyState: source.readyState });
     });
 
     source.addEventListener("ready", event => {
+      if (!this.guardRuntime(runtimeId) || this.wallboardEventSource !== source) return;
       let details = {};
       try { details = JSON.parse(event.data || "{}"); } catch {}
       this.wallboardReconnectAttempt = 0;
@@ -2612,10 +2721,12 @@ Call History</div>
     });
 
     source.addEventListener("wallboard", event => {
+      if (!this.guardRuntime(runtimeId) || this.wallboardEventSource !== source) return;
       try {
         const data = JSON.parse(event.data);
         this.addDiagLog("sse-wallboard", { summary: this.getWallboardSummary(data) });
-        this.processWallboardData(data);
+        if (!this.guardRuntime(runtimeId)) return;
+      this.processWallboardData(data);
       } catch (err) {
         this.addDiagLog("sse-wallboard-parse-error", { message: err.message });
         this.setWallboardStatus(`Live dashboard parse failed: ${err.message}`);
@@ -2623,6 +2734,7 @@ Call History</div>
     });
 
     source.addEventListener("wallboard-error", event => {
+      if (!this.guardRuntime(runtimeId) || this.wallboardEventSource !== source) return;
       let payload = {};
       try { payload = JSON.parse(event.data || "{}"); } catch {}
       this.addDiagLog("sse-wallboard-error", {
@@ -2630,12 +2742,13 @@ Call History</div>
         error: String(payload.error || "").slice(0, 500)
       });
       this.setWallboardStatus("Live event warning. Keeping dashboard alive and refreshing...");
-      this.loadWallboard("sse-wallboard-error").catch(err => {
+      this.loadWallboard("sse-wallboard-error", runtimeId).catch(err => {
         this.addDiagLog("sse-wallboard-error-refresh-failed", { message: err.message });
       });
     });
 
     source.addEventListener("wxcc-event", event => {
+      if (!this.guardRuntime(runtimeId) || this.wallboardEventSource !== source) return;
       let details = {};
       try { details = JSON.parse(event.data || "{}"); } catch {}
       this.addDiagLog("sse-wxcc-event", details);
@@ -2643,6 +2756,7 @@ Call History</div>
     });
 
     source.addEventListener("event-refresh", event => {
+      if (!this.guardRuntime(runtimeId) || this.wallboardEventSource !== source) return;
       let details = {};
       try { details = JSON.parse(event.data || "{}"); } catch {}
       this.addDiagLog("sse-event-refresh", details);
@@ -2650,6 +2764,7 @@ Call History</div>
     });
 
     source.addEventListener("error", () => {
+      if (!this.guardRuntime(runtimeId) || this.wallboardEventSource !== source) return;
       const readyState = source.readyState;
       this.addDiagLog("sse-native-error", { readyState, attempt: this.wallboardReconnectAttempt || 0 });
 
@@ -2658,14 +2773,14 @@ Call History</div>
           this.wallboardEventSource = null;
         }
         this.setWallboardStatus("Live dashboard disconnected. Reconnecting with polling fallback...");
-        this.startWallboardPollFallback("sse-native-closed");
-        this.scheduleWallboardReconnect("sse-native-closed");
+        this.startWallboardPollFallback("sse-native-closed", runtimeId);
+        this.scheduleWallboardReconnect("sse-native-closed", runtimeId);
         return;
       }
 
       // CONNECTING is often temporary. Keep EventSource alive and use HTTP polling as safety net.
       this.setWallboardStatus("Live dashboard reconnecting. Polling fallback active...");
-      this.startWallboardPollFallback("sse-native-connecting");
+      this.startWallboardPollFallback("sse-native-connecting", runtimeId);
     });
   }
 

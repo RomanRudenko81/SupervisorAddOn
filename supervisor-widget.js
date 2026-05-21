@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-v54-hotfix-kpi-duration-init-2026-05-21";
+const FRONTEND_BUILD_ID = "wxcc-widget-v55-safe-queue-all-fields-kpi-probe-2026-05-21";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -22,9 +22,6 @@ class SupervisorAccessWidget extends HTMLElement {
     this.wallboardPollFallbackHandle = null;
     this.activeCallTimerHandle = null;
     this.liveUiTimerHandle = null;
-    this.analyticsMetricsPollHandle = null;
-    this.analyticsMetricsCache = null;
-    this.analyticsMetricsIntervalMs = 30000;
     this.lastWallboardData = null;
     this.activeCallRenderCache = new Map();
     this.callHistoryRenderCache = [];
@@ -66,7 +63,11 @@ class SupervisorAccessWidget extends HTMLElement {
     this.themeMode = localStorage.getItem("supervisorWidgetTheme") || "dark";
     this.allowedQueueNames = [];
     this.selectedQueueFilters = this.readSelectedQueueFilters();
+    this.kpiDurationStorageKey = "wxccSupervisorWidgetKpiDurationV55";
     this.kpiDurationRange = this.readKpiDurationRange();
+    this.analyticsMetricsPollHandle = null;
+    this.analyticsMetricsCache = null;
+    this.analyticsMetricsIntervalMs = 30000;
     this.currentIdentity = null;
     this.currentUserById = new Map();
     this.configCollapsedSessionKey = "wxccSupervisorWidgetConfigCollapsedV52";
@@ -110,8 +111,8 @@ class SupervisorAccessWidget extends HTMLElement {
     this.applyTheme();
     this.applySessionCollapseState();
     this.populateStaticOptions();
-    this.updateKpiDurationFilterControl();
     this.bindEvents();
+    this.updateKpiDurationFilterControl();
     this.init(runtimeId);
     this.startRobustActiveCallTimer(runtimeId);
     this.startLiveUiTimer(runtimeId);
@@ -175,9 +176,9 @@ class SupervisorAccessWidget extends HTMLElement {
     clearIntervalSafe(this.wallboardPollFallbackHandle); this.wallboardPollFallbackHandle = null;
     clearIntervalSafe(this.activeCallTimerHandle); this.activeCallTimerHandle = null;
     clearIntervalSafe(this.liveUiTimerHandle); this.liveUiTimerHandle = null;
-    clearIntervalSafe(this.analyticsMetricsPollHandle); this.analyticsMetricsPollHandle = null;
     clearIntervalSafe(this.historyEndWatchdogHandle); this.historyEndWatchdogHandle = null;
     clearIntervalSafe(this.diagHeartbeatHandle); this.diagHeartbeatHandle = null;
+    clearIntervalSafe(this.analyticsMetricsPollHandle); this.analyticsMetricsPollHandle = null;
 
     clearTimeoutSafe(this.wallboardReconnectHandle); this.wallboardReconnectHandle = null;
     clearTimeoutSafe(this.entryPointRetryTimer); this.entryPointRetryTimer = null;
@@ -221,21 +222,24 @@ class SupervisorAccessWidget extends HTMLElement {
 
   readKpiDurationRange() {
     try {
-      const value = sessionStorage.getItem("wxccSupervisorWidgetKpiDurationRangeV54") || localStorage.getItem("wxccSupervisorWidgetKpiDurationRangeV54") || "today";
-      return ["today", "60m", "30m"].includes(value) ? value : "today";
+      const value = sessionStorage.getItem(this.kpiDurationStorageKey || "wxccSupervisorWidgetKpiDurationV55");
+      return ["today", "60m", "30m"].includes(value) ? value : "60m";
     } catch {
-      return "today";
+      return "60m";
     }
   }
 
   saveKpiDurationRange() {
     try {
-      const value = ["today", "60m", "30m"].includes(this.kpiDurationRange) ? this.kpiDurationRange : "today";
-      sessionStorage.setItem("wxccSupervisorWidgetKpiDurationRangeV54", value);
-      localStorage.setItem("wxccSupervisorWidgetKpiDurationRangeV54", value);
+      sessionStorage.setItem(this.kpiDurationStorageKey || "wxccSupervisorWidgetKpiDurationV55", this.kpiDurationRange || "60m");
     } catch {
       // Ignore storage issues inside embedded desktop.
     }
+  }
+
+  updateKpiDurationFilterControl() {
+    const select = this.shadowRoot?.getElementById("kpiDurationFilter");
+    if (select) select.value = this.kpiDurationRange || "60m";
   }
 
   render() {
@@ -495,6 +499,39 @@ class SupervisorAccessWidget extends HTMLElement {
           gap: 10px;
         }
 
+        .kpi-filter-controls {
+          display: flex;
+          align-items: center;
+          justify-content: flex-end;
+          gap: 6px;
+          min-width: 0;
+          flex: 0 0 auto;
+        }
+
+        .kpi-duration-select {
+          width: auto;
+          min-width: 78px;
+          max-width: 92px;
+          min-height: 24px;
+          padding: 3px 8px;
+          border-radius: 999px;
+          border: 1px solid var(--cardBorder);
+          background: rgba(255,255,255,0.10);
+          color: var(--text) !important;
+          font-size: 11px;
+          line-height: 1;
+          cursor: pointer;
+        }
+
+        :host(.theme-light) .kpi-duration-select {
+          background: rgba(0,0,0,0.06);
+        }
+
+        :host(.theme-dark) .kpi-duration-select option {
+          background: #1f2937;
+          color: #ffffff;
+        }
+
         .queue-filter-inline {
           position: relative;
           display: none;
@@ -526,33 +563,6 @@ class SupervisorAccessWidget extends HTMLElement {
 
         :host(.theme-light) .queue-filter-button {
           background: rgba(0,0,0,0.06);
-        }
-
-
-        .kpi-controls {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          flex-wrap: nowrap;
-          justify-content: flex-end;
-        }
-
-        .kpi-duration-select {
-          width: auto !important;
-          min-height: 24px;
-          max-width: 120px;
-          padding: 4px 8px !important;
-          border-radius: 999px !important;
-          border: 1px solid var(--cardBorder) !important;
-          background: rgba(255,255,255,0.10) !important;
-          color: var(--text) !important;
-          font-size: 11px !important;
-          line-height: 1 !important;
-          cursor: pointer;
-        }
-
-        :host(.theme-light) .kpi-duration-select {
-          background: rgba(0,0,0,0.06) !important;
         }
 
         .queue-filter-menu {
@@ -1047,33 +1057,6 @@ class SupervisorAccessWidget extends HTMLElement {
           background: rgba(0,0,0,0.06);
         }
 
-
-        .kpi-controls {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          flex-wrap: nowrap;
-          justify-content: flex-end;
-        }
-
-        .kpi-duration-select {
-          width: auto !important;
-          min-height: 24px;
-          max-width: 120px;
-          padding: 4px 8px !important;
-          border-radius: 999px !important;
-          border: 1px solid var(--cardBorder) !important;
-          background: rgba(255,255,255,0.10) !important;
-          color: var(--text) !important;
-          font-size: 11px !important;
-          line-height: 1 !important;
-          cursor: pointer;
-        }
-
-        :host(.theme-light) .kpi-duration-select {
-          background: rgba(0,0,0,0.06) !important;
-        }
-
         .queue-filter-menu {
           position: absolute;
           top: 30px;
@@ -1250,7 +1233,7 @@ class SupervisorAccessWidget extends HTMLElement {
               <div class="kpi calls-in-queue-card" id="kpiCardCallsInQueue">
                 <div class="kpi-topline">
                   <div class="kpi-label">Calls in Queue</div>
-                  <div class="kpi-controls">
+                  <div class="kpi-filter-controls">
                     <div class="queue-filter-inline" id="queueFilterWrapper">
                       <button class="queue-filter-button" id="queueFilterButton" type="button">Queues ▾</button>
                       <div class="queue-filter-menu" id="queueFilterMenu"></div>
@@ -1391,6 +1374,20 @@ Call History</div>
   }
 
   applySessionCollapseState() {
+    const kpiDurationFilter = this.shadowRoot.getElementById("kpiDurationFilter");
+    if (kpiDurationFilter) {
+      kpiDurationFilter.value = this.kpiDurationRange || "60m";
+      kpiDurationFilter.addEventListener("change", () => {
+        this.kpiDurationRange = kpiDurationFilter.value || "60m";
+        this.saveKpiDurationRange();
+        this.analyticsMetricsCache = null;
+        this.addDiagLog("analytics-duration-filter-changed", { range: this.kpiDurationRange });
+        this.loadAnalyticsMetrics("duration-change").catch(err => {
+          this.addDiagLog("analytics-probe-duration-change-failed", { message: err?.message || String(err) });
+        });
+      });
+    }
+
     const configToggle = this.shadowRoot.getElementById("configToggle");
     const configContent = this.shadowRoot.getElementById("configContent");
     const callHistoryToggle = this.shadowRoot.getElementById("callHistoryToggle");
@@ -1448,18 +1445,6 @@ Call History</div>
         if (!queueFilterWrapper.contains(event.target)) {
           queueFilterWrapper.classList.remove("open");
         }
-      });
-    }
-
-    const kpiDurationFilter = this.shadowRoot.getElementById("kpiDurationFilter");
-    if (kpiDurationFilter) {
-      kpiDurationFilter.value = this.kpiDurationRange || "60m";
-      kpiDurationFilter.addEventListener("change", async () => {
-        this.kpiDurationRange = kpiDurationFilter.value || "60m";
-        this.saveKpiDurationRange();
-        this.addDiagLog("analytics-duration-filter-changed", { range: this.kpiDurationRange });
-        await this.loadAnalyticsMetrics("duration-filter-change", this.runtimeId);
-        if (this.lastWallboardData) this.processWallboardData(this.lastWallboardData);
       });
     }
 
@@ -1958,7 +1943,6 @@ Call History</div>
         this.selectedQueueFilters = checkedValues;
         this.saveSelectedQueueFilters();
         this.updateQueueFilterButtonLabel();
-        await this.loadAnalyticsMetrics("queue-filter-change", this.runtimeId);
 
         if (this.lastWallboardData) {
           this.processWallboardData(this.lastWallboardData);
@@ -3416,6 +3400,7 @@ Call History</div>
           this.flushDiagRemoteQueue(false);
           if (!this.wallboardEventSource && this.sessionToken && this.isCurrentRuntime(runtimeId)) {
             this.startWallboardStream(runtimeId);
+      this.startAnalyticsMetricsPolling(runtimeId);
           }
         }
       };
@@ -3933,7 +3918,6 @@ Call History</div>
     );
 
     const analyticsQueueKpis = this.getAnalyticsKpiOverride(visibleQueueKpis);
-
     const callsInQueue = visibleQueueKpis.callsInQueue;
     const loggedInAgents = data.agents?.loggedIn ?? 0;
     const availableAgents = data.agents?.available ?? 0;
@@ -4063,20 +4047,29 @@ Call History</div>
   }
 
   async loadAnalyticsMetrics(reason = "manual", runtimeId = this.runtimeId) {
-    if (!this.guardRuntime(runtimeId)) return;
+    if (!this.guardRuntime(runtimeId) || !this.sessionToken) return;
 
     const visibleQueues = this.getVisibleQueueNames();
     const params = new URLSearchParams({ range: this.kpiDurationRange || "60m" });
     if (visibleQueues.length) params.set("queues", visibleQueues.join(","));
 
     const path = `/api/analytics/queue-metrics?${params.toString()}`;
-    const res = await this.authorizedFetch(path);
-    const data = await this.readJsonResponse(res);
+    let res;
+    let data;
+    try {
+      res = await this.authorizedFetch(path);
+      data = await this.readJsonResponse(res);
+    } catch (err) {
+      this.analyticsMetricsCache = { ok: false, fetchedAtMs: Date.now(), error: err?.message || String(err) };
+      this.addDiagLog("analytics-probe-error", { reason, error: this.analyticsMetricsCache.error });
+      return;
+    }
+
     if (!this.guardRuntime(runtimeId)) return;
 
     if (!res.ok || data.ok === false) {
       this.analyticsMetricsCache = { ok: false, fetchedAtMs: Date.now(), error: data?.error || `HTTP ${res.status}` };
-      this.addDiagLog("analytics-probe-failed", { reason, status: res.status, error: this.analyticsMetricsCache.error });
+      this.addDiagLog("analytics-probe-failed", { reason, status: res.status, error: this.analyticsMetricsCache.error, data });
       return;
     }
 
@@ -4164,6 +4157,7 @@ Call History</div>
     this.wallboardReconnectHandle = this.safeSetTimeout(() => {
       this.wallboardReconnectHandle = null;
       this.startWallboardStream(runtimeId);
+      this.startAnalyticsMetricsPolling(runtimeId);
     }, delay, runtimeId);
   }
 

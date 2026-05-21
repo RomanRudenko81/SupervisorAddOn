@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-v48-canonical-agent-identity-2026-05-21";
+const FRONTEND_BUILD_ID = "wxcc-widget-v49-authoritative-roster-only-2026-05-21";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -2326,26 +2326,18 @@ Call History</div>
       });
     });
 
-    // Include only fresh event-authoritative agents that are not already present in
-    // the snapshot. Do not include stale bootstrap-only directory rows.
+    // v49 authoritative roster rule:
+    // Event-only agent states are important for calls and state authority, but they must
+    // never create a visible agent row by themselves. Only the current WXCC wallboard
+    // roster is allowed to create renderable agent rows. This prevents UUID/Unknown
+    // phantom rows when WXCC emits events for agents outside the selected/visible roster.
+    let skippedEventOnly = 0;
     for (const [agentId, override] of this.agentStateEventCache.entries()) {
       const ageMs = now - Number(override.receivedAtMs || 0);
       if (!Number.isFinite(ageMs) || ageMs > this.agentStateEventTtlMs) continue;
       if (!byId.has(agentId)) {
-        const directory = this.agentDirectory.get(agentId) || {};
-        const name = this.cleanDisplayValue(directory.name) || this.cleanDisplayValue(directory.login) || this.getAgentNameById(agentId) || agentId;
-        byId.set(agentId, {
-          agentId,
-          id: agentId,
-          name,
-          login: directory.login || "",
-          team: directory.team || "",
-          teamId: directory.teamId || "",
-          state: "Unknown",
-          startTime: Number(override.createdTime || now),
-          lastActivityTime: Number(override.createdTime || now),
-          renderSource: "event-authority"
-        });
+        skippedEventOnly += 1;
+        continue;
       }
     }
 
@@ -2389,6 +2381,11 @@ Call History</div>
         skippedBootstrapOnly += 1;
         continue;
       }
+      const looksLikeUuidName = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(name);
+      if (looksLikeUuidName && row.renderSource !== "snapshot-agent") {
+        skippedBootstrapOnly += 1;
+        continue;
+      }
       const key = name.toLowerCase();
       const existing = preferredByName.get(key);
       if (!existing || priority(row) > priority(existing)) {
@@ -2410,8 +2407,10 @@ Call History</div>
       eventAuthorityApplied: applied,
       skippedNoId,
       skippedBootstrapOnly,
+      skippedEventOnly,
       dedupedByName,
       sourceSnapshotRows: snapshotAgents.length,
+      authoritativeRosterOnly: true,
       canonicalIdentity: true
     });
     return { rows, agentsSummary };

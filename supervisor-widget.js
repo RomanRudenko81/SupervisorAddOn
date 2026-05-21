@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-lifecycle-entrypoint-resilience-2026-05-21-v38";
+const FRONTEND_BUILD_ID = "wxcc-widget-persistent-crash-log-2026-05-21-v39";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -32,7 +32,12 @@ class SupervisorAccessWidget extends HTMLElement {
     this.historyEndMismatchLastRefreshTs = 0;
     this.historyEndWatchdogHandle = null;
     this.diagLogEntries = [];
-    this.diagLogMax = 600;
+    this.diagLogMax = 1200;
+    this.diagRemoteQueue = [];
+    this.diagRemoteFlushHandle = null;
+    this.diagHeartbeatHandle = null;
+    this.diagStorageKey = "wxccSupervisorWidgetDiagLogV39";
+    this.diagQueueStorageKey = "wxccSupervisorWidgetDiagQueueV39";
     this.techDiagnosticsInstalled = false;
     this.windowErrorHandler = null;
     this.windowRejectionHandler = null;
@@ -45,7 +50,10 @@ class SupervisorAccessWidget extends HTMLElement {
   }
 
   connectedCallback() {
+    this.restorePersistentDiagnostics();
     this.installTechnicalDiagnostics();
+    this.startPersistentDiagHeartbeat();
+    this.addDiagLog("widget-resume", { persistedEntries: (this.diagLogEntries || []).length });
     setTimeout(() => this.addDiagLog("widget-connected", {
       frontendBuildId: FRONTEND_BUILD_ID,
       userAgent: navigator.userAgent,
@@ -68,7 +76,11 @@ class SupervisorAccessWidget extends HTMLElement {
     if (this.activeCallTimerHandle) clearInterval(this.activeCallTimerHandle);
     if (this.historyEndWatchdogHandle) clearInterval(this.historyEndWatchdogHandle);
     if (this.wallboardEventSource) this.wallboardEventSource.close();
+    this.addDiagLog("widget-disconnected", { reason: "disconnectedCallback" });
+    this.flushDiagRemoteQueue(true);
+    this.persistDiagLog();
     this.uninstallTechnicalDiagnostics();
+    if (this.diagHeartbeatHandle) clearInterval(this.diagHeartbeatHandle);
   }
 
   readSelectedQueueFilters() {
@@ -1879,6 +1891,116 @@ Call History</div>
 
 
 
+
+  restorePersistentDiagnostics() {
+    try {
+      const raw = localStorage.getItem(this.diagStorageKey);
+      const parsed = JSON.parse(raw || "[]");
+      if (Array.isArray(parsed) && parsed.length) {
+        this.diagLogEntries = parsed.slice(-(this.diagLogMax || 1200));
+      }
+    } catch {}
+    try {
+      const rawQueue = localStorage.getItem(this.diagQueueStorageKey);
+      const parsedQueue = JSON.parse(rawQueue || "[]");
+      if (Array.isArray(parsedQueue) && parsedQueue.length) {
+        this.diagRemoteQueue = parsedQueue.slice(-400);
+        setTimeout(() => this.flushDiagRemoteQueue(false), 800);
+      }
+    } catch {}
+  }
+
+  persistDiagLog() {
+    try {
+      localStorage.setItem(this.diagStorageKey, JSON.stringify((this.diagLogEntries || []).slice(-(this.diagLogMax || 1200))));
+    } catch {}
+    try {
+      localStorage.setItem(this.diagQueueStorageKey, JSON.stringify((this.diagRemoteQueue || []).slice(-400)));
+    } catch {}
+    try { window.__WXCC_WIDGET_DIAG_LOG__ = this.diagLogEntries || []; } catch {}
+  }
+
+  queueRemoteDiagLog(entry) {
+    try {
+      if (!this.diagRemoteQueue) this.diagRemoteQueue = [];
+      this.diagRemoteQueue.push(entry);
+      while (this.diagRemoteQueue.length > 400) this.diagRemoteQueue.shift();
+      try { localStorage.setItem(this.diagQueueStorageKey, JSON.stringify(this.diagRemoteQueue)); } catch {}
+      if (!this.diagRemoteFlushHandle) {
+        this.diagRemoteFlushHandle = setTimeout(() => {
+          this.diagRemoteFlushHandle = null;
+          this.flushDiagRemoteQueue(false);
+        }, 1200);
+      }
+    } catch {}
+  }
+
+  flushDiagRemoteQueue(useBeacon = false) {
+    try {
+      const entries = (this.diagRemoteQueue || []).slice(0, 80);
+      if (!entries.length) return;
+      const payload = JSON.stringify({
+        frontendBuildId: FRONTEND_BUILD_ID,
+        href: location.href,
+        userAgent: navigator.userAgent,
+        sessionTokenPresent: Boolean(this.sessionToken),
+        entries
+      });
+      const url = `${this.API_URL}/api/debug/client-log`;
+      if (useBeacon && navigator.sendBeacon) {
+        const ok = navigator.sendBeacon(url, new Blob([payload], { type: "application/json" }));
+        if (ok) {
+          this.diagRemoteQueue.splice(0, entries.length);
+          this.persistDiagLog();
+        }
+        return;
+      }
+      fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(this.sessionToken ? { Authorization: `Bearer ${this.sessionToken}` } : {}) },
+        body: payload,
+        keepalive: true
+      }).then(res => {
+        if (res.ok) {
+          this.diagRemoteQueue.splice(0, entries.length);
+          this.persistDiagLog();
+        }
+      }).catch(() => {});
+    } catch {}
+  }
+
+  startPersistentDiagHeartbeat() {
+    if (this.diagHeartbeatHandle) clearInterval(this.diagHeartbeatHandle);
+    this.diagHeartbeatHandle = setInterval(() => {
+      this.addDiagLog("frontend-heartbeat", {
+        visible: document.visibilityState,
+        eventSourceReadyState: this.wallboardEventSource ? this.wallboardEventSource.readyState : null,
+        hasLastWallboard: Boolean(this.lastWallboardData),
+        href: location.href
+      });
+    }, 15000);
+    try {
+      document.addEventListener("visibilitychange", () => {
+        this.addDiagLog("visibility-change", { visibilityState: document.visibilityState });
+        if (document.visibilityState === "hidden") this.flushDiagRemoteQueue(true);
+        if (document.visibilityState === "visible") {
+          this.addDiagLog("visibility-resume", { eventSourceReadyState: this.wallboardEventSource ? this.wallboardEventSource.readyState : null });
+          this.flushDiagRemoteQueue(false);
+        }
+      }, true);
+      window.addEventListener("pagehide", () => {
+        this.addDiagLog("pagehide", { persisted: true });
+        this.flushDiagRemoteQueue(true);
+        this.persistDiagLog();
+      }, true);
+      window.addEventListener("beforeunload", () => {
+        this.addDiagLog("beforeunload", { persisted: true });
+        this.flushDiagRemoteQueue(true);
+        this.persistDiagLog();
+      }, true);
+    } catch {}
+  }
+
   serializeError(err) {
     if (!err) return { message: "" };
     if (typeof err === "string") return { message: err };
@@ -1965,13 +2087,29 @@ Call History</div>
 
 
   addDiagLog(type, details = {}) {
-    if (!this.diagLogEntries) this.diagLogEntries = [];
-    const entry = { ts: Date.now(), iso: new Date().toISOString(), time: new Date().toLocaleTimeString(), type, ...this.safeDiagDetails(details) };
-    this.diagLogEntries.push(entry);
-    while (this.diagLogEntries.length > (this.diagLogMax || 250)) this.diagLogEntries.shift();
-    this.renderDiagLog();
-    try { window.__WXCC_WIDGET_DIAG_LOG__ = this.diagLogEntries; } catch {}
-    return entry;
+    try {
+      if (!this.diagLogEntries) this.diagLogEntries = [];
+      const entry = { ts: Date.now(), iso: new Date().toISOString(), time: new Date().toLocaleTimeString(), type, ...this.safeDiagDetails(details) };
+      this.diagLogEntries.push(entry);
+      while (this.diagLogEntries.length > (this.diagLogMax || 1200)) this.diagLogEntries.shift();
+      this.persistDiagLog();
+      this.queueRemoteDiagLog(entry);
+      try { this.renderDiagLog(); } catch (renderErr) {
+        const fallbackEntry = { ts: Date.now(), iso: new Date().toISOString(), time: new Date().toLocaleTimeString(), type: "diag-render-failed", error: this.serializeError(renderErr) };
+        this.diagLogEntries.push(fallbackEntry);
+        this.persistDiagLog();
+      }
+      return entry;
+    } catch (err) {
+      try {
+        const fallback = { ts: Date.now(), iso: new Date().toISOString(), time: new Date().toLocaleTimeString(), type: "diag-log-hard-failed", error: String(err?.message || err || "") };
+        const raw = localStorage.getItem(this.diagStorageKey);
+        const arr = JSON.parse(raw || "[]");
+        if (Array.isArray(arr)) arr.push(fallback);
+        localStorage.setItem(this.diagStorageKey, JSON.stringify((Array.isArray(arr) ? arr : [fallback]).slice(-1200)));
+        return fallback;
+      } catch {}
+    }
   }
 
   getWallboardSummary(data = this.lastWallboardData) {

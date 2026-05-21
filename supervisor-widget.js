@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-architecture-concurrency-2026-05-21-v37";
+const FRONTEND_BUILD_ID = "wxcc-widget-lifecycle-entrypoint-resilience-2026-05-21-v38";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -1205,10 +1205,27 @@ Call History</div>
   async init() {
     try {
       await this.bootstrapSession();
-      await this.loadEntryPoint(true);
+
+      // v38 lifecycle resilience:
+      // The WXCC desktop can temporarily switch/park this iframe when the active user
+      // accepts a call and Cisco Call Control takes focus. On return, the backend
+      // entrypoint read may briefly fail with HTTP 500 although wallboard/SSE is fine.
+      // Do not block wallboard startup on entrypoint configuration loading.
+      try {
+        await this.loadEntryPoint(true);
+        this.setStatus("Ready");
+      } catch (entryErr) {
+        this.addDiagLog("entrypoint-load-nonfatal", {
+          phase: "init",
+          error: this.serializeError(entryErr)
+        });
+        this.setStatus(`Config temporarily unavailable: ${entryErr.message || entryErr}. Wallboard running.`);
+        this.scheduleEntryPointRetry("init-entrypoint-failed");
+      }
+
       this.startWallboardStream();
-      this.setStatus("Ready");
     } catch (err) {
+      this.addDiagLog("init-failed", { error: this.serializeError(err) });
       this.setStatus(`Load failed: ${err.message}`);
     }
   }
@@ -1383,6 +1400,13 @@ Call History</div>
 
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
 
+    if (data?.stale === true || data?.configStale === true) {
+      this.addDiagLog("entrypoint-stale-cache-used", {
+        staleReason: data?.staleReason || data?.configStaleReason || "",
+        lastError: data?.lastError ? String(data.lastError).slice(0, 800) : ""
+      });
+    }
+
     const overrides = Array.isArray(data.flowOverrideSettings) ? data.flowOverrideSettings : [];
 
     this.$priorityQueue().value = this.getOverrideValue(overrides, "Priority_Queue", "2");
@@ -1399,6 +1423,32 @@ Call History</div>
 
     this.updateLabel();
     this.hasUnsavedChanges = false;
+  }
+
+  scheduleEntryPointRetry(reason = "entrypoint-retry") {
+    if (this.entryPointRetryTimer) {
+      this.addDiagLog("entrypoint-retry-already-scheduled", { reason });
+      return;
+    }
+
+    const retryDelayMs = 5000;
+    this.addDiagLog("entrypoint-retry-scheduled", { reason, retryDelayMs });
+
+    this.entryPointRetryTimer = setTimeout(async () => {
+      this.entryPointRetryTimer = null;
+      try {
+        this.addDiagLog("entrypoint-retry-start", { reason });
+        await this.loadEntryPoint(true);
+        this.addDiagLog("entrypoint-retry-success", { reason });
+        if (!this.hasUnsavedChanges) this.setStatus("Ready");
+      } catch (err) {
+        this.addDiagLog("entrypoint-retry-failed", {
+          reason,
+          error: this.serializeError(err)
+        });
+        this.scheduleEntryPointRetry("retry-failed");
+      }
+    }, retryDelayMs);
   }
 
   updateLabel() {

@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-hard-lifecycle-isolation-2026-05-21-v40";
+const FRONTEND_BUILD_ID = "wxcc-widget-v41-active-call-reconstruction-2026-05-21";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -36,8 +36,11 @@ class SupervisorAccessWidget extends HTMLElement {
     this.diagRemoteQueue = [];
     this.diagRemoteFlushHandle = null;
     this.diagHeartbeatHandle = null;
-    this.diagStorageKey = "wxccSupervisorWidgetDiagLogV40";
-    this.diagQueueStorageKey = "wxccSupervisorWidgetDiagQueueV40";
+    this.diagStorageKey = "wxccSupervisorWidgetDiagLogV41";
+    this.diagQueueStorageKey = "wxccSupervisorWidgetDiagQueueV41";
+    this.activeCallPersistenceKey = "wxccSupervisorWidgetActiveCallsV41";
+    this.activeCallEvictionDelayMs = 30000;
+    this.activeCallPersistenceTtlMs = 600000;
     this.techDiagnosticsInstalled = false;
     this.windowErrorHandler = null;
     this.windowRejectionHandler = null;
@@ -65,6 +68,7 @@ class SupervisorAccessWidget extends HTMLElement {
     this.cleanupCallbacks = [];
 
     this.restorePersistentDiagnostics();
+    this.restorePersistentActiveCalls();
     this.installTechnicalDiagnostics();
     this.startPersistentDiagHeartbeat();
     this.addDiagLog("cold-start-after-disconnect", { runtimeId: this.runtimeId });
@@ -1826,6 +1830,7 @@ Call History</div>
 
     return list.filter(call => {
       const queueName = this.getCallQueueName(call);
+      if (!queueName && call?.reconstructed === true) return true;
       return this.isQueueVisibleForCurrentUser(queueName);
     });
   }
@@ -1888,13 +1893,119 @@ Call History</div>
   }
 
 
+  restorePersistentActiveCalls() {
+    try {
+      const raw = localStorage.getItem(this.activeCallPersistenceKey);
+      const parsed = JSON.parse(raw || "[]");
+      const now = Date.now();
+      this.activeCallRenderCache = new Map();
+      if (Array.isArray(parsed)) {
+        parsed.forEach(call => {
+          const id = String(call?.id || call?.taskId || "");
+          if (!id) return;
+          const lastSeen = Number(call.localLastSeenMs || call.lastSeenMs || 0);
+          if (lastSeen && now - lastSeen > this.activeCallPersistenceTtlMs) return;
+          this.activeCallRenderCache.set(id, call);
+        });
+      }
+      this.addDiagLog("active-call-cache-restored", { rows: this.activeCallRenderCache.size });
+    } catch (err) {
+      this.activeCallRenderCache = new Map();
+      this.addDiagLog("active-call-cache-restore-failed", { message: err.message });
+    }
+  }
+
+  persistActiveCalls() {
+    try {
+      const rows = Array.from(this.activeCallRenderCache.values()).slice(-50);
+      localStorage.setItem(this.activeCallPersistenceKey, JSON.stringify(rows));
+    } catch {}
+  }
+
+  extractWxccEventBody(details = {}) {
+    return details.eventBody || details.body || details.data || details.payload || {};
+  }
+
+  normalizeWxccEventBody(body = {}) {
+    return {
+      type: String(body.type || body.eventType || body?.data?.type || ""),
+      data: body.data || body.event?.data || body.payload || body || {}
+    };
+  }
+
+  rememberActiveCallFromWxccEvent(details = {}) {
+    try {
+      const normalized = this.normalizeWxccEventBody(this.extractWxccEventBody(details));
+      const data = normalized.data || {};
+      const state = String(data.currentState || data.state || data.status || "").toLowerCase();
+      const type = String(normalized.type || "");
+      const taskId = String(data.taskId || data.interactionId || data.contactId || data.contactSessionId || data.id || "");
+      const agentId = String(data.agentId || data.ownerId || data.userId || "");
+      if (type !== "agent:state_change" || (!taskId && !agentId)) return;
+
+      const now = Date.now();
+      const id = taskId || `agent-${agentId}`;
+
+      if (state === "connected") {
+        const previous = this.activeCallRenderCache.get(id) || {};
+        const startMs = Number(previous.localStartMs || data.connectedTime || data.createdTime || now);
+        const row = {
+          ...previous,
+          id,
+          taskId: taskId || id,
+          status: "connected",
+          reconstructed: true,
+          reconstructedSource: "frontend-wxcc-event-cache",
+          caller: data.origin || data.from || data.ani || data.caller || previous.caller || "",
+          destination: data.destination || data.to || data.dnis || previous.destination || "",
+          queue: data.queueName || data.lastQueueName || previous.queue || "",
+          firstQueue: data.firstQueueName || previous.firstQueue || "",
+          entryPoint: data.entryPointName || previous.entryPoint || "",
+          agent: data.agentName || data.agentDisplayName || previous.agent || "",
+          agentId,
+          createdTime: previous.createdTime || data.createdTime || now,
+          connectedStartTime: previous.connectedStartTime || data.connectedTime || data.createdTime || now,
+          handleBaseTimestamp: now,
+          handleSeconds: Math.max(0, Math.floor((now - startMs) / 1000)),
+          localStartMs: startMs,
+          localLastSeenMs: now,
+          pendingEvictionAtMs: 0
+        };
+        this.activeCallRenderCache.set(id, row);
+        this.persistActiveCalls();
+        this.addDiagLog("frontend-active-call-event-connected", { id, agentId, cacheSize: this.activeCallRenderCache.size });
+        if (this.lastWallboardData) this.processWallboardData(this.lastWallboardData);
+        return;
+      }
+
+      if (["available", "idle", "wrapup", "wrapup-done", "ended", "terminated", "disconnected"].includes(state)) {
+        const mark = call => {
+          call.pendingEvictionAtMs = now + this.activeCallEvictionDelayMs;
+          call.localLastSeenMs = now;
+          call.eventState = state;
+        };
+        if (this.activeCallRenderCache.has(id)) {
+          mark(this.activeCallRenderCache.get(id));
+        } else if (agentId) {
+          for (const call of this.activeCallRenderCache.values()) {
+            if (String(call.agentId || "") === agentId) mark(call);
+          }
+        }
+        this.persistActiveCalls();
+        this.addDiagLog("frontend-active-call-event-terminal", { id, agentId, state, cacheSize: this.activeCallRenderCache.size });
+      }
+    } catch (err) {
+      this.addDiagLog("frontend-active-call-event-failed", { message: err.message });
+    }
+  }
+
   mergeActiveCallsForTimer(calls) {
     const now = Date.now();
     const incoming = Array.isArray(calls) ? calls : [];
     const next = new Map();
 
     incoming.forEach(call => {
-      const id = String(call?.id || "");
+      const id = String(call?.id || call?.taskId || "");
       if (!id) return;
 
       const previous = this.activeCallRenderCache.get(id);
@@ -1906,14 +2017,40 @@ Call History</div>
       }
 
       next.set(id, {
+        ...previous,
         ...call,
+        id,
         localStartMs,
-        localLastSeenMs: now
+        localLastSeenMs: now,
+        pendingEvictionAtMs: 0
       });
     });
 
+    // v41: delayed eviction + widget recreation persistence.
+    // If taskDetails temporarily returns activeCalls:0 while agent events still show a connected call,
+    // preserve the previous active row for a short grace period instead of blanking the wallboard.
+    for (const [id, previous] of this.activeCallRenderCache.entries()) {
+      if (next.has(id)) continue;
+      const evictionAt = Number(previous.pendingEvictionAtMs || 0);
+      const lastSeen = Number(previous.localLastSeenMs || 0);
+      const keepBecauseDelayedEviction = evictionAt && now < evictionAt;
+      const keepBecauseTransientEmpty = !incoming.length && lastSeen && now - lastSeen < this.activeCallEvictionDelayMs;
+      const keepBecauseReconstructed = previous.reconstructed === true && lastSeen && now - lastSeen < this.activeCallEvictionDelayMs;
+
+      if (keepBecauseDelayedEviction || keepBecauseTransientEmpty || keepBecauseReconstructed) {
+        next.set(id, {
+          ...previous,
+          status: "connected",
+          reconstructed: previous.reconstructed === true || incoming.length === 0,
+          reconstructedSource: previous.reconstructedSource || "frontend-delayed-eviction",
+          localLastSeenMs: lastSeen || now
+        });
+      }
+    }
+
     this.activeCallRenderCache = next;
-    return Array.from(next.values());
+    this.persistActiveCalls();
+    return Array.from(next.values()).sort((a, b) => Number(a.localStartMs || 0) - Number(b.localStartMs || 0));
   }
 
   rememberCallHistory(calls) {
@@ -2231,7 +2368,8 @@ Call History</div>
       connectedHistory: history.filter(call => String(call.status || "").toLowerCase() === "connected").length,
       firstAgentState: agents[0]?.state || "",
       firstActiveStatus: activeCalls[0]?.status || "",
-      firstHistoryStatus: history[0]?.status || ""
+      firstHistoryStatus: history[0]?.status || "",
+      reconstructedActiveCalls: activeCalls.filter(call => call?.reconstructed === true).length
     };
   }
 
@@ -2752,6 +2890,7 @@ Call History</div>
       let details = {};
       try { details = JSON.parse(event.data || "{}"); } catch {}
       this.addDiagLog("sse-wxcc-event", details);
+      this.rememberActiveCallFromWxccEvent(details);
       this.setWallboardStatus("WXCC event received. Refreshing...");
     });
 

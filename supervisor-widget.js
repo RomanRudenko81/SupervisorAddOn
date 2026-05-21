@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-v47-authoritative-agent-renderer-2026-05-21";
+const FRONTEND_BUILD_ID = "wxcc-widget-v48-canonical-agent-identity-2026-05-21";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -2299,54 +2299,52 @@ Call History</div>
     const now = Date.now();
     const snapshotAgents = Array.isArray(snapshot.agentList) ? snapshot.agentList : [];
     const byId = new Map();
+    let skippedNoId = 0;
+    let skippedBootstrapOnly = 0;
+    let dedupedByName = 0;
 
+    // v48 canonical identity rule:
+    // The WXCC desktop/bootstrap identity is useful as context and name enrichment,
+    // but it must never create a standalone agent row. Renderable rows are only
+    // created from WXCC wallboard agents or from a fresh event-authoritative state.
     snapshotAgents.forEach(agent => {
       const agentId = this.resolveAgentId(agent);
-      if (!agentId) return;
+      if (!agentId) {
+        skippedNoId += 1;
+        return;
+      }
       const directory = this.agentDirectory.get(agentId) || {};
       byId.set(agentId, {
         ...directory,
         ...agent,
         agentId,
         id: agentId,
+        renderSource: "snapshot-agent",
         name: this.cleanDisplayValue(agent.name || agent.agentName || agent.displayName) || directory.name || directory.login || agentId,
         team: this.cleanDisplayValue(agent.team || agent.teamName) || directory.team || "",
         teamId: agent.teamId || directory.teamId || ""
       });
     });
 
-    for (const [agentId, directory] of this.agentDirectory.entries()) {
-      if (!byId.has(agentId)) {
-        byId.set(agentId, {
-          agentId,
-          id: agentId,
-          name: directory.name || directory.login || agentId,
-          login: directory.login || "",
-          team: directory.team || "",
-          teamId: directory.teamId || "",
-          state: "Unknown",
-          startTime: now,
-          lastActivityTime: now
-        });
-      }
-    }
-
-    // v47: include every fresh event-authoritative agent even when the Search snapshot has
-    // not yet returned the agent row after a WXCC Desktop widget recreation.
+    // Include only fresh event-authoritative agents that are not already present in
+    // the snapshot. Do not include stale bootstrap-only directory rows.
     for (const [agentId, override] of this.agentStateEventCache.entries()) {
       const ageMs = now - Number(override.receivedAtMs || 0);
       if (!Number.isFinite(ageMs) || ageMs > this.agentStateEventTtlMs) continue;
       if (!byId.has(agentId)) {
+        const directory = this.agentDirectory.get(agentId) || {};
+        const name = this.cleanDisplayValue(directory.name) || this.cleanDisplayValue(directory.login) || this.getAgentNameById(agentId) || agentId;
         byId.set(agentId, {
           agentId,
           id: agentId,
-          name: this.getAgentNameById(agentId) || agentId,
-          login: "",
-          team: "",
-          teamId: "",
+          name,
+          login: directory.login || "",
+          team: directory.team || "",
+          teamId: directory.teamId || "",
           state: "Unknown",
           startTime: Number(override.createdTime || now),
-          lastActivityTime: Number(override.createdTime || now)
+          lastActivityTime: Number(override.createdTime || now),
+          renderSource: "event-authority"
         });
       }
     }
@@ -2377,13 +2375,45 @@ Call History</div>
       applied += 1;
     }
 
-    const rows = Array.from(byId.values()).sort((a, b) => String(a.name || a.login || "").localeCompare(String(b.name || b.login || "")));
+    // Final v48 de-dupe: prefer real snapshot rows over event-only rows and never
+    // render Unknown/bootstrap-like duplicates with the same display name.
+    const preferredByName = new Map();
+    const priority = row => row.renderSource === "snapshot-agent" ? 3 : (row.eventAuthority?.applied ? 2 : 1);
+    for (const row of byId.values()) {
+      const agentId = this.resolveAgentId(row);
+      if (!agentId) { skippedNoId += 1; continue; }
+      const name = this.cleanDisplayValue(row.name || row.agentName || row.displayName || row.login);
+      if (!name) { skippedNoId += 1; continue; }
+      const state = String(row.state || row.currentState || "").toLowerCase();
+      if (row.renderSource !== "snapshot-agent" && !row.eventAuthority?.applied && (!state || state === "unknown")) {
+        skippedBootstrapOnly += 1;
+        continue;
+      }
+      const key = name.toLowerCase();
+      const existing = preferredByName.get(key);
+      if (!existing || priority(row) > priority(existing)) {
+        if (existing) dedupedByName += 1;
+        preferredByName.set(key, row);
+      } else {
+        dedupedByName += 1;
+      }
+    }
+
+    const rows = Array.from(preferredByName.values()).sort((a, b) => String(a.name || a.login || "").localeCompare(String(b.name || b.login || "")));
     const agentsSummary = {
       loggedIn: rows.length,
       available: rows.filter(agent => String(agent.state || "").toLowerCase() === "available").length,
       connected: rows.filter(agent => String(agent.state || "").toLowerCase() === "connected").length
     };
-    this.addDiagLog("deterministic-agent-projection-built", { rows: rows.length, eventAuthorityApplied: applied });
+    this.addDiagLog("deterministic-agent-projection-built", {
+      rows: rows.length,
+      eventAuthorityApplied: applied,
+      skippedNoId,
+      skippedBootstrapOnly,
+      dedupedByName,
+      sourceSnapshotRows: snapshotAgents.length,
+      canonicalIdentity: true
+    });
     return { rows, agentsSummary };
   }
 

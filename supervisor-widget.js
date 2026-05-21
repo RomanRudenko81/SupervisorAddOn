@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-v43-deterministic-state-authority-2026-05-21";
+const FRONTEND_BUILD_ID = "wxcc-widget-v44-persistent-active-call-eviction-2026-05-21";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -36,13 +36,16 @@ class SupervisorAccessWidget extends HTMLElement {
     this.diagRemoteQueue = [];
     this.diagRemoteFlushHandle = null;
     this.diagHeartbeatHandle = null;
-    this.diagStorageKey = "wxccSupervisorWidgetDiagLogV43";
-    this.diagQueueStorageKey = "wxccSupervisorWidgetDiagQueueV43";
-    this.activeCallPersistenceKey = "wxccSupervisorWidgetActiveCallsV43";
+    this.diagStorageKey = "wxccSupervisorWidgetDiagLogV44";
+    this.diagQueueStorageKey = "wxccSupervisorWidgetDiagQueueV44";
+    this.activeCallPersistenceKey = "wxccSupervisorWidgetActiveCallsV44";
     this.activeCallEvictionDelayMs = 30000;
     this.activeCallPersistenceTtlMs = 600000;
+    this.activeCallTerminalPersistenceKey = "wxccSupervisorWidgetActiveCallTerminalsV44";
+    this.activeCallTerminalCache = new Map();
+    this.activeCallTerminalTtlMs = 180000;
     this.agentStateEventCache = new Map();
-    this.agentStatePersistenceKey = "wxccSupervisorWidgetAgentStatesV43";
+    this.agentStatePersistenceKey = "wxccSupervisorWidgetAgentStatesV44";
     this.agentStateEventTtlMs = 120000;
     this.agentSnapshotStaleRejectMs = 90000;
     this.agentDirectory = new Map();
@@ -2083,7 +2086,127 @@ Call History</div>
   }
 
 
+
+  isTerminalCallState(state) {
+    const value = String(state || "").toLowerCase();
+    return ["available", "idle", "wrapup-done", "ended", "terminated", "disconnected", "completed"].includes(value);
+  }
+
+  rememberTerminalActiveCall(taskId, agentId = "", state = "terminal", reason = "event-terminal") {
+    const id = String(taskId || "");
+    const now = Date.now();
+    if (!id) return;
+    this.activeCallTerminalCache.set(id, {
+      id,
+      taskId: id,
+      agentId: String(agentId || ""),
+      state: String(state || "terminal").toLowerCase(),
+      reason,
+      terminalAtMs: now,
+      expiresAtMs: now + this.activeCallTerminalTtlMs
+    });
+    this.persistActiveCallTerminals();
+  }
+
+  restorePersistentActiveCallTerminals() {
+    try {
+      const raw = localStorage.getItem(this.activeCallTerminalPersistenceKey);
+      const parsed = JSON.parse(raw || "[]");
+      const now = Date.now();
+      this.activeCallTerminalCache = new Map();
+      if (Array.isArray(parsed)) {
+        parsed.forEach(row => {
+          const id = String(row?.id || row?.taskId || "");
+          const expiresAtMs = Number(row?.expiresAtMs || 0);
+          if (!id || (expiresAtMs && now > expiresAtMs)) return;
+          this.activeCallTerminalCache.set(id, row);
+        });
+      }
+      this.addDiagLog("active-call-terminal-cache-restored", { rows: this.activeCallTerminalCache.size });
+    } catch (err) {
+      this.activeCallTerminalCache = new Map();
+      this.addDiagLog("active-call-terminal-cache-restore-failed", { message: err.message });
+    }
+  }
+
+  persistActiveCallTerminals() {
+    try {
+      const now = Date.now();
+      const rows = [];
+      for (const [id, row] of this.activeCallTerminalCache.entries()) {
+        const expiresAtMs = Number(row?.expiresAtMs || 0);
+        if (expiresAtMs && now > expiresAtMs) {
+          this.activeCallTerminalCache.delete(id);
+          continue;
+        }
+        rows.push(row);
+      }
+      localStorage.setItem(this.activeCallTerminalPersistenceKey, JSON.stringify(rows.slice(-100)));
+    } catch {}
+  }
+
+  isTerminalActiveCallId(id) {
+    const key = String(id || "");
+    if (!key) return false;
+    const row = this.activeCallTerminalCache.get(key);
+    if (!row) return false;
+    const now = Date.now();
+    const expiresAtMs = Number(row.expiresAtMs || 0);
+    if (expiresAtMs && now > expiresAtMs) {
+      this.activeCallTerminalCache.delete(key);
+      this.persistActiveCallTerminals();
+      return false;
+    }
+    return true;
+  }
+
+  hardEvictActiveCall(taskIdOrId, reason = "hard-evict", details = {}) {
+    const id = String(taskIdOrId || "");
+    if (!id) return 0;
+    let removed = 0;
+    if (this.activeCallRenderCache?.delete(id)) removed += 1;
+
+    // Also remove any synthetic or duplicate rows bound to the same task/agent.
+    const agentId = String(details.agentId || "");
+    for (const [key, call] of Array.from(this.activeCallRenderCache.entries())) {
+      const sameTask = String(call.taskId || call.id || "") === id;
+      const sameAgent = agentId && String(call.agentId || "") === agentId && this.isTerminalCallState(call.eventState || details.state);
+      if (sameTask || sameAgent) {
+        this.activeCallRenderCache.delete(key);
+        removed += 1;
+      }
+    }
+
+    this.taskOwnershipMap?.delete(id);
+    this.persistActiveCalls();
+    this.addDiagLog("active-call-hard-evicted", { id, reason, removed, ...details });
+    return removed;
+  }
+
+  pruneActiveCallCaches(reason = "prune") {
+    const now = Date.now();
+    let removed = 0;
+    for (const [id, call] of Array.from(this.activeCallRenderCache.entries())) {
+      const evictionAt = Number(call.pendingEvictionAtMs || call.expiresAtMs || 0);
+      const terminalState = this.isTerminalCallState(call.eventState || call.terminalState || "");
+      const lastSeen = Number(call.localLastSeenMs || call.lastSeenMs || 0);
+      const stale = lastSeen && now - lastSeen > this.activeCallPersistenceTtlMs;
+      const terminalKnown = this.isTerminalActiveCallId(id);
+      if (stale || terminalKnown || (evictionAt && now >= evictionAt) || (terminalState && lastSeen && now - lastSeen > 1500)) {
+        this.activeCallRenderCache.delete(id);
+        removed += 1;
+      }
+    }
+    if (removed) {
+      this.persistActiveCalls();
+      this.addDiagLog("active-call-cache-pruned", { reason, removed, remaining: this.activeCallRenderCache.size });
+    }
+    this.persistActiveCallTerminals();
+    return removed;
+  }
+
   restorePersistentActiveCalls() {
+    this.restorePersistentActiveCallTerminals();
     try {
       const raw = localStorage.getItem(this.activeCallPersistenceKey);
       const parsed = JSON.parse(raw || "[]");
@@ -2095,9 +2218,14 @@ Call History</div>
           if (!id) return;
           const lastSeen = Number(call.localLastSeenMs || call.lastSeenMs || 0);
           if (lastSeen && now - lastSeen > this.activeCallPersistenceTtlMs) return;
-          this.activeCallRenderCache.set(id, call);
+          if (this.isTerminalActiveCallId(id)) return;
+          const evictionAt = Number(call.pendingEvictionAtMs || call.expiresAtMs || 0);
+          const terminalState = this.isTerminalCallState(call.eventState || call.terminalState || "");
+          if ((evictionAt && now >= evictionAt) || (terminalState && lastSeen && now - lastSeen > 1500)) return;
+          this.activeCallRenderCache.set(id, { ...call, restoredAtMs: now });
         });
       }
+      this.pruneActiveCallCaches("restore");
       this.addDiagLog("active-call-cache-restored", { rows: this.activeCallRenderCache.size });
     } catch (err) {
       this.activeCallRenderCache = new Map();
@@ -2280,6 +2408,10 @@ Call History</div>
         (type === "agent:state_change" && ["ringing", "connected"].includes(state));
 
       if (isActiveEvent) {
+        if (this.isTerminalActiveCallId(id)) {
+          this.addDiagLog("active-call-stale-active-event-ignored", { id, type, state, agentId });
+          return;
+        }
         const previous = this.activeCallRenderCache.get(id) || {};
         const startMs = Number(previous.localStartMs || data.connectedTime || data.createdTime || now);
         const binding = this.taskOwnershipMap.get(taskId) || {};
@@ -2314,8 +2446,17 @@ Call History</div>
       }
 
       if (type === "agent:state_change" && ["available", "idle", "wrapup", "wrapup-done", "ended", "terminated", "disconnected"].includes(state)) {
+        if (taskId && this.isTerminalCallState(state)) {
+          this.rememberTerminalActiveCall(taskId, agentId, state, "agent-state-terminal");
+          this.hardEvictActiveCall(taskId, "agent-state-terminal", { agentId, state });
+          this.addDiagLog("frontend-active-call-event-terminal", { id, agentId, state, cacheSize: this.activeCallRenderCache.size, hardEvicted: true });
+          if (this.lastWallboardData) this.processWallboardData(this.lastWallboardData);
+          return;
+        }
+
         const mark = call => {
           call.pendingEvictionAtMs = now + this.activeCallEvictionDelayMs;
+          call.expiresAtMs = call.pendingEvictionAtMs;
           call.localLastSeenMs = now;
           call.eventState = state;
         };
@@ -2326,6 +2467,7 @@ Call History</div>
             if (String(call.agentId || "") === agentId) mark(call);
           }
         }
+        this.pruneActiveCallCaches("terminal-event");
         this.persistActiveCalls();
         this.addDiagLog("frontend-active-call-event-terminal", { id, agentId, state, cacheSize: this.activeCallRenderCache.size });
       }
@@ -2335,6 +2477,7 @@ Call History</div>
   }
 
   mergeActiveCallsForTimer(calls) {
+    this.pruneActiveCallCaches("merge-start");
     const now = Date.now();
     const incoming = Array.isArray(calls) ? calls : [];
     const next = new Map();
@@ -2342,6 +2485,10 @@ Call History</div>
     incoming.forEach(call => {
       const id = String(call?.id || call?.taskId || "");
       if (!id) return;
+      if (this.isTerminalActiveCallId(id)) {
+        this.addDiagLog("active-call-terminal-snapshot-ignored", { id });
+        return;
+      }
 
       const previous = this.activeCallRenderCache.get(id);
       const incomingSeconds = Number(call.handleSeconds || call.liveHandleSeconds || call.liveDurationSeconds || 0);
@@ -2366,6 +2513,10 @@ Call History</div>
     // preserve the previous active row for a short grace period instead of blanking the wallboard.
     for (const [id, previous] of this.activeCallRenderCache.entries()) {
       if (next.has(id)) continue;
+      if (this.isTerminalActiveCallId(id) || this.isTerminalCallState(previous.eventState || previous.terminalState || "")) {
+        this.hardEvictActiveCall(id, "merge-terminal-previous", { state: previous.eventState || previous.terminalState || "" });
+        continue;
+      }
       const evictionAt = Number(previous.pendingEvictionAtMs || 0);
       const lastSeen = Number(previous.localLastSeenMs || 0);
       const keepBecauseDelayedEviction = evictionAt && now < evictionAt;

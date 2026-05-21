@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-v51-active-call-agent-and-live-timers-2026-05-21";
+const FRONTEND_BUILD_ID = "wxcc-widget-v52-ui-collapse-and-dark-dropdowns-2026-05-21";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -65,6 +65,8 @@ class SupervisorAccessWidget extends HTMLElement {
     this.selectedQueueFilters = this.readSelectedQueueFilters();
     this.currentIdentity = null;
     this.currentUserById = new Map();
+    this.configCollapsedSessionKey = "wxccSupervisorWidgetConfigCollapsedV52";
+    this.callHistoryCollapsedSessionKey = "wxccSupervisorWidgetCallHistoryCollapsedV52";
     this.agentIdAliasMap = new Map();
     this.agentIdAliasTtlMs = 10 * 60 * 1000;
 
@@ -102,6 +104,7 @@ class SupervisorAccessWidget extends HTMLElement {
     }), 0, runtimeId);
     this.render();
     this.applyTheme();
+    this.applySessionCollapseState();
     this.populateStaticOptions();
     this.bindEvents();
     this.init(runtimeId);
@@ -581,6 +584,36 @@ class SupervisorAccessWidget extends HTMLElement {
           color: var(--text) !important;
           outline: none;
           font-size: 14px;
+        }
+
+        select {
+          color-scheme: dark;
+        }
+
+        select option {
+          background: #1f2937;
+          color: #ffffff;
+        }
+
+        select option:checked,
+        select option:hover {
+          background: #2563eb;
+          color: #ffffff;
+        }
+
+        :host(.theme-light) select {
+          color-scheme: light;
+        }
+
+        :host(.theme-light) select option {
+          background: #ffffff;
+          color: #111827;
+        }
+
+        :host(.theme-light) select option:checked,
+        :host(.theme-light) select option:hover {
+          background: #0a84ff;
+          color: #ffffff;
         }
 
         input[type="text"]::placeholder {
@@ -1252,6 +1285,44 @@ Call History</div>
     });
   }
 
+  readSessionCollapsed(key, defaultCollapsed = true) {
+    try {
+      const value = sessionStorage.getItem(key);
+      if (value === null) return defaultCollapsed;
+      return value !== "open";
+    } catch {
+      return defaultCollapsed;
+    }
+  }
+
+  writeSessionCollapsed(key, collapsed) {
+    try {
+      sessionStorage.setItem(key, collapsed ? "collapsed" : "open");
+    } catch {
+      // Ignore storage issues inside embedded desktop.
+    }
+  }
+
+  applySessionCollapseState() {
+    const configToggle = this.shadowRoot.getElementById("configToggle");
+    const configContent = this.shadowRoot.getElementById("configContent");
+    const callHistoryToggle = this.shadowRoot.getElementById("callHistoryToggle");
+    const callHistoryContent = this.shadowRoot.getElementById("callHistoryContent");
+
+    const configCollapsed = this.readSessionCollapsed(this.configCollapsedSessionKey, true);
+    const callHistoryCollapsed = this.readSessionCollapsed(this.callHistoryCollapsedSessionKey, true);
+
+    if (configToggle && configContent) {
+      configToggle.classList.toggle("collapsed", configCollapsed);
+      configContent.classList.toggle("collapsed", configCollapsed);
+    }
+
+    if (callHistoryToggle && callHistoryContent) {
+      callHistoryToggle.classList.toggle("collapsed", callHistoryCollapsed);
+      callHistoryContent.classList.toggle("collapsed", callHistoryCollapsed);
+    }
+  }
+
   bindEvents() {
     this.bindDiagLogEvents();
     this.$themeToggleBtn().addEventListener("click", () => this.toggleTheme());
@@ -1298,8 +1369,9 @@ Call History</div>
 
     if (configToggle && configContent) {
       configToggle.addEventListener("click", () => {
-        configContent.classList.toggle("collapsed");
-        configToggle.classList.toggle("collapsed");
+        const collapsed = configContent.classList.toggle("collapsed");
+        configToggle.classList.toggle("collapsed", collapsed);
+        this.writeSessionCollapsed(this.configCollapsedSessionKey, collapsed);
       });
     }
 
@@ -1308,8 +1380,9 @@ Call History</div>
 
     if (callHistoryToggle && callHistoryContent) {
       callHistoryToggle.addEventListener("click", () => {
-        callHistoryContent.classList.toggle("collapsed");
-        callHistoryToggle.classList.toggle("collapsed");
+        const collapsed = callHistoryContent.classList.toggle("collapsed");
+        callHistoryToggle.classList.toggle("collapsed", collapsed);
+        this.writeSessionCollapsed(this.callHistoryCollapsedSessionKey, collapsed);
       });
     }
   }

@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-v45-deterministic-agent-projection-2026-05-21";
+const FRONTEND_BUILD_ID = "wxcc-widget-v46-late-binding-active-call-ownership-2026-05-21";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -36,20 +36,21 @@ class SupervisorAccessWidget extends HTMLElement {
     this.diagRemoteQueue = [];
     this.diagRemoteFlushHandle = null;
     this.diagHeartbeatHandle = null;
-    this.diagStorageKey = "wxccSupervisorWidgetDiagLogV45";
-    this.diagQueueStorageKey = "wxccSupervisorWidgetDiagQueueV45";
-    this.activeCallPersistenceKey = "wxccSupervisorWidgetActiveCallsV45";
+    this.diagStorageKey = "wxccSupervisorWidgetDiagLogV46";
+    this.diagQueueStorageKey = "wxccSupervisorWidgetDiagQueueV46";
+    this.activeCallPersistenceKey = "wxccSupervisorWidgetActiveCallsV46";
     this.activeCallEvictionDelayMs = 30000;
     this.activeCallPersistenceTtlMs = 600000;
-    this.activeCallTerminalPersistenceKey = "wxccSupervisorWidgetActiveCallTerminalsV45";
+    this.activeCallTerminalPersistenceKey = "wxccSupervisorWidgetActiveCallTerminalsV46";
     this.activeCallTerminalCache = new Map();
     this.activeCallTerminalTtlMs = 180000;
     this.agentStateEventCache = new Map();
-    this.agentStatePersistenceKey = "wxccSupervisorWidgetAgentStatesV45";
+    this.agentStatePersistenceKey = "wxccSupervisorWidgetAgentStatesV46";
     this.agentStateEventTtlMs = 120000;
     this.agentSnapshotStaleRejectMs = 90000;
     this.agentDirectory = new Map();
     this.taskOwnershipMap = new Map();
+    this.taskOwnershipPersistenceKey = "wxccSupervisorWidgetTaskOwnershipV46";
     this.queueDirectory = new Map();
     this.taskOwnershipTtlMs = 600000;
     this.techDiagnosticsInstalled = false;
@@ -79,8 +80,10 @@ class SupervisorAccessWidget extends HTMLElement {
     this.cleanupCallbacks = [];
 
     this.restorePersistentDiagnostics();
-    this.restorePersistentActiveCalls();
+    this.restorePersistentActiveCallTerminals();
+    this.restorePersistentTaskOwnership();
     this.restorePersistentAgentStates();
+    this.restorePersistentActiveCalls();
     this.installTechnicalDiagnostics();
     this.startPersistentDiagHeartbeat();
     this.addDiagLog("cold-start-after-disconnect", { runtimeId: this.runtimeId });
@@ -1953,6 +1956,7 @@ Call History</div>
     });
 
     this.pruneTaskOwnershipMap(now);
+    this.persistTaskOwnership();
   }
 
   pruneTaskOwnershipMap(now = Date.now()) {
@@ -1966,6 +1970,123 @@ Call History</div>
   getAgentNameById(agentId) {
     const row = this.agentDirectory.get(String(agentId || ""));
     return row?.name || row?.login || "";
+  }
+
+  cleanDisplayValue(value) {
+    const text = String(value || "").trim();
+    if (!text || text === "-" || text.toLowerCase() === "unknown" || text.toLowerCase() === "null") return "";
+    return text;
+  }
+
+  persistTaskOwnership() {
+    try {
+      const now = Date.now();
+      const rows = [];
+      for (const [taskId, row] of this.taskOwnershipMap.entries()) {
+        const updatedAtMs = Number(row?.updatedAtMs || 0);
+        if (updatedAtMs && now - updatedAtMs > this.taskOwnershipTtlMs) {
+          this.taskOwnershipMap.delete(taskId);
+          continue;
+        }
+        rows.push(row);
+      }
+      localStorage.setItem(this.taskOwnershipPersistenceKey, JSON.stringify(rows.slice(-200)));
+    } catch {}
+  }
+
+  restorePersistentTaskOwnership() {
+    try {
+      const raw = localStorage.getItem(this.taskOwnershipPersistenceKey);
+      const parsed = JSON.parse(raw || "[]");
+      const now = Date.now();
+      this.taskOwnershipMap = new Map();
+      if (Array.isArray(parsed)) {
+        parsed.forEach(row => {
+          const taskId = String(row?.taskId || "");
+          const updatedAtMs = Number(row?.updatedAtMs || 0);
+          if (!taskId || (updatedAtMs && now - updatedAtMs > this.taskOwnershipTtlMs)) return;
+          this.taskOwnershipMap.set(taskId, row);
+        });
+      }
+      this.addDiagLog("task-ownership-cache-restored", { rows: this.taskOwnershipMap.size });
+    } catch (err) {
+      this.taskOwnershipMap = new Map();
+      this.addDiagLog("task-ownership-cache-restore-failed", { message: err.message });
+    }
+  }
+
+  rebindActiveCallOwnership(taskId, agentId, details = {}) {
+    const id = String(taskId || "");
+    const boundAgentId = String(agentId || "");
+    if (!id || !boundAgentId) return false;
+
+    const now = Date.now();
+    const previousBinding = this.taskOwnershipMap.get(id) || {};
+    const agentName = this.cleanDisplayValue(details.agentName) || this.getAgentNameById(boundAgentId) || previousBinding.agentName || "";
+    const queueId = String(details.queueId || previousBinding.queueId || "");
+    const queueName = this.cleanDisplayValue(details.queueName) || previousBinding.queueName || (queueId ? this.queueDirectory.get(queueId)?.name : "") || "";
+
+    this.taskOwnershipMap.set(id, {
+      ...previousBinding,
+      taskId: id,
+      agentId: boundAgentId,
+      agentName: agentName || previousBinding.agentName || "",
+      queueId: queueId || previousBinding.queueId || "",
+      queueName: queueName || previousBinding.queueName || "",
+      caller: details.caller || previousBinding.caller || "",
+      destination: details.destination || previousBinding.destination || "",
+      updatedAtMs: now
+    });
+
+    let patched = 0;
+    for (const [key, call] of Array.from(this.activeCallRenderCache.entries())) {
+      const sameTask = String(call.taskId || call.id || "") === id || key === id;
+      if (!sameTask) continue;
+      const enriched = this.enrichActiveCallDeterministically({
+        ...call,
+        id: call.id || id,
+        taskId: id,
+        agentId: boundAgentId,
+        agent: this.cleanDisplayValue(call.agent) || agentName || "",
+        queueId: queueId || call.queueId || "",
+        queue: this.cleanDisplayValue(call.queue) || queueName || "",
+        localLastSeenMs: now
+      });
+      this.activeCallRenderCache.set(key, enriched);
+      patched += 1;
+    }
+
+    this.persistTaskOwnership();
+    if (patched) this.persistActiveCalls();
+    this.addDiagLog("active-call-ownership-rebound", { taskId: id, agentId: boundAgentId, agentName, queueId, queueName, patched });
+    return patched > 0;
+  }
+
+  repairRestoredActiveCallOwnership() {
+    let repaired = 0;
+    for (const [id, call] of Array.from(this.activeCallRenderCache.entries())) {
+      const taskId = String(call.taskId || call.id || id || "");
+      if (!taskId) continue;
+      const binding = this.taskOwnershipMap.get(taskId) || {};
+      const agentId = String(call.agentId || binding.agentId || "");
+      const agent = this.cleanDisplayValue(call.agent) || this.cleanDisplayValue(binding.agentName) || this.getAgentNameById(agentId);
+      if (!agentId && !agent) continue;
+      if (this.cleanDisplayValue(call.agent) && String(call.agentId || "")) continue;
+      const patched = this.enrichActiveCallDeterministically({
+        ...call,
+        agentId: agentId || call.agentId || "",
+        agent: agent || "",
+        queueId: call.queueId || binding.queueId || "",
+        queue: this.cleanDisplayValue(call.queue) || binding.queueName || ""
+      });
+      this.activeCallRenderCache.set(id, patched);
+      repaired += 1;
+    }
+    if (repaired) {
+      this.persistActiveCalls();
+      this.addDiagLog("active-call-ownership-restored", { repaired });
+    }
+    return repaired;
   }
 
   rememberRelationalStateFromWxccEvent(details = {}) {
@@ -1983,10 +2104,11 @@ Call History</div>
       if (!taskId) return;
 
       const previous = this.taskOwnershipMap.get(taskId) || {};
-      this.taskOwnershipMap.set(taskId, {
+      const nextBinding = {
         ...previous,
         taskId,
         agentId: agentId || previous.agentId || "",
+        agentName: data.agentName || data.agentDisplayName || previous.agentName || this.getAgentNameById(agentId || previous.agentId) || "",
         queueId: queueId || previous.queueId || "",
         queueName: queueName || previous.queueName || "",
         caller: data.origin || data.from || data.ani || data.caller || previous.caller || "",
@@ -1994,7 +2116,19 @@ Call History</div>
         eventType: type || previous.eventType || "",
         eventState: data.currentState || data.state || previous.eventState || "",
         updatedAtMs: now
-      });
+      };
+      this.taskOwnershipMap.set(taskId, nextBinding);
+      this.persistTaskOwnership();
+
+      if (agentId) {
+        this.rebindActiveCallOwnership(taskId, agentId, {
+          agentName: nextBinding.agentName,
+          queueId: nextBinding.queueId,
+          queueName: nextBinding.queueName,
+          caller: nextBinding.caller,
+          destination: nextBinding.destination
+        });
+      }
 
       this.addDiagLog("deterministic-task-binding-updated", {
         taskId,
@@ -2013,8 +2147,20 @@ Call History</div>
     const agentId = String(call.agentId || binding.agentId || call.lastAgent?.id || "");
     const queueId = String(call.queueId || binding.queueId || call.firstQueueId || call.lastQueue?.id || "");
     const queueNameFromId = queueId ? this.queueDirectory.get(queueId)?.name : "";
-    const agentName = call.agent || call.agentName || call.lastAgent?.name || this.getAgentNameById(agentId) || "";
-    const queueName = this.getCallQueueName(call) || binding.queueName || queueNameFromId || "";
+    const agentName =
+      this.cleanDisplayValue(call.agent) ||
+      this.cleanDisplayValue(call.agentName) ||
+      this.cleanDisplayValue(call.lastAgent?.name) ||
+      this.cleanDisplayValue(binding.agentName) ||
+      this.getAgentNameById(agentId) ||
+      "";
+    const queueName =
+      this.cleanDisplayValue(this.getCallQueueName(call)) ||
+      this.cleanDisplayValue(binding.queueName) ||
+      this.cleanDisplayValue(queueNameFromId) ||
+      this.cleanDisplayValue(call.queue) ||
+      this.cleanDisplayValue(call.queueName) ||
+      "";
 
     return {
       ...call,
@@ -2022,10 +2168,10 @@ Call History</div>
       taskId: id || call.taskId,
       agentId,
       queueId,
-      queue: queueName || call.queue || call.queueName || "",
+      queue: queueName,
       caller: call.caller || call.origin || binding.caller || "",
       destination: call.destination || binding.destination || "",
-      agent: agentName || call.agent || "",
+      agent: agentName,
       deterministicEnriched: true
     };
   }
@@ -2263,6 +2409,7 @@ Call History</div>
     }
 
     this.taskOwnershipMap?.delete(id);
+    this.persistTaskOwnership();
     this.persistActiveCalls();
     this.addDiagLog("active-call-hard-evicted", { id, reason, removed, ...details });
     return removed;
@@ -2311,6 +2458,7 @@ Call History</div>
         });
       }
       this.pruneActiveCallCaches("restore");
+      this.repairRestoredActiveCallOwnership();
       this.addDiagLog("active-call-cache-restored", { rows: this.activeCallRenderCache.size });
     } catch (err) {
       this.activeCallRenderCache = new Map();
@@ -2431,6 +2579,16 @@ Call History</div>
       this.persistAgentStates();
       this.addDiagLog("agent-state-event-authority-updated", { agentId, currentState, displayState, taskId: row.taskId });
 
+      if (row.taskId && agentId) {
+        this.rebindActiveCallOwnership(row.taskId, agentId, {
+          queueId: row.queueId,
+          queueName: data.queueName || data.firstQueueName || data.lastQueueName || "",
+          agentName: data.agentName || data.agentDisplayName || "",
+          caller: data.origin || data.from || data.ani || data.caller || "",
+          destination: data.destination || data.to || data.dnis || ""
+        });
+      }
+
       if (this.lastWallboardData) {
         this.processWallboardData(this.lastWallboardData);
       }
@@ -2525,7 +2683,7 @@ Call History</div>
           queue: data.queueName || data.lastQueueName || previous.queue || binding.queueName || "",
           firstQueue: data.firstQueueName || previous.firstQueue || "",
           entryPoint: data.entryPointName || previous.entryPoint || "",
-          agent: data.agentName || data.agentDisplayName || previous.agent || this.getAgentNameById(agentId || binding.agentId) || "",
+          agent: this.cleanDisplayValue(data.agentName) || this.cleanDisplayValue(data.agentDisplayName) || this.cleanDisplayValue(previous.agent) || this.cleanDisplayValue(binding.agentName) || this.getAgentNameById(agentId || binding.agentId) || "",
           agentId: agentId || previous.agentId || binding.agentId || "",
           createdTime: previous.createdTime || data.createdTime || now,
           connectedStartTime: previous.connectedStartTime || data.connectedTime || data.createdTime || now,
@@ -2536,6 +2694,7 @@ Call History</div>
           pendingEvictionAtMs: 0
         });
         this.activeCallRenderCache.set(id, row);
+        if (row.agentId) this.rebindActiveCallOwnership(id, row.agentId, { agentName: row.agent, queueId: row.queueId, queueName: row.queue, caller: row.caller, destination: row.destination });
         this.persistActiveCalls();
         this.addDiagLog("frontend-active-call-event-connected", { id, agentId: row.agentId || agentId, cacheSize: this.activeCallRenderCache.size, type, state });
         if (this.lastWallboardData) this.processWallboardData(this.lastWallboardData);
@@ -2599,6 +2758,9 @@ Call History</div>
         ...previous,
         ...call,
         id,
+        agentId: call.agentId || previous?.agentId || "",
+        agent: this.cleanDisplayValue(call.agent) || this.cleanDisplayValue(previous?.agent) || "",
+        queue: this.cleanDisplayValue(this.getCallQueueName(call)) || this.cleanDisplayValue(previous?.queue) || "",
         localStartMs,
         localLastSeenMs: now,
         pendingEvictionAtMs: 0

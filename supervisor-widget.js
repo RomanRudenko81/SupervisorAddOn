@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-v44-persistent-active-call-eviction-2026-05-21";
+const FRONTEND_BUILD_ID = "wxcc-widget-v45-deterministic-agent-projection-2026-05-21";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -36,16 +36,16 @@ class SupervisorAccessWidget extends HTMLElement {
     this.diagRemoteQueue = [];
     this.diagRemoteFlushHandle = null;
     this.diagHeartbeatHandle = null;
-    this.diagStorageKey = "wxccSupervisorWidgetDiagLogV44";
-    this.diagQueueStorageKey = "wxccSupervisorWidgetDiagQueueV44";
-    this.activeCallPersistenceKey = "wxccSupervisorWidgetActiveCallsV44";
+    this.diagStorageKey = "wxccSupervisorWidgetDiagLogV45";
+    this.diagQueueStorageKey = "wxccSupervisorWidgetDiagQueueV45";
+    this.activeCallPersistenceKey = "wxccSupervisorWidgetActiveCallsV45";
     this.activeCallEvictionDelayMs = 30000;
     this.activeCallPersistenceTtlMs = 600000;
-    this.activeCallTerminalPersistenceKey = "wxccSupervisorWidgetActiveCallTerminalsV44";
+    this.activeCallTerminalPersistenceKey = "wxccSupervisorWidgetActiveCallTerminalsV45";
     this.activeCallTerminalCache = new Map();
     this.activeCallTerminalTtlMs = 180000;
     this.agentStateEventCache = new Map();
-    this.agentStatePersistenceKey = "wxccSupervisorWidgetAgentStatesV44";
+    this.agentStatePersistenceKey = "wxccSupervisorWidgetAgentStatesV45";
     this.agentStateEventTtlMs = 120000;
     this.agentSnapshotStaleRejectMs = 90000;
     this.agentDirectory = new Map();
@@ -2030,6 +2030,91 @@ Call History</div>
     };
   }
 
+
+  isRealtimeBusyAgentState(state) {
+    const value = String(state || "").toLowerCase();
+    return ["ringing", "connected", "wrapup"].includes(value);
+  }
+
+  isSnapshotTerminalAgentState(state) {
+    const value = String(state || "").toLowerCase();
+    if (!value) return false;
+    return !["ringing", "connected", "wrapup"].includes(value);
+  }
+
+  getSnapshotAgentById(snapshot = {}, agentId = "") {
+    const id = String(agentId || "");
+    if (!id) return null;
+    const list = Array.isArray(snapshot.agentList) ? snapshot.agentList : [];
+    return list.find(agent => String(agent.agentId || agent.id || agent.userId || "") === id) || null;
+  }
+
+  reconcileAgentStateAuthorityBeforeProjection(snapshot = {}) {
+    const now = Date.now();
+    const activeTasks = Array.isArray(snapshot.taskList) ? snapshot.taskList : [];
+    const activeTaskIds = new Set(activeTasks.map(task => String(task.id || task.taskId || "")).filter(Boolean));
+    let removed = 0;
+    let terminalPromoted = 0;
+
+    for (const [agentId, override] of Array.from(this.agentStateEventCache.entries())) {
+      const ageMs = now - Number(override.receivedAtMs || 0);
+      if (!Number.isFinite(ageMs) || ageMs > this.agentStateEventTtlMs) {
+        this.agentStateEventCache.delete(agentId);
+        removed += 1;
+        continue;
+      }
+
+      const state = String(override.currentState || override.displayState || "").toLowerCase();
+      const taskId = String(override.taskId || "");
+      const snapshotAgent = this.getSnapshotAgentById(snapshot, agentId);
+      const snapshotState = String(snapshotAgent?.state || snapshotAgent?.currentState || "");
+
+      // v45: after reconnect, a stale Ringing/Connected/Wrapup event must not pin the row forever.
+      // If the current wallboard has no active task for that taskId and the snapshot already shows a
+      // non-busy state, drop the old event authority and let the snapshot/custom idle code win.
+      if (
+        this.isRealtimeBusyAgentState(state) &&
+        taskId &&
+        !activeTaskIds.has(taskId) &&
+        this.isSnapshotTerminalAgentState(snapshotState) &&
+        ageMs > 12000
+      ) {
+        this.agentStateEventCache.delete(agentId);
+        removed += 1;
+        this.addDiagLog("agent-state-authority-stale-busy-cleared", { agentId, taskId, state, snapshotState, ageMs });
+        continue;
+      }
+
+      // Idle without taskId is a terminal agent-state event. It should clear old task ownership and
+      // prevent a previous Wrapup projection from surviving a widget recreation.
+      if (state === "idle" && !taskId) {
+        terminalPromoted += 1;
+      }
+    }
+
+    if (removed || terminalPromoted) {
+      this.persistAgentStates();
+      this.addDiagLog("agent-state-authority-reconciled", { removed, terminalPromoted });
+    }
+  }
+
+  getDeterministicDisplayStateForAgent(agentId, baseAgent = {}, override = null) {
+    if (!override) return baseAgent.state || baseAgent.currentState || "";
+    const eventState = String(override.currentState || "").toLowerCase();
+    const snapshotState = String(baseAgent.state || baseAgent.currentState || "");
+
+    // For custom idle codes, the Search snapshot often knows the readable label while the event
+    // only carries idleCodeId. Preserve the readable terminal label, but never preserve busy states.
+    if (eventState === "idle") {
+      if (this.isSnapshotTerminalAgentState(snapshotState) && snapshotState.toLowerCase() !== "available") {
+        return snapshotState;
+      }
+      return override.displayState || "Idle";
+    }
+
+    return override.displayState || snapshotState || "";
+  }
+
   buildAuthoritativeAgents(snapshot = {}) {
     const now = Date.now();
     const snapshotAgents = Array.isArray(snapshot.agentList) ? snapshot.agentList : [];
@@ -2066,7 +2151,7 @@ Call History</div>
         this.agentStateEventCache.delete(agentId);
         continue;
       }
-      agent.state = override.displayState;
+      agent.state = this.getDeterministicDisplayStateForAgent(agentId, agent, override);
       agent.currentState = override.currentState;
       agent.taskId = override.taskId || agent.taskId || "";
       agent.queueId = override.queueId || agent.queueId || "";
@@ -2258,8 +2343,20 @@ Call History</div>
     if (normalized === "ringing") return "Ringing";
     if (normalized === "connected") return "Connected";
     if (normalized === "wrapup") return "Wrapup";
-    // Do not force custom idle-code display names from events because the event only
-    // carries the idleCodeId. The Search API snapshot remains better for custom idle labels.
+    if (normalized === "idle") {
+      // v45: idle events without a taskId are authoritative terminal agent-state events.
+      // They must clear stale Wrapup/Connected projections after WXCC Desktop recreates the widget.
+      // If WXCC provides a custom idle name, use it; otherwise render a safe neutral state until
+      // the next Search snapshot enriches it.
+      return String(
+        data.idleCodeName ||
+        data.idleCode ||
+        data.reasonName ||
+        data.reason ||
+        data.auxCodeName ||
+        "Idle"
+      );
+    }
     return "";
   }
 
@@ -2364,7 +2461,7 @@ Call History</div>
       // to enrich name/team metadata, but never to roll back a fresh event state.
       const sourceState = String(agent.state || "");
       if (sourceState !== override.displayState) ignoredOlderSnapshot += 1;
-      agent.state = override.displayState;
+      agent.state = this.getDeterministicDisplayStateForAgent(agentId, agent, override);
       agent.currentState = override.currentState;
       agent.eventAuthority = {
         applied: true,
@@ -3119,6 +3216,7 @@ Call History</div>
     snapshot.agentList = incomingAgents;
     snapshot.agents = snapshot.agents || {};
     this.updateDeterministicDirectories(snapshot);
+    this.reconcileAgentStateAuthorityBeforeProjection(snapshot);
     this.applyAgentStateAuthority(snapshot);
     const projection = this.buildAuthoritativeAgents(snapshot);
     snapshot.agentList = projection.rows;

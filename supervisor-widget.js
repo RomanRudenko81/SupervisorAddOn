@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-v52-ui-collapse-and-dark-dropdowns-2026-05-21";
+const FRONTEND_BUILD_ID = "wxcc-widget-v53-analytics-probe-2026-05-21";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -22,6 +22,9 @@ class SupervisorAccessWidget extends HTMLElement {
     this.wallboardPollFallbackHandle = null;
     this.activeCallTimerHandle = null;
     this.liveUiTimerHandle = null;
+    this.analyticsMetricsPollHandle = null;
+    this.analyticsMetricsCache = null;
+    this.analyticsMetricsIntervalMs = 30000;
     this.lastWallboardData = null;
     this.activeCallRenderCache = new Map();
     this.callHistoryRenderCache = [];
@@ -170,6 +173,7 @@ class SupervisorAccessWidget extends HTMLElement {
     clearIntervalSafe(this.wallboardPollFallbackHandle); this.wallboardPollFallbackHandle = null;
     clearIntervalSafe(this.activeCallTimerHandle); this.activeCallTimerHandle = null;
     clearIntervalSafe(this.liveUiTimerHandle); this.liveUiTimerHandle = null;
+    clearIntervalSafe(this.analyticsMetricsPollHandle); this.analyticsMetricsPollHandle = null;
     clearIntervalSafe(this.historyEndWatchdogHandle); this.historyEndWatchdogHandle = null;
     clearIntervalSafe(this.diagHeartbeatHandle); this.diagHeartbeatHandle = null;
 
@@ -1416,6 +1420,7 @@ Call History</div>
       }
 
       this.startWallboardStream(runtimeId);
+      this.startAnalyticsMetricsPolling(runtimeId);
     } catch (err) {
       this.addDiagLog("init-failed", { error: this.serializeError(err) });
       this.setStatus(`Load failed: ${err.message}`);
@@ -3831,15 +3836,17 @@ Call History</div>
       data.queue || {}
     );
 
+    const analyticsQueueKpis = this.getAnalyticsKpiOverride(visibleQueueKpis);
+
     const callsInQueue = visibleQueueKpis.callsInQueue;
     const loggedInAgents = data.agents?.loggedIn ?? 0;
     const availableAgents = data.agents?.available ?? 0;
 
     this.safeSetText("kpiCallsInQueue", callsInQueue);
     this.safeSetText("kpiActiveCalls", visibleQueueKpis.activeCalls);
-    this.safeSetText("kpiLongestWaiting", this.formatDuration(visibleQueueKpis.longestWaitingSeconds));
-    this.safeSetText("kpiAvgWait", this.formatDuration(visibleQueueKpis.avgWaitSeconds));
-    this.safeSetText("kpiAvgHandle", this.formatDuration(visibleQueueKpis.avgHandleSeconds));
+    this.safeSetText("kpiLongestWaiting", this.formatDuration(analyticsQueueKpis.longestWaitingSeconds));
+    this.safeSetText("kpiAvgWait", this.formatDuration(analyticsQueueKpis.avgWaitSeconds));
+    this.safeSetText("kpiAvgHandle", this.formatDuration(analyticsQueueKpis.avgHandleSeconds));
     this.safeSetText("kpiLoggedIn", loggedInAgents);
     this.safeSetText("kpiAvailable", availableAgents);
 
@@ -3912,6 +3919,81 @@ Call History</div>
         summary: this.getWallboardSummary(data)
       });
       this.setWallboardStatus(`Dashboard render recovered after frontend error: ${err?.message || err}`);
+    }
+  }
+
+
+  getAnalyticsKpiOverride(fallbackKpis = {}) {
+    const fallback = fallbackKpis || {};
+    const metrics = this.analyticsMetricsCache;
+    const ageMs = metrics?.fetchedAtMs ? Date.now() - Number(metrics.fetchedAtMs) : Number.POSITIVE_INFINITY;
+
+    if (!metrics || metrics.ok === false || !Number.isFinite(ageMs) || ageMs > 120000) {
+      return fallback;
+    }
+
+    const values = metrics.metrics || {};
+    const merged = {
+      ...fallback,
+      longestWaitingSeconds: Number.isFinite(Number(values.longestWaitingSeconds)) ? Number(values.longestWaitingSeconds) : Number(fallback.longestWaitingSeconds || 0),
+      avgWaitSeconds: Number.isFinite(Number(values.avgWaitSeconds)) ? Number(values.avgWaitSeconds) : Number(fallback.avgWaitSeconds || 0),
+      avgHandleSeconds: Number.isFinite(Number(values.avgHandleSeconds)) ? Number(values.avgHandleSeconds) : Number(fallback.avgHandleSeconds || 0)
+    };
+
+    this.addDiagLog("analytics-kpi-applied", {
+      source: metrics.source || "",
+      range: metrics.range || "",
+      queueCount: Array.isArray(metrics.queues) ? metrics.queues.length : 0,
+      sample: metrics.sample || {},
+      metrics: merged
+    });
+
+    return merged;
+  }
+
+  startAnalyticsMetricsPolling(runtimeId = this.runtimeId) {
+    if (this.analyticsMetricsPollHandle) return;
+    this.loadAnalyticsMetrics("startup", runtimeId).catch(err => {
+      this.addDiagLog("analytics-probe-startup-failed", { message: err?.message || String(err) });
+    });
+    this.analyticsMetricsPollHandle = this.safeSetInterval(() => {
+      if (!this.sessionToken || !this.guardRuntime(runtimeId)) return;
+      this.loadAnalyticsMetrics("interval", runtimeId).catch(err => {
+        this.addDiagLog("analytics-probe-interval-failed", { message: err?.message || String(err) });
+      });
+    }, this.analyticsMetricsIntervalMs, runtimeId);
+  }
+
+  async loadAnalyticsMetrics(reason = "manual", runtimeId = this.runtimeId) {
+    if (!this.guardRuntime(runtimeId)) return;
+
+    const visibleQueues = this.getVisibleQueueNames();
+    const params = new URLSearchParams({ range: "60m" });
+    if (visibleQueues.length) params.set("queues", visibleQueues.join(","));
+
+    const path = `/api/analytics/queue-metrics?${params.toString()}`;
+    const res = await this.authorizedFetch(path);
+    const data = await this.readJsonResponse(res);
+    if (!this.guardRuntime(runtimeId)) return;
+
+    if (!res.ok || data.ok === false) {
+      this.analyticsMetricsCache = { ok: false, fetchedAtMs: Date.now(), error: data?.error || `HTTP ${res.status}` };
+      this.addDiagLog("analytics-probe-failed", { reason, status: res.status, error: this.analyticsMetricsCache.error });
+      return;
+    }
+
+    this.analyticsMetricsCache = { ...data, fetchedAtMs: Date.now() };
+    this.addDiagLog("analytics-probe-success", {
+      reason,
+      range: data.range || "",
+      queues: data.queues || [],
+      source: data.source || "",
+      metrics: data.metrics || {},
+      sample: data.sample || {}
+    });
+
+    if (this.lastWallboardData) {
+      this.processWallboardData(this.lastWallboardData);
     }
   }
 

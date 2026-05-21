@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-v50-final-state-authority-2026-05-21";
+const FRONTEND_BUILD_ID = "wxcc-widget-v51-active-call-agent-and-live-timers-2026-05-21";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -21,6 +21,7 @@ class SupervisorAccessWidget extends HTMLElement {
     this.wallboardReconnectAttempt = 0;
     this.wallboardPollFallbackHandle = null;
     this.activeCallTimerHandle = null;
+    this.liveUiTimerHandle = null;
     this.lastWallboardData = null;
     this.activeCallRenderCache = new Map();
     this.callHistoryRenderCache = [];
@@ -105,6 +106,7 @@ class SupervisorAccessWidget extends HTMLElement {
     this.bindEvents();
     this.init(runtimeId);
     this.startRobustActiveCallTimer(runtimeId);
+    this.startLiveUiTimer(runtimeId);
     this.startHistoryEndWatchdog(runtimeId);
   }
 
@@ -164,6 +166,7 @@ class SupervisorAccessWidget extends HTMLElement {
     clearIntervalSafe(this.wallboardPollHandle); this.wallboardPollHandle = null;
     clearIntervalSafe(this.wallboardPollFallbackHandle); this.wallboardPollFallbackHandle = null;
     clearIntervalSafe(this.activeCallTimerHandle); this.activeCallTimerHandle = null;
+    clearIntervalSafe(this.liveUiTimerHandle); this.liveUiTimerHandle = null;
     clearIntervalSafe(this.historyEndWatchdogHandle); this.historyEndWatchdogHandle = null;
     clearIntervalSafe(this.diagHeartbeatHandle); this.diagHeartbeatHandle = null;
 
@@ -2011,6 +2014,35 @@ Call History</div>
     return this.cleanDisplayValue(row?.name) || this.cleanDisplayValue(row?.login) || this.cleanDisplayValue(current?.name) || "";
   }
 
+
+  getVisibleAgentDisplayNameById(agentId) {
+    const id = String(agentId || "");
+    if (!id) return "";
+    const list = Array.isArray(this.lastWallboardData?.agentList) ? this.lastWallboardData.agentList : [];
+    const row = list.find(agent => this.resolveAgentId(agent) === id);
+    return this.cleanDisplayValue(row?.name || row?.agentName || row?.displayName || row?.login) || this.getAgentNameById(id) || "";
+  }
+
+  getSingleConnectedRosterAgentForActiveCall(call = {}) {
+    const list = Array.isArray(this.lastWallboardData?.agentList) ? this.lastWallboardData.agentList : [];
+    if (!list.length) return null;
+
+    const connectedRows = list.filter(agent => String(agent.state || agent.currentState || "").toLowerCase() === "connected");
+    if (connectedRows.length !== 1) return null;
+
+    const activeCalls = Array.isArray(this.lastWallboardData?.taskList)
+      ? this.lastWallboardData.taskList.filter(task => String(task.status || "").toLowerCase() === "connected")
+      : [];
+    if (activeCalls.length > 1) return null;
+
+    const row = connectedRows[0];
+    const agentId = this.resolveAgentId(row);
+    const agentName = this.cleanDisplayValue(row.name || row.agentName || row.displayName || row.login) || this.getAgentNameById(agentId);
+    if (!agentId || !agentName) return null;
+
+    return { agentId, agentName, source: "single-connected-roster-agent" };
+  }
+
   rememberAgentIdAlias(eventAgentId, canonicalAgentId, reason = "") {
     const source = String(eventAgentId || "");
     const target = String(canonicalAgentId || "");
@@ -2159,7 +2191,7 @@ Call History</div>
     const now = Date.now();
     const previousBinding = this.taskOwnershipMap.get(id) || {};
     const currentName = this.currentUserById?.get(boundAgentId)?.name || "";
-    const agentName = this.cleanDisplayValue(details.agentName) || this.getAgentNameById(boundAgentId) || this.cleanDisplayValue(currentName) || previousBinding.agentName || "";
+    const agentName = this.cleanDisplayValue(details.agentName) || this.getVisibleAgentDisplayNameById(boundAgentId) || this.getAgentNameById(boundAgentId) || this.cleanDisplayValue(currentName) || previousBinding.agentName || "";
     const queueId = String(details.queueId || previousBinding.queueId || "");
     const queueName = this.cleanDisplayValue(details.queueName) || previousBinding.queueName || (queueId ? this.queueDirectory.get(queueId)?.name : "") || "";
 
@@ -2284,12 +2316,15 @@ Call History</div>
     const agentId = String(call.agentId || binding.agentId || call.lastAgent?.id || "");
     const queueId = String(call.queueId || binding.queueId || call.firstQueueId || call.lastQueue?.id || "");
     const queueNameFromId = queueId ? this.queueDirectory.get(queueId)?.name : "";
+    const rosterFallback = this.getSingleConnectedRosterAgentForActiveCall(call);
+    const resolvedAgentId = agentId || rosterFallback?.agentId || "";
     const agentName =
       this.cleanDisplayValue(call.agent) ||
       this.cleanDisplayValue(call.agentName) ||
       this.cleanDisplayValue(call.lastAgent?.name) ||
       this.cleanDisplayValue(binding.agentName) ||
-      this.getAgentNameById(agentId) ||
+      this.getVisibleAgentDisplayNameById(resolvedAgentId) ||
+      rosterFallback?.agentName ||
       "";
     const queueName =
       this.cleanDisplayValue(this.getCallQueueName(call)) ||
@@ -2303,12 +2338,13 @@ Call History</div>
       ...call,
       id: id || call.id,
       taskId: id || call.taskId,
-      agentId,
+      agentId: resolvedAgentId,
       queueId,
       queue: queueName,
       caller: call.caller || call.origin || binding.caller || "",
       destination: call.destination || binding.destination || "",
       agent: agentName,
+      agentFallbackSource: (!agentId && rosterFallback?.agentName) ? rosterFallback.source : "",
       deterministicEnriched: true
     };
   }
@@ -3079,6 +3115,32 @@ Call History</div>
     });
   }
 
+  updateAgentDurationCells() {
+    const cells = this.shadowRoot.querySelectorAll(".agent-live-duration");
+    cells.forEach(cell => {
+      const startMs = Number(cell.getAttribute("data-agent-start-ms") || 0);
+      if (!startMs) return;
+      const seconds = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
+      cell.textContent = this.formatDuration(seconds);
+    });
+  }
+
+  updateLiveDurationCells() {
+    this.updateActiveDurationCells();
+    this.updateAgentDurationCells();
+  }
+
+  startLiveUiTimer(runtimeId = this.runtimeId) {
+    if (this.liveUiTimerHandle) {
+      clearInterval(this.liveUiTimerHandle);
+    }
+
+    this.liveUiTimerHandle = this.safeSetInterval(() => {
+      if (!this.guardRuntime(runtimeId)) return;
+      this.updateLiveDurationCells();
+    }, 1000, runtimeId);
+  }
+
 
 
 
@@ -3536,7 +3598,7 @@ Call History</div>
     calls = (Array.isArray(calls) ? calls : []).map(call => {
       const enriched = this.enrichActiveCallDeterministically(call);
       if (!this.cleanDisplayValue(enriched.agent) && enriched.agentId) {
-        enriched.agent = this.getAgentNameById(enriched.agentId) || "";
+        enriched.agent = this.getVisibleAgentDisplayNameById(enriched.agentId) || this.getAgentNameById(enriched.agentId) || "";
       }
       return enriched;
     });
@@ -3754,7 +3816,7 @@ Call History</div>
           <div>${agent.name || agent.login || "-"}</div>
           <div>${agent.state || "-"}</div>
           <div>${agent.team || "-"}</div>
-          <div>${this.formatDuration(this.getAgentDuration(agent))}</div>
+          <div><span class="agent-live-duration" data-agent-id="${this.resolveAgentId(agent)}" data-agent-start-ms="${Number(agent.lastActivityTime || agent.startTime || 0)}">${this.formatDuration(this.getAgentDuration(agent))}</span></div>
         `;
         agentList.appendChild(row);
       });

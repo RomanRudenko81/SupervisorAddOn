@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-v46-late-binding-active-call-ownership-2026-05-21";
+const FRONTEND_BUILD_ID = "wxcc-widget-v47-authoritative-agent-renderer-2026-05-21";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -36,21 +36,21 @@ class SupervisorAccessWidget extends HTMLElement {
     this.diagRemoteQueue = [];
     this.diagRemoteFlushHandle = null;
     this.diagHeartbeatHandle = null;
-    this.diagStorageKey = "wxccSupervisorWidgetDiagLogV46";
-    this.diagQueueStorageKey = "wxccSupervisorWidgetDiagQueueV46";
-    this.activeCallPersistenceKey = "wxccSupervisorWidgetActiveCallsV46";
+    this.diagStorageKey = "wxccSupervisorWidgetDiagLogV47";
+    this.diagQueueStorageKey = "wxccSupervisorWidgetDiagQueueV47";
+    this.activeCallPersistenceKey = "wxccSupervisorWidgetActiveCallsV47";
     this.activeCallEvictionDelayMs = 30000;
     this.activeCallPersistenceTtlMs = 600000;
-    this.activeCallTerminalPersistenceKey = "wxccSupervisorWidgetActiveCallTerminalsV46";
+    this.activeCallTerminalPersistenceKey = "wxccSupervisorWidgetActiveCallTerminalsV47";
     this.activeCallTerminalCache = new Map();
     this.activeCallTerminalTtlMs = 180000;
     this.agentStateEventCache = new Map();
-    this.agentStatePersistenceKey = "wxccSupervisorWidgetAgentStatesV46";
+    this.agentStatePersistenceKey = "wxccSupervisorWidgetAgentStatesV47";
     this.agentStateEventTtlMs = 120000;
     this.agentSnapshotStaleRejectMs = 90000;
     this.agentDirectory = new Map();
     this.taskOwnershipMap = new Map();
-    this.taskOwnershipPersistenceKey = "wxccSupervisorWidgetTaskOwnershipV46";
+    this.taskOwnershipPersistenceKey = "wxccSupervisorWidgetTaskOwnershipV47";
     this.queueDirectory = new Map();
     this.taskOwnershipTtlMs = 600000;
     this.techDiagnosticsInstalled = false;
@@ -62,6 +62,8 @@ class SupervisorAccessWidget extends HTMLElement {
     this.themeMode = localStorage.getItem("supervisorWidgetTheme") || "dark";
     this.allowedQueueNames = [];
     this.selectedQueueFilters = this.readSelectedQueueFilters();
+    this.currentIdentity = null;
+    this.currentUserById = new Map();
 
     // v40 hard lifecycle isolation: every mount gets a unique runtime.
     // Async callbacks, timers and SSE events from older WXCC Desktop lifecycles must not update the UI.
@@ -1432,6 +1434,8 @@ Call History</div>
 
       this.sessionToken = data.sessionToken;
       this.currentRole = data.role || "viewer";
+      this.currentIdentity = data.user || identity || null;
+      this.rememberCurrentIdentity(this.currentIdentity);
 
       this.$userInfo().textContent = data.user?.displayName || "Unknown User";
       this.$roleBadge().textContent = this.currentRole === "supervisor" ? "Supervisor" : "Viewer";
@@ -1917,7 +1921,7 @@ Call History</div>
     if (Array.isArray(snapshot.callHistoryList)) calls.push(...snapshot.callHistoryList);
 
     agents.forEach(agent => {
-      const agentId = String(agent.agentId || agent.id || agent.userId || "");
+      const agentId = this.resolveAgentId(agent);
       if (!agentId) return;
       const previous = this.agentDirectory.get(agentId) || {};
       this.agentDirectory.set(agentId, {
@@ -1967,9 +1971,34 @@ Call History</div>
     }
   }
 
+  rememberCurrentIdentity(user = {}) {
+    const agentId = String(user?.userId || user?.agentId || user?.id || "");
+    if (!agentId) return;
+    const name = this.cleanDisplayValue(user?.displayName) || this.cleanDisplayValue(user?.name) || this.cleanDisplayValue(user?.email) || agentId;
+    const previous = this.agentDirectory.get(agentId) || {};
+    this.agentDirectory.set(agentId, {
+      ...previous,
+      agentId,
+      id: agentId,
+      name: previous.name || name,
+      login: previous.login || this.cleanDisplayValue(user?.email) || "",
+      team: previous.team || "",
+      teamId: previous.teamId || String(user?.teamId || ""),
+      lastSeenMs: Date.now(),
+      source: previous.source || "bootstrap-identity"
+    });
+    this.currentUserById.set(agentId, { agentId, name, user });
+  }
+
   getAgentNameById(agentId) {
-    const row = this.agentDirectory.get(String(agentId || ""));
-    return row?.name || row?.login || "";
+    const id = String(agentId || "");
+    const row = this.agentDirectory.get(id);
+    const current = this.currentUserById.get(id);
+    return this.cleanDisplayValue(row?.name) || this.cleanDisplayValue(row?.login) || this.cleanDisplayValue(current?.name) || "";
+  }
+
+  resolveAgentId(agent = {}) {
+    return String(agent.agentId || agent.id || agent.userId || agent.ciUserId || agent.ownerId || "");
   }
 
   cleanDisplayValue(value) {
@@ -2022,7 +2051,8 @@ Call History</div>
 
     const now = Date.now();
     const previousBinding = this.taskOwnershipMap.get(id) || {};
-    const agentName = this.cleanDisplayValue(details.agentName) || this.getAgentNameById(boundAgentId) || previousBinding.agentName || "";
+    const currentName = this.currentUserById?.get(boundAgentId)?.name || "";
+    const agentName = this.cleanDisplayValue(details.agentName) || this.getAgentNameById(boundAgentId) || this.cleanDisplayValue(currentName) || previousBinding.agentName || "";
     const queueId = String(details.queueId || previousBinding.queueId || "");
     const queueName = this.cleanDisplayValue(details.queueName) || previousBinding.queueName || (queueId ? this.queueDirectory.get(queueId)?.name : "") || "";
 
@@ -2249,8 +2279,12 @@ Call History</div>
     const eventState = String(override.currentState || "").toLowerCase();
     const snapshotState = String(baseAgent.state || baseAgent.currentState || "");
 
-    // For custom idle codes, the Search snapshot often knows the readable label while the event
-    // only carries idleCodeId. Preserve the readable terminal label, but never preserve busy states.
+    // v47: terminal realtime events are always authoritative. A stale Search snapshot must
+    // never render Wrapup/Meeting/Connected after an available/wrapup-done event was received.
+    if (eventState === "available" || eventState === "wrapup-done") return "Available";
+
+    // For custom idle codes, Search may know the readable idle label. Preserve only terminal
+    // labels; never preserve a busy snapshot over an idle event.
     if (eventState === "idle") {
       if (this.isSnapshotTerminalAgentState(snapshotState) && snapshotState.toLowerCase() !== "available") {
         return snapshotState;
@@ -2267,9 +2301,18 @@ Call History</div>
     const byId = new Map();
 
     snapshotAgents.forEach(agent => {
-      const agentId = String(agent.agentId || agent.id || agent.userId || "");
+      const agentId = this.resolveAgentId(agent);
       if (!agentId) return;
-      byId.set(agentId, { ...agent, agentId });
+      const directory = this.agentDirectory.get(agentId) || {};
+      byId.set(agentId, {
+        ...directory,
+        ...agent,
+        agentId,
+        id: agentId,
+        name: this.cleanDisplayValue(agent.name || agent.agentName || agent.displayName) || directory.name || directory.login || agentId,
+        team: this.cleanDisplayValue(agent.team || agent.teamName) || directory.team || "",
+        teamId: agent.teamId || directory.teamId || ""
+      });
     });
 
     for (const [agentId, directory] of this.agentDirectory.entries()) {
@@ -2288,6 +2331,26 @@ Call History</div>
       }
     }
 
+    // v47: include every fresh event-authoritative agent even when the Search snapshot has
+    // not yet returned the agent row after a WXCC Desktop widget recreation.
+    for (const [agentId, override] of this.agentStateEventCache.entries()) {
+      const ageMs = now - Number(override.receivedAtMs || 0);
+      if (!Number.isFinite(ageMs) || ageMs > this.agentStateEventTtlMs) continue;
+      if (!byId.has(agentId)) {
+        byId.set(agentId, {
+          agentId,
+          id: agentId,
+          name: this.getAgentNameById(agentId) || agentId,
+          login: "",
+          team: "",
+          teamId: "",
+          state: "Unknown",
+          startTime: Number(override.createdTime || now),
+          lastActivityTime: Number(override.createdTime || now)
+        });
+      }
+    }
+
     let applied = 0;
     for (const [agentId, agent] of byId.entries()) {
       const override = this.agentStateEventCache.get(agentId);
@@ -2297,12 +2360,20 @@ Call History</div>
         this.agentStateEventCache.delete(agentId);
         continue;
       }
+      const sourceState = String(agent.state || agent.currentState || "");
       agent.state = this.getDeterministicDisplayStateForAgent(agentId, agent, override);
       agent.currentState = override.currentState;
       agent.taskId = override.taskId || agent.taskId || "";
       agent.queueId = override.queueId || agent.queueId || "";
-      agent.eventAuthority = { applied: true, ageMs, eventState: override.currentState, taskId: override.taskId || "" };
-      if (!agent.name) agent.name = this.getAgentNameById(agentId) || agent.login || agentId;
+      agent.name = this.cleanDisplayValue(agent.name) || this.getAgentNameById(agentId) || agent.login || agentId;
+      agent.eventAuthority = {
+        applied: true,
+        ageMs,
+        eventState: override.currentState,
+        displayState: override.displayState,
+        sourceState,
+        taskId: override.taskId || ""
+      };
       applied += 1;
     }
 
@@ -2312,7 +2383,7 @@ Call History</div>
       available: rows.filter(agent => String(agent.state || "").toLowerCase() === "available").length,
       connected: rows.filter(agent => String(agent.state || "").toLowerCase() === "connected").length
     };
-    if (applied) this.addDiagLog("deterministic-agent-projection-built", { rows: rows.length, eventAuthorityApplied: applied });
+    this.addDiagLog("deterministic-agent-projection-built", { rows: rows.length, eventAuthorityApplied: applied });
     return { rows, agentsSummary };
   }
 
@@ -2604,7 +2675,7 @@ Call History</div>
     let ignoredOlderSnapshot = 0;
 
     for (const agent of agents) {
-      const agentId = String(agent.agentId || agent.id || agent.userId || "");
+      const agentId = this.resolveAgentId(agent);
       if (!agentId) continue;
       const override = this.agentStateEventCache.get(agentId);
       if (!override) continue;
@@ -3310,7 +3381,13 @@ Call History</div>
   }
 
   renderActiveCalls(calls) {
-    calls = (Array.isArray(calls) ? calls : []).map(call => this.enrichActiveCallDeterministically(call));
+    calls = (Array.isArray(calls) ? calls : []).map(call => {
+      const enriched = this.enrichActiveCallDeterministically(call);
+      if (!this.cleanDisplayValue(enriched.agent) && enriched.agentId) {
+        enriched.agent = this.getAgentNameById(enriched.agentId) || "";
+      }
+      return enriched;
+    });
     const list = this.shadowRoot.getElementById("activeCallList");
     list.innerHTML = `
       <div class="call-row active call-header">
@@ -3391,6 +3468,38 @@ Call History</div>
     return snapshot;
   }
 
+  projectAgentsForRender(agents = []) {
+    const now = Date.now();
+    const projected = (Array.isArray(agents) ? agents : []).map(agent => {
+      const agentId = this.resolveAgentId(agent);
+      if (!agentId) return { ...agent };
+      const override = this.agentStateEventCache.get(agentId);
+      if (!override) return { ...agent };
+      const ageMs = now - Number(override.receivedAtMs || 0);
+      if (!Number.isFinite(ageMs) || ageMs > this.agentStateEventTtlMs) return { ...agent };
+      return {
+        ...agent,
+        agentId,
+        id: agentId,
+        name: this.cleanDisplayValue(agent.name) || this.getAgentNameById(agentId) || agent.login || agentId,
+        state: this.getDeterministicDisplayStateForAgent(agentId, agent, override),
+        currentState: override.currentState,
+        taskId: override.taskId || agent.taskId || "",
+        eventAuthority: { applied: true, finalRender: true, eventState: override.currentState, ageMs }
+      };
+    });
+    return projected;
+  }
+
+  getRenderedAgentSummary(agents = []) {
+    const rows = Array.isArray(agents) ? agents : [];
+    return {
+      loggedIn: rows.length,
+      available: rows.filter(agent => String(agent.state || "").toLowerCase() === "available").length,
+      connected: rows.filter(agent => String(agent.state || "").toLowerCase() === "connected").length
+    };
+  }
+
   safeSetText(id, value) {
     const el = this.shadowRoot?.getElementById(id);
     if (el) el.textContent = value == null ? "" : String(value);
@@ -3451,7 +3560,19 @@ Call History</div>
       </div>
     `;
 
-    const agents = Array.isArray(data.agentList) ? data.agentList : [];
+    const agents = this.projectAgentsForRender(Array.isArray(data.agentList) ? data.agentList : []);
+    const renderedAgentSummary = this.getRenderedAgentSummary(agents);
+    this.safeSetText("kpiLoggedIn", renderedAgentSummary.loggedIn);
+    this.safeSetText("kpiAvailable", renderedAgentSummary.available);
+    this.addDiagLog("agent-render-final-projection", {
+      rows: agents.length,
+      first: agents[0] ? {
+        agentId: agents[0].agentId || agents[0].id || "",
+        name: agents[0].name || agents[0].login || "",
+        state: agents[0].state || "",
+        eventAuthority: agents[0].eventAuthority || null
+      } : null
+    });
 
     if (!agents.length) {
       const row = document.createElement("div");

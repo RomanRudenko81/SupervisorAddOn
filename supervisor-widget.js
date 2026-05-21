@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-v42-event-state-authority-2026-05-21";
+const FRONTEND_BUILD_ID = "wxcc-widget-v43-deterministic-state-authority-2026-05-21";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -36,15 +36,19 @@ class SupervisorAccessWidget extends HTMLElement {
     this.diagRemoteQueue = [];
     this.diagRemoteFlushHandle = null;
     this.diagHeartbeatHandle = null;
-    this.diagStorageKey = "wxccSupervisorWidgetDiagLogV42";
-    this.diagQueueStorageKey = "wxccSupervisorWidgetDiagQueueV42";
-    this.activeCallPersistenceKey = "wxccSupervisorWidgetActiveCallsV42";
+    this.diagStorageKey = "wxccSupervisorWidgetDiagLogV43";
+    this.diagQueueStorageKey = "wxccSupervisorWidgetDiagQueueV43";
+    this.activeCallPersistenceKey = "wxccSupervisorWidgetActiveCallsV43";
     this.activeCallEvictionDelayMs = 30000;
     this.activeCallPersistenceTtlMs = 600000;
     this.agentStateEventCache = new Map();
-    this.agentStatePersistenceKey = "wxccSupervisorWidgetAgentStatesV42";
+    this.agentStatePersistenceKey = "wxccSupervisorWidgetAgentStatesV43";
     this.agentStateEventTtlMs = 120000;
     this.agentSnapshotStaleRejectMs = 90000;
+    this.agentDirectory = new Map();
+    this.taskOwnershipMap = new Map();
+    this.queueDirectory = new Map();
+    this.taskOwnershipTtlMs = 600000;
     this.techDiagnosticsInstalled = false;
     this.windowErrorHandler = null;
     this.windowRejectionHandler = null;
@@ -1882,7 +1886,7 @@ Call History</div>
       return;
     }
 
-    calls.forEach(call => {
+    calls.map(call => this.enrichActiveCallDeterministically(call)).forEach(call => {
       const row = document.createElement("div");
       row.className = "call-row";
       row.innerHTML = `
@@ -1895,6 +1899,187 @@ Call History</div>
       `;
       list.appendChild(row);
     });
+  }
+
+
+  updateDeterministicDirectories(snapshot = {}) {
+    const now = Date.now();
+    const agents = Array.isArray(snapshot.agentList) ? snapshot.agentList : [];
+    const calls = [];
+    if (Array.isArray(snapshot.taskList)) calls.push(...snapshot.taskList);
+    if (Array.isArray(snapshot.waitingTaskList)) calls.push(...snapshot.waitingTaskList);
+    if (Array.isArray(snapshot.callHistoryList)) calls.push(...snapshot.callHistoryList);
+
+    agents.forEach(agent => {
+      const agentId = String(agent.agentId || agent.id || agent.userId || "");
+      if (!agentId) return;
+      const previous = this.agentDirectory.get(agentId) || {};
+      this.agentDirectory.set(agentId, {
+        ...previous,
+        agentId,
+        name: agent.name || agent.agentName || agent.displayName || agent.login || previous.name || "",
+        login: agent.login || previous.login || "",
+        team: agent.team || agent.teamName || previous.team || "",
+        teamId: agent.teamId || previous.teamId || "",
+        lastSeenMs: now
+      });
+    });
+
+    calls.forEach(call => {
+      const taskId = String(call.id || call.taskId || "");
+      const agentId = String(call.agentId || call.lastAgentId || call.lastAgent?.id || "");
+      const queueId = String(call.queueId || call.firstQueueId || call.lastQueueId || call.lastQueue?.id || "");
+      const queueName = this.getCallQueueName(call) || call.lastQueue?.name || "";
+
+      if (queueId && queueName && queueName !== "-") {
+        this.queueDirectory.set(queueId, { id: queueId, name: queueName, lastSeenMs: now });
+      }
+      if (!taskId) return;
+
+      const previous = this.taskOwnershipMap.get(taskId) || {};
+      this.taskOwnershipMap.set(taskId, {
+        ...previous,
+        taskId,
+        agentId: agentId || previous.agentId || "",
+        queueId: queueId || previous.queueId || "",
+        queueName: queueName || previous.queueName || "",
+        caller: call.caller || call.origin || previous.caller || "",
+        destination: call.destination || previous.destination || "",
+        updatedAtMs: now
+      });
+    });
+
+    this.pruneTaskOwnershipMap(now);
+  }
+
+  pruneTaskOwnershipMap(now = Date.now()) {
+    for (const [taskId, row] of this.taskOwnershipMap.entries()) {
+      if (Number(row.updatedAtMs || 0) && now - Number(row.updatedAtMs || 0) > this.taskOwnershipTtlMs) {
+        this.taskOwnershipMap.delete(taskId);
+      }
+    }
+  }
+
+  getAgentNameById(agentId) {
+    const row = this.agentDirectory.get(String(agentId || ""));
+    return row?.name || row?.login || "";
+  }
+
+  rememberRelationalStateFromWxccEvent(details = {}) {
+    try {
+      const normalized = this.normalizeWxccEventBody(this.extractWxccEventBody(details));
+      const data = normalized.data || {};
+      const type = String(normalized.type || "");
+      const now = Date.now();
+      const taskId = String(data.taskId || data.interactionId || data.contactId || data.contactSessionId || data.id || "");
+      const agentId = String(data.agentId || data.ownerId || data.userId || "");
+      const queueId = String(data.queueId || data.firstQueueId || data.lastQueueId || "");
+      const queueName = String(data.queueName || data.firstQueueName || data.lastQueueName || "");
+
+      if (queueId && queueName) this.queueDirectory.set(queueId, { id: queueId, name: queueName, lastSeenMs: now });
+      if (!taskId) return;
+
+      const previous = this.taskOwnershipMap.get(taskId) || {};
+      this.taskOwnershipMap.set(taskId, {
+        ...previous,
+        taskId,
+        agentId: agentId || previous.agentId || "",
+        queueId: queueId || previous.queueId || "",
+        queueName: queueName || previous.queueName || "",
+        caller: data.origin || data.from || data.ani || data.caller || previous.caller || "",
+        destination: data.destination || data.to || data.dnis || previous.destination || "",
+        eventType: type || previous.eventType || "",
+        eventState: data.currentState || data.state || previous.eventState || "",
+        updatedAtMs: now
+      });
+
+      this.addDiagLog("deterministic-task-binding-updated", {
+        taskId,
+        agentId: agentId || previous.agentId || "",
+        queueId: queueId || previous.queueId || "",
+        type
+      });
+    } catch (err) {
+      this.addDiagLog("deterministic-task-binding-failed", { message: err.message });
+    }
+  }
+
+  enrichActiveCallDeterministically(call = {}) {
+    const id = String(call.id || call.taskId || "");
+    const binding = this.taskOwnershipMap.get(id) || {};
+    const agentId = String(call.agentId || binding.agentId || call.lastAgent?.id || "");
+    const queueId = String(call.queueId || binding.queueId || call.firstQueueId || call.lastQueue?.id || "");
+    const queueNameFromId = queueId ? this.queueDirectory.get(queueId)?.name : "";
+    const agentName = call.agent || call.agentName || call.lastAgent?.name || this.getAgentNameById(agentId) || "";
+    const queueName = this.getCallQueueName(call) || binding.queueName || queueNameFromId || "";
+
+    return {
+      ...call,
+      id: id || call.id,
+      taskId: id || call.taskId,
+      agentId,
+      queueId,
+      queue: queueName || call.queue || call.queueName || "",
+      caller: call.caller || call.origin || binding.caller || "",
+      destination: call.destination || binding.destination || "",
+      agent: agentName || call.agent || "",
+      deterministicEnriched: true
+    };
+  }
+
+  buildAuthoritativeAgents(snapshot = {}) {
+    const now = Date.now();
+    const snapshotAgents = Array.isArray(snapshot.agentList) ? snapshot.agentList : [];
+    const byId = new Map();
+
+    snapshotAgents.forEach(agent => {
+      const agentId = String(agent.agentId || agent.id || agent.userId || "");
+      if (!agentId) return;
+      byId.set(agentId, { ...agent, agentId });
+    });
+
+    for (const [agentId, directory] of this.agentDirectory.entries()) {
+      if (!byId.has(agentId)) {
+        byId.set(agentId, {
+          agentId,
+          id: agentId,
+          name: directory.name || directory.login || agentId,
+          login: directory.login || "",
+          team: directory.team || "",
+          teamId: directory.teamId || "",
+          state: "Unknown",
+          startTime: now,
+          lastActivityTime: now
+        });
+      }
+    }
+
+    let applied = 0;
+    for (const [agentId, agent] of byId.entries()) {
+      const override = this.agentStateEventCache.get(agentId);
+      if (!override) continue;
+      const ageMs = now - Number(override.receivedAtMs || 0);
+      if (!Number.isFinite(ageMs) || ageMs > this.agentStateEventTtlMs) {
+        this.agentStateEventCache.delete(agentId);
+        continue;
+      }
+      agent.state = override.displayState;
+      agent.currentState = override.currentState;
+      agent.taskId = override.taskId || agent.taskId || "";
+      agent.queueId = override.queueId || agent.queueId || "";
+      agent.eventAuthority = { applied: true, ageMs, eventState: override.currentState, taskId: override.taskId || "" };
+      if (!agent.name) agent.name = this.getAgentNameById(agentId) || agent.login || agentId;
+      applied += 1;
+    }
+
+    const rows = Array.from(byId.values()).sort((a, b) => String(a.name || a.login || "").localeCompare(String(b.name || b.login || "")));
+    const agentsSummary = {
+      loggedIn: rows.length,
+      available: rows.filter(agent => String(agent.state || "").toLowerCase() === "available").length,
+      connected: rows.filter(agent => String(agent.state || "").toLowerCase() === "connected").length
+    };
+    if (applied) this.addDiagLog("deterministic-agent-projection-built", { rows: rows.length, eventAuthorityApplied: applied });
+    return { rows, agentsSummary };
   }
 
 
@@ -2047,11 +2232,8 @@ Call History</div>
         continue;
       }
 
-      const snapshotActivity = Number(agent.lastActivityTime || agent.startTime || 0);
-      const eventCreated = Number(override.createdTime || 0);
-      const snapshotLooksNewer = snapshotActivity && eventCreated && snapshotActivity > eventCreated + this.agentSnapshotStaleRejectMs;
-      if (snapshotLooksNewer) continue;
-
+      // v43: Events are authoritative for realtime states. Search snapshots are allowed
+      // to enrich name/team metadata, but never to roll back a fresh event state.
       const sourceState = String(agent.state || "");
       if (sourceState !== override.displayState) ignoredOlderSnapshot += 1;
       agent.state = override.displayState;
@@ -2089,28 +2271,33 @@ Call History</div>
       const type = String(normalized.type || "");
       const taskId = String(data.taskId || data.interactionId || data.contactId || data.contactSessionId || data.id || "");
       const agentId = String(data.agentId || data.ownerId || data.userId || "");
-      if (type !== "agent:state_change" || (!taskId && !agentId)) return;
+      if (!taskId && !agentId) return;
 
       const now = Date.now();
       const id = taskId || `agent-${agentId}`;
+      const isActiveEvent =
+        type === "task:connect" ||
+        (type === "agent:state_change" && ["ringing", "connected"].includes(state));
 
-      if (state === "connected") {
+      if (isActiveEvent) {
         const previous = this.activeCallRenderCache.get(id) || {};
         const startMs = Number(previous.localStartMs || data.connectedTime || data.createdTime || now);
-        const row = {
+        const binding = this.taskOwnershipMap.get(taskId) || {};
+        const row = this.enrichActiveCallDeterministically({
           ...previous,
           id,
           taskId: taskId || id,
           status: "connected",
           reconstructed: true,
-          reconstructedSource: "frontend-wxcc-event-cache",
-          caller: data.origin || data.from || data.ani || data.caller || previous.caller || "",
-          destination: data.destination || data.to || data.dnis || previous.destination || "",
-          queue: data.queueName || data.lastQueueName || previous.queue || "",
+          reconstructedSource: type === "task:connect" ? "frontend-task-connect-event-cache" : "frontend-agent-state-event-cache",
+          caller: data.origin || data.from || data.ani || data.caller || previous.caller || binding.caller || "",
+          destination: data.destination || data.to || data.dnis || previous.destination || binding.destination || "",
+          queueId: data.queueId || previous.queueId || binding.queueId || "",
+          queue: data.queueName || data.lastQueueName || previous.queue || binding.queueName || "",
           firstQueue: data.firstQueueName || previous.firstQueue || "",
           entryPoint: data.entryPointName || previous.entryPoint || "",
-          agent: data.agentName || data.agentDisplayName || previous.agent || "",
-          agentId,
+          agent: data.agentName || data.agentDisplayName || previous.agent || this.getAgentNameById(agentId || binding.agentId) || "",
+          agentId: agentId || previous.agentId || binding.agentId || "",
           createdTime: previous.createdTime || data.createdTime || now,
           connectedStartTime: previous.connectedStartTime || data.connectedTime || data.createdTime || now,
           handleBaseTimestamp: now,
@@ -2118,15 +2305,15 @@ Call History</div>
           localStartMs: startMs,
           localLastSeenMs: now,
           pendingEvictionAtMs: 0
-        };
+        });
         this.activeCallRenderCache.set(id, row);
         this.persistActiveCalls();
-        this.addDiagLog("frontend-active-call-event-connected", { id, agentId, cacheSize: this.activeCallRenderCache.size });
+        this.addDiagLog("frontend-active-call-event-connected", { id, agentId: row.agentId || agentId, cacheSize: this.activeCallRenderCache.size, type, state });
         if (this.lastWallboardData) this.processWallboardData(this.lastWallboardData);
         return;
       }
 
-      if (["available", "idle", "wrapup", "wrapup-done", "ended", "terminated", "disconnected"].includes(state)) {
+      if (type === "agent:state_change" && ["available", "idle", "wrapup", "wrapup-done", "ended", "terminated", "disconnected"].includes(state)) {
         const mark = call => {
           call.pendingEvictionAtMs = now + this.activeCallEvictionDelayMs;
           call.localLastSeenMs = now;
@@ -2164,14 +2351,14 @@ Call History</div>
         localStartMs = now - Math.max(0, incomingSeconds) * 1000;
       }
 
-      next.set(id, {
+      next.set(id, this.enrichActiveCallDeterministically({
         ...previous,
         ...call,
         id,
         localStartMs,
         localLastSeenMs: now,
         pendingEvictionAtMs: 0
-      });
+      }));
     });
 
     // v41: delayed eviction + widget recreation persistence.
@@ -2186,13 +2373,13 @@ Call History</div>
       const keepBecauseReconstructed = previous.reconstructed === true && lastSeen && now - lastSeen < this.activeCallEvictionDelayMs;
 
       if (keepBecauseDelayedEviction || keepBecauseTransientEmpty || keepBecauseReconstructed) {
-        next.set(id, {
+        next.set(id, this.enrichActiveCallDeterministically({
           ...previous,
           status: "connected",
           reconstructed: previous.reconstructed === true || incoming.length === 0,
           reconstructedSource: previous.reconstructedSource || "frontend-delayed-eviction",
           localLastSeenMs: lastSeen || now
-        });
+        }));
       }
     }
 
@@ -2713,6 +2900,7 @@ Call History</div>
   }
 
   renderActiveCalls(calls) {
+    calls = (Array.isArray(calls) ? calls : []).map(call => this.enrichActiveCallDeterministically(call));
     const list = this.shadowRoot.getElementById("activeCallList");
     list.innerHTML = `
       <div class="call-row active call-header">
@@ -2779,7 +2967,15 @@ Call History</div>
     snapshot.waitingTaskList = Array.isArray(snapshot.waitingTaskList) ? snapshot.waitingTaskList : [];
     snapshot.agentList = incomingAgents;
     snapshot.agents = snapshot.agents || {};
+    this.updateDeterministicDirectories(snapshot);
     this.applyAgentStateAuthority(snapshot);
+    const projection = this.buildAuthoritativeAgents(snapshot);
+    snapshot.agentList = projection.rows;
+    snapshot.agents = { ...snapshot.agents, ...projection.agentsSummary };
+    snapshot.taskList = snapshot.taskList.map(call => this.enrichActiveCallDeterministically(call));
+    snapshot.waitingTaskList = snapshot.waitingTaskList.map(call => this.enrichActiveCallDeterministically(call));
+    snapshot.callHistoryList = (Array.isArray(snapshot.callHistoryList) ? snapshot.callHistoryList : []).map(call => this.enrichActiveCallDeterministically(call));
+    snapshot.deterministicStateAuthority = true;
     this.lastNonEmptyWallboardTs = now;
     return snapshot;
   }
@@ -3039,6 +3235,7 @@ Call History</div>
       let details = {};
       try { details = JSON.parse(event.data || "{}"); } catch {}
       this.addDiagLog("sse-wxcc-event", details);
+      this.rememberRelationalStateFromWxccEvent(details);
       this.rememberAgentStateFromWxccEvent(details);
       this.rememberActiveCallFromWxccEvent(details);
       this.setWallboardStatus("WXCC event received. Refreshing...");

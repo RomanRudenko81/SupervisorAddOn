@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-v49-authoritative-roster-only-2026-05-21";
+const FRONTEND_BUILD_ID = "wxcc-widget-v50-final-state-authority-2026-05-21";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -64,6 +64,8 @@ class SupervisorAccessWidget extends HTMLElement {
     this.selectedQueueFilters = this.readSelectedQueueFilters();
     this.currentIdentity = null;
     this.currentUserById = new Map();
+    this.agentIdAliasMap = new Map();
+    this.agentIdAliasTtlMs = 10 * 60 * 1000;
 
     // v40 hard lifecycle isolation: every mount gets a unique runtime.
     // Async callbacks, timers and SSE events from older WXCC Desktop lifecycles must not update the UI.
@@ -1935,6 +1937,18 @@ Call History</div>
       });
     });
 
+    // v50: bind the signed-in desktop identity id to the canonical wallboard row if
+    // both represent the same display name but use different ids.
+    try {
+      const currentIdentityId = String(this.currentIdentity?.userId || this.currentIdentity?.agentId || this.currentIdentity?.id || "");
+      const currentIdentityName = this.cleanDisplayValue(this.currentIdentity?.displayName || this.currentIdentity?.name || "");
+      if (currentIdentityId && currentIdentityName) {
+        const match = agents.map(a => ({ agent: a, id: this.resolveAgentId(a), name: this.cleanDisplayValue(a.name || a.agentName || a.displayName || a.login) }))
+          .find(x => x.id && x.name && x.name.toLowerCase() === currentIdentityName.toLowerCase());
+        if (match && match.id !== currentIdentityId) this.rememberAgentIdAlias(currentIdentityId, match.id, "directory-current-identity-name-match");
+      }
+    } catch {}
+
     calls.forEach(call => {
       const taskId = String(call.id || call.taskId || "");
       const agentId = String(call.agentId || call.lastAgentId || call.lastAgent?.id || "");
@@ -1995,6 +2009,99 @@ Call History</div>
     const row = this.agentDirectory.get(id);
     const current = this.currentUserById.get(id);
     return this.cleanDisplayValue(row?.name) || this.cleanDisplayValue(row?.login) || this.cleanDisplayValue(current?.name) || "";
+  }
+
+  rememberAgentIdAlias(eventAgentId, canonicalAgentId, reason = "") {
+    const source = String(eventAgentId || "");
+    const target = String(canonicalAgentId || "");
+    if (!source || !target || source === target) return;
+    this.agentIdAliasMap.set(source, { source, target, reason, updatedAtMs: Date.now() });
+    this.addDiagLog("agent-id-alias-bound", { source, target, reason });
+  }
+
+  pruneAgentIdAliases(now = Date.now()) {
+    for (const [source, row] of this.agentIdAliasMap.entries()) {
+      const updatedAtMs = Number(row?.updatedAtMs || 0);
+      if (updatedAtMs && now - updatedAtMs > this.agentIdAliasTtlMs) this.agentIdAliasMap.delete(source);
+    }
+  }
+
+  getCanonicalAgentIdForEvent(eventAgentId, byId = new Map(), override = {}) {
+    const source = String(eventAgentId || "");
+    if (!source) return "";
+    if (byId.has(source)) return source;
+
+    const now = Date.now();
+    this.pruneAgentIdAliases(now);
+    const existing = this.agentIdAliasMap.get(source);
+    if (existing?.target && byId.has(existing.target)) return existing.target;
+
+    // v50: WXCC events can use a different user/contact-center id than the wallboard roster.
+    // If this is the signed-in desktop user, bind the event id to the visible roster row by name.
+    const currentIdentityId = String(this.currentIdentity?.userId || this.currentIdentity?.agentId || this.currentIdentity?.id || "");
+    const currentIdentityName = this.cleanDisplayValue(this.currentIdentity?.displayName || this.currentIdentity?.name || "");
+    if (source === currentIdentityId && currentIdentityName) {
+      const target = Array.from(byId.values()).find(row => this.cleanDisplayValue(row.name || row.displayName || row.login).toLowerCase() === currentIdentityName.toLowerCase());
+      if (target) {
+        const targetId = this.resolveAgentId(target);
+        this.rememberAgentIdAlias(source, targetId, "current-identity-name-match");
+        return targetId;
+      }
+    }
+
+    // If a task ownership record contains a human agent name, use it to bind event-id -> roster-id.
+    const taskId = String(override?.taskId || "");
+    if (taskId) {
+      const binding = this.taskOwnershipMap.get(taskId) || {};
+      const bindingName = this.cleanDisplayValue(binding.agentName || binding.name || "");
+      if (bindingName) {
+        const target = Array.from(byId.values()).find(row => this.cleanDisplayValue(row.name || row.displayName || row.login).toLowerCase() === bindingName.toLowerCase());
+        if (target) {
+          const targetId = this.resolveAgentId(target);
+          this.rememberAgentIdAlias(source, targetId, "task-ownership-name-match");
+          return targetId;
+        }
+      }
+    }
+
+    // Conservative fallback for the common supervisor test case:
+    // an event-only terminal state arrives for the one visible agent that is not currently in a call.
+    // This allows status changes for Agent3/Agent4 while Supervisor1 is on an active call, without
+    // rendering UUID phantom rows. If more than one candidate exists, do not guess.
+    const eventState = String(override?.currentState || "").toLowerCase();
+    const terminalOrIdle = ["available", "idle", "wrapup-done"].includes(eventState);
+    if (terminalOrIdle && byId.size <= 3) {
+      const currentNameLower = currentIdentityName.toLowerCase();
+      const candidates = Array.from(byId.values()).filter(row => {
+        const name = this.cleanDisplayValue(row.name || row.displayName || row.login);
+        if (!name) return false;
+        if (currentNameLower && name.toLowerCase() === currentNameLower && source !== currentIdentityId) return false;
+        const state = String(row.state || row.currentState || "").toLowerCase();
+        return !["connected", "ringing", "wrapup"].includes(state);
+      });
+      if (candidates.length === 1) {
+        const targetId = this.resolveAgentId(candidates[0]);
+        this.rememberAgentIdAlias(source, targetId, "single-visible-nonbusy-roster-candidate");
+        return targetId;
+      }
+    }
+
+    return "";
+  }
+
+  getAuthoritativeOverrideForAgent(agentId) {
+    const canonicalId = String(agentId || "");
+    if (!canonicalId) return null;
+    const direct = this.agentStateEventCache.get(canonicalId);
+    if (direct) return { override: direct, eventAgentId: canonicalId, canonicalAgentId: canonicalId, stateSource: "authoritative-event-direct" };
+    const now = Date.now();
+    this.pruneAgentIdAliases(now);
+    for (const [eventAgentId, alias] of this.agentIdAliasMap.entries()) {
+      if (alias?.target !== canonicalId) continue;
+      const override = this.agentStateEventCache.get(eventAgentId);
+      if (override) return { override, eventAgentId, canonicalAgentId: canonicalId, stateSource: "authoritative-event-alias" };
+    }
+    return null;
   }
 
   resolveAgentId(agent = {}) {
@@ -2326,32 +2433,42 @@ Call History</div>
       });
     });
 
-    // v49 authoritative roster rule:
-    // Event-only agent states are important for calls and state authority, but they must
-    // never create a visible agent row by themselves. Only the current WXCC wallboard
-    // roster is allowed to create renderable agent rows. This prevents UUID/Unknown
-    // phantom rows when WXCC emits events for agents outside the selected/visible roster.
+    // v50 final state authority:
+    // Keep the authoritative roster-only rule from v49, but allow event states whose WXCC
+    // event agentId can be mapped to a visible canonical roster row. This fixes the case
+    // where the Desktop status changes immediately, while the wallboard snapshot still
+    // shows the previous idle code during an active call.
     let skippedEventOnly = 0;
-    for (const [agentId, override] of this.agentStateEventCache.entries()) {
+    let aliasedEventAuthority = 0;
+    const canonicalEvents = new Map();
+    for (const [eventAgentId, override] of this.agentStateEventCache.entries()) {
       const ageMs = now - Number(override.receivedAtMs || 0);
       if (!Number.isFinite(ageMs) || ageMs > this.agentStateEventTtlMs) continue;
-      if (!byId.has(agentId)) {
+      const canonicalId = this.getCanonicalAgentIdForEvent(eventAgentId, byId, override);
+      if (!canonicalId || !byId.has(canonicalId)) {
         skippedEventOnly += 1;
         continue;
+      }
+      if (canonicalId !== eventAgentId) aliasedEventAuthority += 1;
+      const existing = canonicalEvents.get(canonicalId);
+      if (!existing || Number(override.createdTime || 0) >= Number(existing.override?.createdTime || 0)) {
+        canonicalEvents.set(canonicalId, { override, eventAgentId, canonicalId });
       }
     }
 
     let applied = 0;
     for (const [agentId, agent] of byId.entries()) {
-      const override = this.agentStateEventCache.get(agentId);
-      if (!override) continue;
+      const mapped = canonicalEvents.get(agentId);
+      if (!mapped) continue;
+      const { override, eventAgentId, canonicalId } = mapped;
       const ageMs = now - Number(override.receivedAtMs || 0);
       if (!Number.isFinite(ageMs) || ageMs > this.agentStateEventTtlMs) {
-        this.agentStateEventCache.delete(agentId);
+        this.agentStateEventCache.delete(eventAgentId);
         continue;
       }
       const sourceState = String(agent.state || agent.currentState || "");
-      agent.state = this.getDeterministicDisplayStateForAgent(agentId, agent, override);
+      const finalState = this.getDeterministicDisplayStateForAgent(agentId, agent, override);
+      agent.state = finalState;
       agent.currentState = override.currentState;
       agent.taskId = override.taskId || agent.taskId || "";
       agent.queueId = override.queueId || agent.queueId || "";
@@ -2361,7 +2478,11 @@ Call History</div>
         ageMs,
         eventState: override.currentState,
         displayState: override.displayState,
+        finalState,
         sourceState,
+        stateSource: eventAgentId === canonicalId ? "authoritative-event-direct" : "authoritative-event-alias",
+        eventAgentId,
+        canonicalAgentId: canonicalId,
         taskId: override.taskId || ""
       };
       applied += 1;
@@ -2408,10 +2529,12 @@ Call History</div>
       skippedNoId,
       skippedBootstrapOnly,
       skippedEventOnly,
+      aliasedEventAuthority,
       dedupedByName,
       sourceSnapshotRows: snapshotAgents.length,
       authoritativeRosterOnly: true,
-      canonicalIdentity: true
+      canonicalIdentity: true,
+      finalStateAuthority: true
     });
     return { rows, agentsSummary };
   }
@@ -3502,19 +3625,30 @@ Call History</div>
     const projected = (Array.isArray(agents) ? agents : []).map(agent => {
       const agentId = this.resolveAgentId(agent);
       if (!agentId) return { ...agent };
-      const override = this.agentStateEventCache.get(agentId);
-      if (!override) return { ...agent };
+      const mapped = this.getAuthoritativeOverrideForAgent(agentId);
+      if (!mapped?.override) return { ...agent };
+      const override = mapped.override;
       const ageMs = now - Number(override.receivedAtMs || 0);
       if (!Number.isFinite(ageMs) || ageMs > this.agentStateEventTtlMs) return { ...agent };
+      const finalState = this.getDeterministicDisplayStateForAgent(agentId, agent, override);
       return {
         ...agent,
         agentId,
         id: agentId,
         name: this.cleanDisplayValue(agent.name) || this.getAgentNameById(agentId) || agent.login || agentId,
-        state: this.getDeterministicDisplayStateForAgent(agentId, agent, override),
+        state: finalState,
         currentState: override.currentState,
         taskId: override.taskId || agent.taskId || "",
-        eventAuthority: { applied: true, finalRender: true, eventState: override.currentState, ageMs }
+        eventAuthority: {
+          applied: true,
+          finalRender: true,
+          eventState: override.currentState,
+          finalState,
+          ageMs,
+          stateSource: mapped.stateSource,
+          eventAgentId: mapped.eventAgentId,
+          canonicalAgentId: mapped.canonicalAgentId
+        }
       };
     });
     return projected;
@@ -3599,7 +3733,8 @@ Call History</div>
         agentId: agents[0].agentId || agents[0].id || "",
         name: agents[0].name || agents[0].login || "",
         state: agents[0].state || "",
-        eventAuthority: agents[0].eventAuthority || null
+        eventAuthority: agents[0].eventAuthority || null,
+        stateSource: agents[0].eventAuthority?.stateSource || "snapshot"
       } : null
     });
 

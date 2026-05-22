@@ -1,4282 +1,4417 @@
-import express from "express";
-import cors from "cors";
-import fetch from "node-fetch";
-import crypto from "crypto";
-import dotenv from "dotenv";
+const FRONTEND_BUILD_ID = "wxcc-widget-v58-stable-sse-isolated-kpis-2026-05-22";
+class SupervisorAccessWidget extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
 
-dotenv.config();
+    this.API_URL = "https://wxcc-backend.onrender.com";
+    this.ENTRY_POINT_ID = "284cd09a-eef4-40a2-82c6-53d08705e3e3";
 
-const app = express();
-app.use(express.json());
+    this.POLL_INTERVAL_MS = 5000;
+    this.WALLBOARD_POLL_INTERVAL_MS = 5000;
 
-const DEFAULT_ALLOWED_ORIGINS = [
-  "https://romanrudenko81.github.io",
-  "https://cdn.jsdelivr.net",
-  "https://desktop.wxcc-us1.cisco.com",
-  "https://desktop.wxcc-eu1.cisco.com",
-  "https://desktop.wxcc-eu2.cisco.com"
-];
+    this.sessionToken = null;
+    this.currentRole = "viewer";
+    this.isUpdating = false;
+    this.isBootstrapping = false;
+    this.pollHandle = null;
+    this.wallboardPollHandle = null;
+    this.wallboardEventSource = null;
+    this.wallboardReconnectHandle = null;
+    this.wallboardReconnectAttempt = 0;
+    this.wallboardPollFallbackHandle = null;
+    this.activeCallTimerHandle = null;
+    this.liveUiTimerHandle = null;
+    this.lastWallboardData = null;
+    this.activeCallRenderCache = new Map();
+    this.callHistoryRenderCache = [];
+    this.callHistoryCacheTs = 0;
+    this.lastNonEmptyCallHistory = [];
+    this.lastNonEmptyCallHistoryTs = 0;
+    this.lastNonEmptyWallboardTs = 0;
+    this.historyEndMismatchSinceTs = 0;
+    this.historyEndMismatchLastRefreshTs = 0;
+    this.historyEndWatchdogHandle = null;
+    this.diagLogEntries = [];
+    this.diagLogMax = 1200;
+    this.diagRemoteQueue = [];
+    this.diagRemoteFlushHandle = null;
+    this.diagHeartbeatHandle = null;
+    this.diagStorageKey = "wxccSupervisorWidgetDiagLogV47";
+    this.diagQueueStorageKey = "wxccSupervisorWidgetDiagQueueV47";
+    this.activeCallPersistenceKey = "wxccSupervisorWidgetActiveCallsV47";
+    this.activeCallEvictionDelayMs = 30000;
+    this.activeCallPersistenceTtlMs = 600000;
+    this.activeCallTerminalPersistenceKey = "wxccSupervisorWidgetActiveCallTerminalsV47";
+    this.activeCallTerminalCache = new Map();
+    this.activeCallTerminalTtlMs = 180000;
+    this.agentStateEventCache = new Map();
+    this.agentStatePersistenceKey = "wxccSupervisorWidgetAgentStatesV47";
+    this.agentStateEventTtlMs = 120000;
+    this.agentSnapshotStaleRejectMs = 90000;
+    this.agentDirectory = new Map();
+    this.taskOwnershipMap = new Map();
+    this.taskOwnershipPersistenceKey = "wxccSupervisorWidgetTaskOwnershipV47";
+    this.queueDirectory = new Map();
+    this.taskOwnershipTtlMs = 600000;
+    this.techDiagnosticsInstalled = false;
+    this.windowErrorHandler = null;
+    this.windowRejectionHandler = null;
+    this.consoleErrorOriginal = null;
+    this.diagLogVisible = false;
+    this.hasUnsavedChanges = false;
+    this.themeMode = localStorage.getItem("supervisorWidgetTheme") || "dark";
+    this.allowedQueueNames = [];
+    this.selectedQueueFilters = this.readSelectedQueueFilters();
+    this.currentIdentity = null;
+    this.currentUserById = new Map();
+    this.configCollapsedSessionKey = "wxccSupervisorWidgetConfigCollapsedV52";
+    this.callHistoryCollapsedSessionKey = "wxccSupervisorWidgetCallHistoryCollapsedV52";
+    this.agentIdAliasMap = new Map();
+    this.agentIdAliasTtlMs = 10 * 60 * 1000;
+    // v58: KPI/Analyzer polling is fully isolated from SSE/wallboard transport.
+    this.analyticsKpiPollHandle = null;
+    this.analyticsKpiLoading = false;
+    this.analyticsKpiIntervalMs = 30000;
+    this.analyticsKpiTimeoutMs = 8000;
+    this.analyticsKpiRangeStorageKey = "wxccSupervisorWidgetKpiRangeV58";
+    this.analyticsKpiRange = this.readAnalyticsKpiRange();
+    this.analyticsKpiData = null;
+    this.analyticsKpiError = "";
 
-const ENV_ALLOWED_ORIGINS = String(process.env.FRONTEND_ORIGIN || "")
-  .split(",")
-  .map(v => v.trim())
-  .filter(Boolean);
-
-const ALLOWED_CORS_ORIGINS = [...new Set([
-  ...DEFAULT_ALLOWED_ORIGINS,
-  ...ENV_ALLOWED_ORIGINS
-])];
-
-app.use(cors({
-  origin(origin, callback) {
-    if (!origin) return callback(null, true);
-    if (ALLOWED_CORS_ORIGINS.includes(origin)) return callback(null, true);
-    return callback(new Error(`CORS blocked for origin: ${origin}`));
-  },
-  methods: ["GET", "POST", "PUT", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-  credentials: false
-}));
-
-app.options("*", cors());
-
-const WEBEX_BASE_URL = process.env.WEBEX_BASE_URL || "https://api.wxcc-eu2.cisco.com";
-const WEBEX_ORG_ID = process.env.WEBEX_ORG_ID || "c2e0792b-e4ea-4025-b456-7edc6d1c92cb";
-const WEBEX_CLIENT_ID = process.env.WEBEX_CLIENT_ID;
-const WEBEX_CLIENT_SECRET = process.env.WEBEX_CLIENT_SECRET;
-const WEBEX_SERVICE_REFRESH_TOKEN = process.env.WEBEX_SERVICE_REFRESH_TOKEN;
-
-const ENTRY_POINT_ID = process.env.ENTRY_POINT_ID || "284cd09a-eef4-40a2-82c6-53d08705e3e3";
-const PORT = process.env.PORT || 3000;
-const BUILD_ID = "wxcc-widget-v58-stable-sse-isolated-kpis-2026-05-22";
-
-const widgetDiagLog = [];
-const WIDGET_DIAG_LOG_MAX = 2000;
-
-function addWidgetDiagLog(type, details = {}) {
-  const entry = { ts: Date.now(), iso: new Date().toISOString(), type, ...details };
-  widgetDiagLog.push(entry);
-  while (widgetDiagLog.length > WIDGET_DIAG_LOG_MAX) widgetDiagLog.shift();
-  return entry;
-}
-
-function summarizeWallboardPayloadForLog(payload = {}) {
-  const history = Array.isArray(payload?.callHistoryList) ? payload.callHistoryList : [];
-  return {
-    ok: payload?.ok,
-    stale: payload?.stale === true,
-    staleReason: payload?.staleReason || "",
-    lastError: payload?.lastError ? String(payload.lastError).slice(0, 500) : "",
-    agents: Array.isArray(payload?.agents) ? payload.agents.length : null,
-    agentList: Array.isArray(payload?.agentList) ? payload.agentList.length : null,
-    taskList: Array.isArray(payload?.taskList) ? payload.taskList.length : null,
-    waitingTaskList: Array.isArray(payload?.waitingTaskList) ? payload.waitingTaskList.length : null,
-    callHistoryList: history.length,
-    connectedHistory: history.filter(call => String(call.status || "").toLowerCase() === "connected").length
-  };
-}
-
-
-let lastGoodWallboardPayload = null;
-let lastGoodWallboardPayloadTs = 0;
-let lastWallboardBuildError = "";
-let wallboardFailureCount = 0;
-
-const SESSION_SECRET = process.env.SESSION_SECRET || "change-me";
-const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS || 28800000);
-
-const ALLOWED_TEAM_IDS = JSON.parse(process.env.ALLOWED_TEAM_IDS || "[]");
-
-const SUPERVISOR_EMAILS = new Set(
-  JSON.parse(process.env.SUPERVISOR_EMAILS || "[]").map(v => String(v).toLowerCase())
-);
-
-const SUPERVISOR_USER_IDS = new Set(
-  JSON.parse(process.env.SUPERVISOR_USER_IDS || "[]")
-);
-
-const sessions = new Map();
-
-let tokenStore = {
-  accessToken: null,
-  expiresAt: 0
-};
-
-let lastGoodEntryPointById = new Map();
-let lastEntryPointErrorById = new Map();
-
-function safeCompare(a, b) {
-  const aBuf = Buffer.from(a);
-  const bBuf = Buffer.from(b);
-  if (aBuf.length !== bBuf.length) return false;
-  return crypto.timingSafeEqual(aBuf, bBuf);
-}
-
-function signSession(payload) {
-  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
-  const sig = crypto
-    .createHmac("sha256", SESSION_SECRET)
-    .update(body)
-    .digest("base64url");
-
-  return `${body}.${sig}`;
-}
-
-function verifySession(token) {
-  if (!token || !token.includes(".")) return null;
-
-  const [body, sig] = token.split(".");
-
-  const expected = crypto
-    .createHmac("sha256", SESSION_SECRET)
-    .update(body)
-    .digest("base64url");
-
-  if (!safeCompare(sig, expected)) return null;
-
-  let payload;
-
-  try {
-    payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
-  } catch {
-    return null;
+    // v40 hard lifecycle isolation: every mount gets a unique runtime.
+    // Async callbacks, timers and SSE events from older WXCC Desktop lifecycles must not update the UI.
+    this.runtimeId = null;
+    this.isDisposed = false;
+    this.cleanupCallbacks = [];
+    this.visibilityChangeHandler = null;
+    this.pageHideHandler = null;
+    this.beforeUnloadHandler = null;
+    this.entryPointRetryTimer = null;
   }
 
-  if (!payload.sid || !sessions.has(payload.sid)) return null;
+  connectedCallback() {
+    this.runtimeId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    this.isDisposed = false;
+    this.cleanupCallbacks = [];
 
-  const stored = sessions.get(payload.sid);
-
-  if (!stored || stored.expiresAt < Date.now()) {
-    sessions.delete(payload.sid);
-    return null;
+    this.restorePersistentDiagnostics();
+    this.restorePersistentActiveCallTerminals();
+    this.restorePersistentTaskOwnership();
+    this.restorePersistentAgentStates();
+    this.restorePersistentActiveCalls();
+    this.installTechnicalDiagnostics();
+    this.startPersistentDiagHeartbeat();
+    this.addDiagLog("cold-start-after-disconnect", { runtimeId: this.runtimeId });
+    this.addDiagLog("widget-resume", { persistedEntries: (this.diagLogEntries || []).length, runtimeId: this.runtimeId });
+    const runtimeId = this.runtimeId;
+    this.safeSetTimeout(() => this.addDiagLog("widget-connected", {
+      frontendBuildId: FRONTEND_BUILD_ID,
+      userAgent: navigator.userAgent,
+      href: location.href,
+      runtimeId
+    }), 0, runtimeId);
+    this.render();
+    this.applyTheme();
+    this.applySessionCollapseState();
+    this.populateStaticOptions();
+    this.bindEvents();
+    this.init(runtimeId);
+    this.startRobustActiveCallTimer(runtimeId);
+    this.startLiveUiTimer(runtimeId);
+    this.startHistoryEndWatchdog(runtimeId);
   }
 
-  return stored;
-}
-
-function getSessionFromRequest(req) {
-  const auth = req.headers.authorization || "";
-  const bearerToken = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-  const queryToken = typeof req.query?.token === "string" ? req.query.token : "";
-  const token = bearerToken || queryToken;
-
-  return verifySession(token);
-}
-
-function requireSession(req, res, next) {
-  const session = getSessionFromRequest(req);
-
-  if (!session) {
-    return res.status(401).json({
-      error: "Invalid or expired session"
-    });
+  disconnectedCallback() {
+    this.addDiagLog("widget-disconnected", { reason: "disconnectedCallback", runtimeId: this.runtimeId });
+    this.hardLifecycleCleanup("disconnectedCallback");
   }
 
-  req.session = session;
-  next();
-}
-
-function requireWriteRole(req, res, next) {
-  if (!["supervisor", "admin"].includes(req.session.role)) {
-    return res.status(403).json({
-      error: "Write access denied"
-    });
+  isCurrentRuntime(runtimeId) {
+    return !this.isDisposed && runtimeId && runtimeId === this.runtimeId;
   }
 
-  next();
-}
-
-function getRole(user) {
-  const email = String(user.email || "").toLowerCase();
-  const userId = String(user.userId || "");
-  const teamId = String(user.teamId || "");
-
-  if (ALLOWED_TEAM_IDS.length && !ALLOWED_TEAM_IDS.includes(teamId)) {
-    return "denied";
-  }
-
-  if (SUPERVISOR_EMAILS.has(email) || SUPERVISOR_USER_IDS.has(userId)) {
-    return "supervisor";
-  }
-
-  return "viewer";
-}
-
-async function safeJson(response) {
-  const text = await response.text();
-
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${text}`);
-  }
-
-  return JSON.parse(text);
-}
-
-async function refreshServiceAccessToken() {
-  const response = await fetch("https://webexapis.com/v1/access_token", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded"
-    },
-    body: new URLSearchParams({
-      grant_type: "refresh_token",
-      client_id: WEBEX_CLIENT_ID,
-      client_secret: WEBEX_CLIENT_SECRET,
-      refresh_token: WEBEX_SERVICE_REFRESH_TOKEN
-    })
-  });
-
-  const data = await safeJson(response);
-
-  tokenStore.accessToken = data.access_token;
-  tokenStore.expiresAt = Date.now() + data.expires_in * 1000;
-
-  return tokenStore.accessToken;
-}
-
-async function getValidServiceToken() {
-  if (!tokenStore.accessToken || Date.now() >= tokenStore.expiresAt - 60000) {
-    return refreshServiceAccessToken();
-  }
-
-  return tokenStore.accessToken;
-}
-
-async function getEntryPoint(id) {
-  const token = await getValidServiceToken();
-
-  const response = await fetch(
-    `${WEBEX_BASE_URL}/organization/${WEBEX_ORG_ID}/entry-point/${id}`,
-    {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/json"
-      }
+  guardRuntime(runtimeId, eventName = "stale-runtime-ignored") {
+    const ok = this.isCurrentRuntime(runtimeId);
+    if (!ok) {
+      try { this.addDiagLog(eventName, { runtimeId, currentRuntimeId: this.runtimeId, disposed: this.isDisposed }); } catch {}
     }
-  );
-
-  return safeJson(response);
-}
-
-async function updateEntryPoint(id, payload) {
-  const token = await getValidServiceToken();
-
-  const response = await fetch(
-    `${WEBEX_BASE_URL}/organization/${WEBEX_ORG_ID}/entry-point/${id}`,
-    {
-      method: "PUT",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(payload)
-    }
-  );
-
-  return safeJson(response);
-}
-
-async function postSearchQuery(query, variables = {}, context = "search") {
-  const token = await getValidServiceToken();
-  const startedAt = Date.now();
-
-  const response = await fetch(`${WEBEX_BASE_URL}/search`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      Accept: "application/json"
-    },
-    body: JSON.stringify({ query, variables })
-  });
-
-  const text = await response.text();
-  const durationMs = Date.now() - startedAt;
-
-  if (!response.ok) {
-    const err = new Error(`WXCC search failed: ${response.status} ${response.statusText || ""}`.trim());
-    err.name = "WxccSearchError";
-    err.status = response.status;
-    err.statusText = response.statusText || "";
-    err.context = context;
-    err.durationMs = durationMs;
-    err.bodyPreview = String(text || "").slice(0, 1500);
-    err.variables = variables;
-
-    addWidgetDiagLog("wxcc-search-error", {
-      context,
-      status: err.status,
-      statusText: err.statusText,
-      durationMs,
-      bodyPreview: err.bodyPreview,
-      variables
-    });
-
-    throw err;
+    return ok;
   }
 
-  try {
-    return JSON.parse(text);
-  } catch (err) {
-    const parseErr = new Error(`WXCC search JSON parse failed: ${err.message}`);
-    parseErr.name = "WxccSearchJsonParseError";
-    parseErr.context = context;
-    parseErr.durationMs = durationMs;
-    parseErr.bodyPreview = String(text || "").slice(0, 1500);
-    throw parseErr;
+  safeSetTimeout(fn, delay, runtimeId = this.runtimeId) {
+    const handle = setTimeout(() => {
+      if (!this.guardRuntime(runtimeId)) return;
+      try { fn(); } catch (err) { this.addDiagLog("timer-exception", { error: this.serializeError(err), runtimeId }); }
+    }, delay);
+    this.cleanupCallbacks.push(() => clearTimeout(handle));
+    return handle;
   }
-}
 
-async function getAgentSessions() {
-  const now = Date.now();
+  safeSetInterval(fn, delay, runtimeId = this.runtimeId) {
+    const handle = setInterval(() => {
+      if (!this.guardRuntime(runtimeId)) return;
+      try { fn(); } catch (err) { this.addDiagLog("interval-exception", { error: this.serializeError(err), runtimeId }); }
+    }, delay);
+    this.cleanupCallbacks.push(() => clearInterval(handle));
+    return handle;
+  }
 
-  const result = await postSearchQuery(
-    `
-    query AgentSessionsWallboard($from: Long!, $to: Long!) {
-      agentSession(from: $from, to: $to) {
-        agentSessions {
-          isActive
-          agentId
-          agentName
-          agentSessionId
-          userLoginId
-          startTime
-          state
-          teamId
-          teamName
-          siteName
-          channelInfo {
-            channelType
-            currentState
-            idleCodeName
-            lastActivityTime
-          }
-        }
-      }
-    }
-    `,
-    {
-      from: now - 86400000,
-      to: now
-    },
-    "getAgentSessions"
-  );
-
-  return result?.data?.agentSession?.agentSessions || [];
-}
-
-async function getTaskDetails() {
-  const now = Date.now();
-
-  const taskBaseFields = `
-          id
-          status
-          channelType
-          createdTime
-          endedTime
-          origin
-          destination
-          direction
-          isActive
-          isContactHandled
-          isContactOffered
-          abandonedType
-          contactHandleType
-          queueDuration
-          connectedDuration
-          totalDuration
-          lastActivityTime
-          firstQueueId
-          firstQueueName
-          lastQueue { id name }
-          lastEntryPoint { id name }
-          lastTeam { id name }
-          lastAgent { id name }
-  `;
-
-  const wrapupVariants = [
-    { name: "wrapUpReason", fields: "wrapUpReason" },
-    { name: "wrapupReason", fields: "wrapupReason" },
-    { name: "wrapUpCodeName", fields: "wrapUpCodeName" },
-    { name: "wrapupCodeName", fields: "wrapupCodeName" },
-    { name: "wrapUpCode", fields: "wrapUpCode" },
-    { name: "wrapupCode", fields: "wrapupCode" },
-    { name: "wrapUpReasonName", fields: "wrapUpReasonName" },
-    { name: "wrapupReasonName", fields: "wrapupReasonName" },
-    { name: "wrapUpData", fields: "wrapUpData { id name }" },
-    { name: "wrapupData", fields: "wrapupData { id name }" },
-    { name: "wrapUp", fields: "wrapUp { id name }" },
-    { name: "wrapup", fields: "wrapup { id name }" },
-    { name: "base", fields: "" }
-  ];
-
-  const variables = { from: now - 86400000, to: now };
-
-  for (const variant of wrapupVariants) {
-    const query = `
-      query TaskDetailsWallboard($from: Long!, $to: Long!) {
-        taskDetails(from: $from, to: $to) {
-          tasks {
-            ${taskBaseFields}
-            ${variant.fields}
-          }
-        }
-      }
-    `;
-
+  addManagedListener(target, type, handler, options) {
     try {
-      const result = await postSearchQuery(query, variables);
-      const tasks = result?.data?.taskDetails?.tasks || [];
-      lastTaskDetailsQueryVariant = variant.name;
-      return tasks;
-    } catch (err) {
-      console.warn(`TaskDetails query variant ${variant.name} failed:`, err.message);
-    }
-  }
-
-  lastTaskDetailsQueryVariant = "failed";
-  return [];
-}
-
-function getPrimaryChannelInfo(agent) {
-  const channels = Array.isArray(agent.channelInfo) ? agent.channelInfo : [];
-
-  return (
-    channels.find(c => String(c.channelType).toLowerCase() === "telephony") ||
-    channels[0] ||
-    null
-  );
-}
-
-function getDisplayState(agent) {
-  const channel = getPrimaryChannelInfo(agent);
-
-  const currentState = String(channel?.currentState || "").toLowerCase();
-  const idleCodeName = String(channel?.idleCodeName || "").trim();
-
-  if (currentState === "available") return "Available";
-  if (currentState === "idle" && idleCodeName) return idleCodeName;
-
-  if (currentState) {
-    return currentState.charAt(0).toUpperCase() + currentState.slice(1);
-  }
-
-  return agent.state || "";
-}
-
-app.get("/health", (req, res) => {
-  res.json({
-    ok: true,
-    entryPointId: ENTRY_POINT_ID,
-    activeSessions: sessions.size,
-    sessionTtlMs: SESSION_TTL_MS,
-    corsOrigins: ALLOWED_CORS_ORIGINS
-  });
-});
-
-app.post("/api/session/bootstrap", (req, res) => {
-  const user = {
-    email: req.body?.email || "",
-    userId: req.body?.userId || "",
-    teamId: req.body?.teamId || "",
-    displayName: req.body?.displayName || req.body?.email || "Unknown"
-  };
-
-  const role = getRole(user);
-
-  if (role === "denied") {
-    return res.status(403).json({
-      error: "User is not in allowed team"
-    });
-  }
-
-  const sid = crypto.randomUUID();
-
-  const session = {
-    sid,
-    role,
-    user,
-    expiresAt: Date.now() + SESSION_TTL_MS
-  };
-
-  sessions.set(sid, session);
-
-  res.json({
-    sessionToken: signSession({ sid }),
-    role,
-    user,
-    expiresAt: session.expiresAt
-  });
-});
-
-app.get("/api/entrypoint/:id", requireSession, async (req, res) => {
-  const id = req.params.id;
-  const requestId = crypto.randomUUID();
-  const startedAt = Date.now();
-
-  try {
-    const data = await getEntryPoint(id);
-    lastGoodEntryPointById.set(id, {
-      data,
-      cachedAt: Date.now()
-    });
-    lastEntryPointErrorById.delete(id);
-    res.json({
-      ...data,
-      backendBuildId: BUILD_ID,
-      requestId,
-      configStale: false
-    });
-  } catch (err) {
-    const errorInfo = {
-      message: err?.message || String(err),
-      stack: err?.stack ? String(err.stack).slice(0, 1200) : "",
-      durationMs: Date.now() - startedAt
-    };
-    lastEntryPointErrorById.set(id, { ...errorInfo, failedAt: Date.now() });
-    addWidgetDiagLog("entrypoint-get-failed", { id, requestId, ...errorInfo });
-
-    const cached = lastGoodEntryPointById.get(id);
-    if (cached?.data) {
-      return res.json({
-        ...cached.data,
-        backendBuildId: BUILD_ID,
-        requestId,
-        configStale: true,
-        configStaleReason: "entrypoint-get-failed-cache-used",
-        cachedAt: cached.cachedAt,
-        lastError: errorInfo.message
+      target.addEventListener(type, handler, options);
+      this.cleanupCallbacks.push(() => {
+        try { target.removeEventListener(type, handler, options); } catch {}
       });
+    } catch {}
+  }
+
+  hardLifecycleCleanup(reason = "unknown") {
+    const runtimeId = this.runtimeId;
+    this.addDiagLog("lifecycle-cleanup-start", { reason, runtimeId });
+    this.isDisposed = true;
+
+    const clearIntervalSafe = handle => { if (handle) { try { clearInterval(handle); } catch {} } };
+    const clearTimeoutSafe = handle => { if (handle) { try { clearTimeout(handle); } catch {} } };
+
+    clearIntervalSafe(this.pollHandle); this.pollHandle = null;
+    clearIntervalSafe(this.wallboardPollHandle); this.wallboardPollHandle = null;
+    clearIntervalSafe(this.wallboardPollFallbackHandle); this.wallboardPollFallbackHandle = null;
+    clearIntervalSafe(this.activeCallTimerHandle); this.activeCallTimerHandle = null;
+    clearIntervalSafe(this.liveUiTimerHandle); this.liveUiTimerHandle = null;
+    clearIntervalSafe(this.historyEndWatchdogHandle); this.historyEndWatchdogHandle = null;
+    clearIntervalSafe(this.diagHeartbeatHandle); this.diagHeartbeatHandle = null;
+    clearIntervalSafe(this.analyticsKpiPollHandle); this.analyticsKpiPollHandle = null;
+
+    clearTimeoutSafe(this.wallboardReconnectHandle); this.wallboardReconnectHandle = null;
+    clearTimeoutSafe(this.entryPointRetryTimer); this.entryPointRetryTimer = null;
+    clearTimeoutSafe(this.diagRemoteFlushHandle); this.diagRemoteFlushHandle = null;
+
+    if (this.wallboardEventSource) {
+      try { this.wallboardEventSource.close(); } catch {}
+      this.wallboardEventSource = null;
     }
 
-    // No cache exists yet. Return 503 instead of a generic 500 so the frontend
-    // treats entrypoint config as temporarily unavailable and keeps wallboard alive.
-    res.status(503).json({
-      error: errorInfo.message,
-      backendBuildId: BUILD_ID,
-      requestId,
-      configStale: true,
-      configStaleReason: "entrypoint-get-failed-no-cache",
-      durationMs: errorInfo.durationMs
-    });
-  }
-});
+    const callbacks = Array.isArray(this.cleanupCallbacks) ? this.cleanupCallbacks.splice(0) : [];
+    callbacks.forEach(cb => { try { cb(); } catch {} });
 
-app.put("/api/entrypoint/:id", requireSession, requireWriteRole, async (req, res) => {
-  try {
-    const existing = await getEntryPoint(req.params.id);
-    existing.flowOverrideSettings = req.body.flowOverrideSettings || [];
-    const updated = await updateEntryPoint(req.params.id, existing);
-    lastGoodEntryPointById.set(req.params.id, { data: updated, cachedAt: Date.now() });
-    res.json({ ...updated, backendBuildId: BUILD_ID, configStale: false });
-  } catch (err) {
-    res.status(500).json({
-      error: err.message
-    });
-  }
-});
-
-
-
-const ACCESS_CONFIG_CACHE_TTL_MS = Number(process.env.ACCESS_CONFIG_CACHE_TTL_MS || 30000);
-
-let accessConfigCache = {
-  updatedAt: 0,
-  users: [],
-  userProfiles: [],
-  queues: [],
-  error: null,
-  updating: null
-};
-
-function normalizeText(value) {
-  return String(value || "").trim().toLowerCase();
-}
-
-function asArray(value) {
-  return Array.isArray(value) ? value : [];
-}
-
-function extractArray(payload, keys = []) {
-  if (Array.isArray(payload)) return payload;
-
-  for (const key of keys) {
-    if (Array.isArray(payload?.[key])) return payload[key];
+    this.flushDiagRemoteQueue(true);
+    this.persistDiagLog();
+    this.uninstallTechnicalDiagnostics();
+    this.addDiagLog("lifecycle-cleanup-complete", { reason, runtimeId });
   }
 
-  const defaultKeys = [
-    "data",
-    "items",
-    "content",
-    "response",
-    "users",
-    "userProfiles",
-    "profiles",
-    "queues",
-    "contactServiceQueues",
-    "contactServiceQueue"
-  ];
-
-  for (const key of defaultKeys) {
-    if (Array.isArray(payload?.[key])) return payload[key];
-  }
-
-  return [];
-}
-
-function getQueueNameFromTask(task) {
-  return (
-    task?.lastQueue?.name ||
-    task?.firstQueueName ||
-    ""
-  );
-}
-
-function normalizeQueue(queue) {
-  return {
-    id: String(queue?.id || queue?.queueId || queue?.csqId || queue?.uuid || ""),
-    name: String(
-      queue?.name ||
-      queue?.queueName ||
-      queue?.csqName ||
-      queue?.displayName ||
-      ""
-    ),
-    channelType: String(queue?.channelType || ""),
-    active: queue?.active !== false,
-    raw: queue
-  };
-}
-
-function isVoiceQueue(queue) {
-  const channelType = normalizeText(queue?.channelType || queue?.raw?.channelType || "");
-
-  return (
-    channelType === "telephony" ||
-    channelType === "voice"
-  );
-}
-
-async function fetchConfigJson(path) {
-  const token = await getValidServiceToken();
-
-  const response = await fetch(`${WEBEX_BASE_URL}${path}`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/json"
-    }
-  });
-
-  const text = await response.text();
-
-  if (!response.ok) {
-    throw new Error(`GET ${path} failed with HTTP ${response.status}: ${text}`);
-  }
-
-  return text ? JSON.parse(text) : {};
-}
-
-async function fetchAllAccessConfig() {
-  const [usersPayload, profilesPayload, queuesPayload] = await Promise.all([
-    fetchConfigJson(`/organization/${WEBEX_ORG_ID}/user`),
-    fetchConfigJson(`/organization/${WEBEX_ORG_ID}/user-profile`),
-    fetchConfigJson(`/organization/${WEBEX_ORG_ID}/contact-service-queue`)
-  ]);
-
-  const users = extractArray(usersPayload, ["users"]).filter(Boolean);
-  const userProfiles = extractArray(profilesPayload, ["userProfiles", "profiles"]).filter(Boolean);
-  const queues = extractArray(queuesPayload, ["contactServiceQueues", "queues", "contactServiceQueue"])
-    .map(normalizeQueue)
-    .filter(q => q.id || q.name);
-
-  return {
-    users,
-    userProfiles,
-    queues
-  };
-}
-
-async function getAccessConfig(force = false) {
-  const now = Date.now();
-
-  if (
-    !force &&
-    accessConfigCache.updatedAt &&
-    now - accessConfigCache.updatedAt < ACCESS_CONFIG_CACHE_TTL_MS
-  ) {
-    return accessConfigCache;
-  }
-
-  if (accessConfigCache.updating) {
-    return accessConfigCache.updating;
-  }
-
-  accessConfigCache.updating = fetchAllAccessConfig()
-    .then(data => {
-      accessConfigCache.users = data.users;
-      accessConfigCache.userProfiles = data.userProfiles;
-      accessConfigCache.queues = data.queues;
-      accessConfigCache.updatedAt = Date.now();
-      accessConfigCache.error = null;
-      return accessConfigCache;
-    })
-    .catch(err => {
-      accessConfigCache.error = err;
-      accessConfigCache.updatedAt = Date.now();
-      return accessConfigCache;
-    })
-    .finally(() => {
-      accessConfigCache.updating = null;
-    });
-
-  return accessConfigCache.updating;
-}
-
-function findCurrentContactCenterUser(users, sessionUser) {
-  const userId = String(sessionUser?.userId || "");
-  const email = normalizeText(sessionUser?.email || "");
-
-  return users.find(user =>
-    String(user?.ciUserId || "") === userId ||
-    String(user?.id || "") === userId ||
-    (email && normalizeText(user?.email || "") === email)
-  ) || null;
-}
-
-function findUserProfile(userProfiles, profileId) {
-  const id = String(profileId || "");
-  return userProfiles.find(profile => String(profile?.id || "") === id) || null;
-}
-
-function collectQueueRefs(value, refs = []) {
-  if (!value) return refs;
-
-  if (Array.isArray(value)) {
-    value.forEach(item => collectQueueRefs(item, refs));
-    return refs;
-  }
-
-  if (typeof value !== "object") return refs;
-
-  for (const [key, child] of Object.entries(value)) {
-    const normalizedKey = key.toLowerCase();
-
-    if (
-      normalizedKey === "queues" ||
-      normalizedKey === "queue" ||
-      normalizedKey === "queueids" ||
-      normalizedKey === "queueidlist" ||
-      normalizedKey === "selectedqueues" ||
-      normalizedKey === "selectedqueueids"
-    ) {
-      const items = Array.isArray(child) ? child : [child];
-
-      items.forEach(item => {
-        if (!item) return;
-
-        if (typeof item === "string") {
-          refs.push({ id: item, name: item });
-          return;
-        }
-
-        if (typeof item === "object") {
-          refs.push({
-            id: String(item.id || item.queueId || item.csqId || item.uuid || ""),
-            name: String(item.name || item.queueName || item.csqName || item.displayName || "")
-          });
-        }
-      });
-    }
-
-    if (typeof child === "object") {
-      collectQueueRefs(child, refs);
-    }
-  }
-
-  return refs;
-}
-
-function resolveQueueRefsToNames(queueRefs, queues) {
-  const names = new Set();
-
-  queueRefs.forEach(ref => {
-    const id = String(ref.id || "");
-    const name = String(ref.name || "");
-
-    const match = queues.find(queue =>
-      (id && queue.id === id) ||
-      (name && normalizeText(queue.name) === normalizeText(name))
-    );
-
-    if (match?.name) {
-      names.add(match.name);
-    } else if (name) {
-      names.add(name);
-    }
-  });
-
-  return [...names];
-}
-
-function getAllTelephonyQueueNames(queues) {
-  return queues
-    .filter(q => q.active)
-    .filter(isVoiceQueue)
-    .map(q => q.name)
-    .filter(Boolean);
-}
-
-async function getAllowedQueuesForSession(session) {
-  const config = await getAccessConfig(false);
-
-  if (config.error) {
-    return {
-      allowedQueues: [],
-      source: "user-profile",
-      error: config.error.message,
-      user: null,
-      profile: null
-    };
-  }
-
-  const currentUser = findCurrentContactCenterUser(config.users, session?.user || {});
-  const profile = findUserProfile(config.userProfiles, currentUser?.userProfileId);
-
-  if (!currentUser) {
-    return {
-      allowedQueues: [],
-      source: "user-profile",
-      error: `No contact center user found for session userId ${session?.user?.userId || ""}`,
-      user: null,
-      profile: null
-    };
-  }
-
-  if (!profile) {
-    return {
-      allowedQueues: [],
-      source: "user-profile",
-      error: `No user profile found for profileId ${currentUser.userProfileId || ""}`,
-      user: currentUser,
-      profile: null
-    };
-  }
-
-  const accessAllQueues = String(profile.accessAllQueues || "").toUpperCase();
-
-  if (accessAllQueues === "ALL") {
-    return {
-      allowedQueues: getAllTelephonyQueueNames(config.queues),
-      source: "user-profile:all-queues",
-      error: null,
-      user: currentUser,
-      profile
-    };
-  }
-
-  const queueRefs = collectQueueRefs(profile);
-  const profileQueueNames = resolveQueueRefsToNames(queueRefs, config.queues);
-  const voiceQueueNames = new Set(getAllTelephonyQueueNames(config.queues));
-  const allowedQueues = profileQueueNames.filter(name => voiceQueueNames.has(name));
-
-  return {
-    allowedQueues,
-    source: "user-profile:selected-voice-queues",
-    error: allowedQueues.length ? null : "User profile contains no readable selected voice queue references",
-    user: currentUser,
-    profile
-  };
-}
-
-function queueNameAllowed(queueName, allowedQueues) {
-  const normalizedQueue = normalizeText(queueName);
-  if (!normalizedQueue) return false;
-
-  return allowedQueues.some(q => normalizeText(q) === normalizedQueue);
-}
-
-
-const WALLBOARD_DATA_CACHE_TTL_MS = Number(process.env.WALLBOARD_DATA_CACHE_TTL_MS || 5000);
-const WALLBOARD_FALLBACK_POLLING_ENABLED =
-  String(process.env.WALLBOARD_FALLBACK_POLLING_ENABLED || "false").toLowerCase() === "true";
-const SSE_HEARTBEAT_MS = Number(process.env.SSE_HEARTBEAT_MS || 25000);
-const WXCC_EVENT_WEBHOOK_SECRET = process.env.WXCC_EVENT_WEBHOOK_SECRET || "";
-const EVENT_REFRESH_DEBOUNCE_MS = Number(process.env.EVENT_REFRESH_DEBOUNCE_MS || 1200);
-const EVENT_REFRESH_RETRY_DELAYS_MS = String(
-  process.env.EVENT_REFRESH_RETRY_DELAYS_MS || "0,2500,6500"
-)
-  .split(",")
-  .map(v => Number(v.trim()))
-  .filter(v => Number.isFinite(v) && v >= 0);
-
-const WALLBOARD_EVENT_STATE_TTL_MS = Number(process.env.WALLBOARD_EVENT_STATE_TTL_MS || 120000);
-const WALLBOARD_EVENT_STATE_SNAPSHOT_REJECT_MS = Number(process.env.WALLBOARD_EVENT_STATE_SNAPSHOT_REJECT_MS || 90000);
-const WALLBOARD_MIN_PUBLISH_HISTORY_GRACE_MS = Number(process.env.WALLBOARD_MIN_PUBLISH_HISTORY_GRACE_MS || 120000);
-const WALLBOARD_REFRESH_MIN_GAP_MS = Number(process.env.WALLBOARD_REFRESH_MIN_GAP_MS || 750);
-
-const WXCC_SUBSCRIPTION_TARGET_URL =
-  process.env.WXCC_SUBSCRIPTION_TARGET_URL ||
-  "https://wxcc-backend.onrender.com/api/wxcc/events";
-
-const WXCC_SUBSCRIPTION_ENDPOINT =
-  process.env.WXCC_SUBSCRIPTION_ENDPOINT ||
-  "/v1/subscriptions";
-
-const WXCC_SUBSCRIPTION_EVENTS = String(
-  process.env.WXCC_SUBSCRIPTION_EVENTS || ""
-)
-  .split(",")
-  .map(v => v.trim())
-  .filter(Boolean);
-
-const WXCC_EVENT_TYPES_ENDPOINTS = String(
-  process.env.WXCC_EVENT_TYPES_ENDPOINTS ||
-  "/v1/event-types,/v1/eventTypes,/v1/events/types,/v1/subscriptions/event-types,/v1/subscriptions/eventTypes"
-)
-  .split(",")
-  .map(v => v.trim())
-  .filter(Boolean);
-
-const wallboardSseClients = new Set();
-let lastWxccEvent = null;
-let eventRefreshTimer = null;
-let eventRefreshGeneration = 0;
-let wallboardRefreshInFlight = false;
-let wallboardRefreshPending = false;
-let wallboardRefreshPendingReason = "";
-let wallboardLastRefreshRunTs = 0;
-const agentEventStateCache = new Map();
-let taskLegTerminationCache = {
-  ts: 0,
-  map: new Map(),
-  inFlight: null
-};
-const TASK_LEG_TERMINATION_CACHE_TTL_MS = Number(process.env.TASK_LEG_TERMINATION_CACHE_TTL_MS || 15000);
-let lastTaskDetailsQueryVariant = "base";
-
-
-const ACTIVE_CALL_EVENT_CACHE_TTL_MS = Number(process.env.ACTIVE_CALL_EVENT_CACHE_TTL_MS || 600000);
-const ACTIVE_CALL_EVENT_EVICTION_DELAY_MS = Number(process.env.ACTIVE_CALL_EVENT_EVICTION_DELAY_MS || 30000);
-const activeCallEventCache = new Map();
-
-function getEventTaskId(data = {}) {
-  return String(
-    data.taskId ||
-    data.interactionId ||
-    data.contactId ||
-    data.contactSessionId ||
-    data.id ||
-    ""
-  );
-}
-
-function getEventAgentId(data = {}) {
-  return String(data.agentId || data.ownerId || data.userId || data.ciUserId || "");
-}
-
-function getEventQueueName(data = {}) {
-  const q = data.queue || data.lastQueue || data.firstQueue || data.queueInfo || {};
-  return String(
-    data.queueName || data.lastQueueName || data.firstQueueName ||
-    q.name || q.queueName || q.displayName || ""
-  );
-}
-
-function getEventCaller(data = {}) {
-  return String(data.origin || data.from || data.ani || data.caller || data.customerNumber || data.customerAni || "");
-}
-
-function getEventDestination(data = {}) {
-  return String(data.destination || data.to || data.dnis || data.calledNumber || "");
-}
-
-function pruneActiveCallEventCache() {
-  const now = Date.now();
-  for (const [id, call] of activeCallEventCache.entries()) {
-    const lastSeen = Number(call.lastSeenMs || call.createdAtMs || 0);
-    const endedAt = Number(call.endedAtMs || 0);
-    if ((endedAt && now - endedAt > ACTIVE_CALL_EVENT_EVICTION_DELAY_MS) || (lastSeen && now - lastSeen > ACTIVE_CALL_EVENT_CACHE_TTL_MS)) {
-      activeCallEventCache.delete(id);
-    }
-  }
-}
-
-function rememberActiveCallFromWxccEvent(body = {}) {
-  const normalized = normalizeWxccEventBody(body);
-  const type = String(normalized.type || "");
-  const data = normalized.data || {};
-  const state = String(data.currentState || data.state || data.status || "").toLowerCase();
-  const taskId = getEventTaskId(data);
-  const agentId = getEventAgentId(data);
-
-  if (!taskId && !agentId) return;
-
-  const isConnected = type === "agent:state_change" && state === "connected";
-  const isTerminal = type === "agent:state_change" && ["available", "idle", "wrapup", "wrapup-done", "ended", "terminated", "disconnected"].includes(state);
-
-  if (!isConnected && !isTerminal) return;
-
-  const now = Date.now();
-  const id = taskId || `agent-${agentId}`;
-  const existing = activeCallEventCache.get(id) || {};
-
-  if (isConnected) {
-    activeCallEventCache.set(id, {
-      ...existing,
-      id,
-      taskId: taskId || existing.taskId || id,
-      agentId: agentId || existing.agentId || "",
-      agent: data.agentName || data.agentDisplayName || data.name || existing.agent || "",
-      caller: getEventCaller(data) || existing.caller || "",
-      destination: getEventDestination(data) || existing.destination || "",
-      queue: getEventQueueName(data) || existing.queue || "",
-      firstQueue: data.firstQueueName || existing.firstQueue || "",
-      entryPoint: data.entryPointName || data.lastEntryPointName || existing.entryPoint || "",
-      status: "connected",
-      channelType: data.channelType || existing.channelType || "telephony",
-      createdTime: existing.createdTime || data.createdTime || data.connectedTime || now,
-      connectedStartTime: existing.connectedStartTime || data.connectedTime || data.createdTime || now,
-      lastActivityTime: data.lastActivityTime || data.createdTime || now,
-      handleBaseTimestamp: now,
-      handleSeconds: Math.max(0, Math.floor((now - Number(existing.connectedStartTime || data.connectedTime || data.createdTime || now)) / 1000)),
-      reconstructedSource: "wxcc-agent-state-event",
-      eventState: state,
-      lastSeenMs: now,
-      endedAtMs: 0
-    });
-
-    addWidgetDiagLog("active-call-event-cache-connected", { id, taskId, agentId, state, cacheSize: activeCallEventCache.size });
-    return;
-  }
-
-  if (isTerminal) {
-    const markEnded = call => {
-      activeCallEventCache.set(call.id, {
-        ...call,
-        eventState: state,
-        endedAtMs: now,
-        lastSeenMs: now,
-        evictionDueAtMs: now + ACTIVE_CALL_EVENT_EVICTION_DELAY_MS
-      });
-    };
-
-    if (taskId && activeCallEventCache.has(taskId)) {
-      markEnded(activeCallEventCache.get(taskId));
-    } else if (agentId) {
-      for (const call of activeCallEventCache.values()) {
-        if (String(call.agentId || "") === agentId && !call.endedAtMs) markEnded(call);
-      }
-    }
-
-    addWidgetDiagLog("active-call-event-cache-terminal", { taskId, agentId, state, cacheSize: activeCallEventCache.size });
-  }
-
-  pruneActiveCallEventCache();
-}
-
-function enrichActiveCallEventCacheFromTasks(tasks = []) {
-  const now = Date.now();
-  for (const task of Array.isArray(tasks) ? tasks : []) {
-    const id = String(task?.id || task?.taskId || "");
-    if (!id) continue;
-    const status = String(task?.status || "").toLowerCase();
-
-    if (status === "connected") {
-      const existing = activeCallEventCache.get(id) || {};
-      activeCallEventCache.set(id, {
-        ...existing,
-        id,
-        taskId: id,
-        status: "connected",
-        caller: task.origin || existing.caller || "",
-        destination: task.destination || existing.destination || "",
-        queue: task?.lastQueue?.name || task?.firstQueueName || existing.queue || "",
-        firstQueue: task?.firstQueueName || existing.firstQueue || "",
-        entryPoint: task?.lastEntryPoint?.name || existing.entryPoint || "",
-        agent: task?.lastAgent?.name || existing.agent || "",
-        createdTime: task.createdTime || existing.createdTime || now,
-        connectedStartTime: task.lastActivityTime || task.createdTime || existing.connectedStartTime || now,
-        lastActivityTime: task.lastActivityTime || existing.lastActivityTime || now,
-        queueDuration: task.queueDuration || existing.queueDuration || 0,
-        connectedDuration: task.connectedDuration || existing.connectedDuration || 0,
-        handleBaseTimestamp: now,
-        handleSeconds: getLiveTaskSeconds(task),
-        reconstructedSource: existing.reconstructedSource || "wxcc-taskdetails-enriched",
-        lastSeenMs: now,
-        endedAtMs: 0
-      });
-    } else if (activeCallEventCache.has(id)) {
-      const existing = activeCallEventCache.get(id);
-      activeCallEventCache.set(id, { ...existing, endedAtMs: existing.endedAtMs || now, lastSeenMs: now });
-    }
-  }
-  pruneActiveCallEventCache();
-}
-
-function mergeConnectedTasksWithEventCache(connectedTasks = [], agents = [], allowedQueues = []) {
-  pruneActiveCallEventCache();
-  const byId = new Map();
-  const now = Date.now();
-
-  for (const task of Array.isArray(connectedTasks) ? connectedTasks : []) {
-    const id = String(task?.id || task?.taskId || "");
-    if (id) byId.set(id, task);
-  }
-
-  const agentById = new Map((Array.isArray(agents) ? agents : []).map(agent => [String(agent.agentId || agent.id || ""), agent]));
-
-  for (const cached of activeCallEventCache.values()) {
-    if (!cached || cached.endedAtMs) continue;
-    const id = String(cached.taskId || cached.id || "");
-    if (!id || byId.has(id)) continue;
-
-    const agent = agentById.get(String(cached.agentId || ""));
-    const queueName = cached.queue || (Array.isArray(allowedQueues) && allowedQueues.length === 1 ? allowedQueues[0] : "");
-
-    byId.set(id, {
-      id,
-      status: "connected",
-      channelType: "telephony",
-      isActive: true,
-      origin: cached.caller || "",
-      destination: cached.destination || "",
-      createdTime: cached.createdTime || cached.connectedStartTime || cached.lastSeenMs || now,
-      lastActivityTime: cached.connectedStartTime || cached.createdTime || cached.lastSeenMs || now,
-      queueDuration: cached.queueDuration || 0,
-      connectedDuration: cached.connectedDuration || 0,
-      totalDuration: 0,
-      lastQueue: { id: "", name: queueName },
-      firstQueueName: cached.firstQueue || queueName,
-      lastEntryPoint: { id: "", name: cached.entryPoint || "" },
-      lastAgent: { id: cached.agentId || "", name: cached.agent || agent?.agentName || agent?.name || "" },
-      reconstructed: true,
-      reconstructedSource: cached.reconstructedSource || "event-cache",
-      handleBaseTimestamp: now,
-      handleSeconds: Math.max(0, Math.floor((now - Number(cached.connectedStartTime || cached.createdTime || cached.lastSeenMs || now)) / 1000))
-    });
-  }
-
-  const merged = Array.from(byId.values());
-  if (merged.length !== connectedTasks.length) {
-    addWidgetDiagLog("active-call-reconstruction-merged", {
-      taskDetailsConnected: connectedTasks.length,
-      mergedConnected: merged.length,
-      eventCacheSize: activeCallEventCache.size
-    });
-  }
-  return merged;
-}
-
-let wallboardDataCache = {
-  updatedAt: 0,
-  allAgents: [],
-  allTasks: [],
-  updating: null,
-  error: null
-};
-
-function normalizeWxccEventBody(body = {}) {
-  const type = body?.type || body?.eventType || body?.data?.type || "";
-  const data = body?.data || body?.event?.data || body?.payload || {};
-  return { type: String(type || ""), data };
-}
-
-function rememberAgentStateFromWxccEvent(body = {}) {
-  const normalized = normalizeWxccEventBody(body);
-  if (normalized.type !== "agent:state_change") return;
-
-  const data = normalized.data || {};
-  const agentId = String(data.agentId || "");
-  const currentState = String(data.currentState || "").toLowerCase();
-  if (!agentId || !currentState) return;
-
-  // Only override states that are explicit and reliable in the webhook event.
-  // For custom idle codes, the Search API remains the source of truth for the display name.
-  const displayStateByEventState = {
-    available: "Available",
-    ringing: "Ringing",
-    connected: "Connected",
-    wrapup: "Wrapup",
-    "wrapup-done": "Available"
-  };
-
-  const displayState = displayStateByEventState[currentState];
-  if (!displayState) return;
-
-  const createdTime = Number(data.createdTime || 0);
-  const previous = agentEventStateCache.get(agentId);
-  const previousCreatedTime = Number(previous?.createdTime || 0);
-  if (previousCreatedTime && createdTime && createdTime < previousCreatedTime) {
-    addWidgetDiagLog("agent-event-state-older-ignored", { agentId, currentState, createdTime, previousCreatedTime });
-    return;
-  }
-
-  agentEventStateCache.set(agentId, {
-    agentId,
-    currentState,
-    displayState,
-    connectedChannels: Array.isArray(data.connectedChannels) ? data.connectedChannels : [],
-    idleCodeId: data.idleCodeId || "",
-    taskId: data.taskId || "",
-    createdTime: createdTime || Date.now(),
-    receivedAtMs: Date.now(),
-    source: "wxcc-event-authority"
-  });
-
-  addWidgetDiagLog("agent-event-state-cache-updated", {
-    agentId,
-    currentState,
-    displayState,
-    taskId: data.taskId || ""
-  });
-}
-
-function getFreshAgentEventOverride(agentId) {
-  const id = String(agentId || "");
-  if (!id) return null;
-
-  const cached = agentEventStateCache.get(id);
-  if (!cached) return null;
-
-  const ageMs = Date.now() - cached.receivedAtMs;
-  if (ageMs > WALLBOARD_EVENT_STATE_TTL_MS) {
-    agentEventStateCache.delete(id);
-    return null;
-  }
-
-  return { ...cached, ageMs };
-}
-
-function applyAgentEventOverrides(payload = {}) {
-  const list = Array.isArray(payload.agentList) ? payload.agentList : [];
-  let applied = 0;
-
-  for (const agent of list) {
-    const override = getFreshAgentEventOverride(agent.agentId || agent.id);
-    if (!override) continue;
-
-    const snapshotActivity = Number(agent.lastActivityTime || agent.startTime || 0);
-    const eventCreated = Number(override.createdTime || 0);
-    if (snapshotActivity && eventCreated && snapshotActivity > eventCreated + WALLBOARD_EVENT_STATE_SNAPSHOT_REJECT_MS) continue;
-
-    const sourceState = String(agent.state || "");
-    agent.state = override.displayState;
-    agent.currentState = override.currentState;
-    agent.eventOverride = {
-      applied: true,
-      sourceState,
-      eventState: override.currentState,
-      ageMs: override.ageMs,
-      authority: "wxcc-event"
-    };
-    applied += 1;
-  }
-
-  if (payload.agents && Array.isArray(payload.agentList)) {
-    payload.agents.loggedIn = payload.agentList.length;
-    payload.agents.available = payload.agentList.filter(agent =>
-      String(agent.state || "").toLowerCase() === "available"
-    ).length;
-  }
-
-  if (applied) {
-    addWidgetDiagLog("agent-event-state-overrides-applied", { applied });
-  }
-
-  return payload;
-}
-
-function mergeStableListsForPublish(payload = {}, previousPayload = null) {
-  if (!previousPayload) return payload;
-
-  const previousHistory = Array.isArray(previousPayload.callHistoryList) ? previousPayload.callHistoryList : [];
-  const nextHistory = Array.isArray(payload.callHistoryList) ? payload.callHistoryList : [];
-  const previousTs = Number(previousPayload.__publishedAtMs || 0);
-  const ageMs = previousTs ? Date.now() - previousTs : Number.MAX_SAFE_INTEGER;
-
-  if (previousHistory.length > 0 && nextHistory.length === 0 && ageMs < WALLBOARD_MIN_PUBLISH_HISTORY_GRACE_MS) {
-    payload.callHistoryList = previousHistory;
-    payload.__historyPreservedServerSide = true;
-    addWidgetDiagLog("server-history-preserved", {
-      preservedRows: previousHistory.length,
-      ageMs
-    });
-  }
-
-  return payload;
-}
-
-async function getWallboardSourceData(force = false) {
-  const now = Date.now();
-
-  if (
-    !force &&
-    wallboardDataCache.updatedAt &&
-    now - wallboardDataCache.updatedAt < WALLBOARD_DATA_CACHE_TTL_MS
-  ) {
-    return wallboardDataCache;
-  }
-
-  if (wallboardDataCache.updating) {
-    return wallboardDataCache.updating;
-  }
-
-  wallboardDataCache.updating = Promise.allSettled([
-    getAgentSessions(),
-    getTaskDetails()
-  ])
-    .then(results => {
-      const [agentsResult, tasksResult] = results;
-      const errors = [];
-
-      if (agentsResult.status === "fulfilled") {
-        wallboardDataCache.allAgents = Array.isArray(agentsResult.value) ? agentsResult.value : [];
-      } else {
-        errors.push({ source: "getAgentSessions", error: agentsResult.reason });
-      }
-
-      if (tasksResult.status === "fulfilled") {
-        wallboardDataCache.allTasks = Array.isArray(tasksResult.value) ? tasksResult.value : [];
-      } else {
-        errors.push({ source: "getTaskDetails", error: tasksResult.reason });
-      }
-
-      const hasAnyUsableCache =
-        Array.isArray(wallboardDataCache.allAgents) && wallboardDataCache.allAgents.length > 0 ||
-        Array.isArray(wallboardDataCache.allTasks) && wallboardDataCache.allTasks.length > 0;
-
-      if (errors.length) {
-        const errorSummary = errors.map(e => ({
-          source: e.source,
-          name: e.error?.name || "Error",
-          message: e.error?.message || String(e.error || ""),
-          status: e.error?.status || null,
-          context: e.error?.context || "",
-          bodyPreview: e.error?.bodyPreview ? String(e.error.bodyPreview).slice(0, 500) : ""
-        }));
-
-        wallboardDataCache.error = errorSummary;
-        addWidgetDiagLog("wallboard-source-partial-failure", { errors: errorSummary });
-
-        if (!hasAnyUsableCache) {
-          const err = new Error("wallboard source data unavailable");
-          err.name = "WallboardSourceUnavailable";
-          err.errors = errorSummary;
-          throw err;
-        }
-      } else {
-        wallboardDataCache.error = null;
-      }
-
-      wallboardDataCache.updatedAt = Date.now();
-      addWidgetDiagLog("wallboard-source-data-updated", {
-        force,
-        agents: Array.isArray(wallboardDataCache.allAgents) ? wallboardDataCache.allAgents.length : 0,
-        tasks: Array.isArray(wallboardDataCache.allTasks) ? wallboardDataCache.allTasks.length : 0,
-        partialError: errors.length > 0
-      });
-      return wallboardDataCache;
-    })
-    .finally(() => {
-      wallboardDataCache.updating = null;
-    });
-
-  return wallboardDataCache.updating;
-}
-
-function getWrapupReasonFromTask(task) {
-  return (
-    task?.wrapUpReason ||
-    task?.wrapupReason ||
-    task?.wrapUpCodeName ||
-    task?.wrapupCodeName ||
-    task?.wrapUpCode ||
-    task?.wrapupCode ||
-    task?.wrapUpData?.name ||
-    task?.wrapupData?.name ||
-    task?.wrapUp?.name ||
-    task?.wrapup?.name ||
-    task?.wrapUpReasonName ||
-    task?.wrapupReasonName ||
-    ""
-  );
-}
-
-
-async function getTaskLegTerminationMap(force = false) {
-  const now = Date.now();
-
-  if (!force && taskLegTerminationCache.map && now - taskLegTerminationCache.ts < TASK_LEG_TERMINATION_CACHE_TTL_MS) {
-    return taskLegTerminationCache.map;
-  }
-
-  if (!force && taskLegTerminationCache.inFlight) {
-    return taskLegTerminationCache.inFlight;
-  }
-
-  taskLegTerminationCache.inFlight = (async () => {
-    const query = `
-      query TaskLegTerminationMap($from: Long!, $to: Long!) {
-        taskLegDetails(from: $from, to: $to) {
-          taskLegs {
-            id
-            taskId
-            status
-            abandonedType
-            terminationReason
-            createdTime
-            endedTime
-          }
-        }
-      }
-    `;
-
+  readAnalyticsKpiRange() {
     try {
-      const result = await postSearchQuery(query, {
-        from: now - 86400000,
-        to: now
-      });
-
-      const taskLegs = result?.data?.taskLegDetails?.taskLegs || [];
-      const map = new Map();
-
-      for (const leg of taskLegs) {
-        const taskId = leg?.taskId;
-        if (!taskId) continue;
-
-        const existing = map.get(taskId);
-        const currentEnded = Number(leg.endedTime || 0);
-        const existingEnded = Number(existing?.endedTime || 0);
-
-        if (!existing || currentEnded >= existingEnded) {
-          map.set(taskId, {
-            terminationReason: leg.terminationReason || "",
-            abandonedType: leg.abandonedType || "",
-            taskLegId: leg.id || "",
-            taskLegStatus: leg.status || "",
-            taskLegCreatedTime: leg.createdTime || null,
-            taskLegEndedTime: leg.endedTime || null
-          });
-        }
-      }
-
-      taskLegTerminationCache.ts = Date.now();
-      taskLegTerminationCache.map = map;
-      return map;
-    } catch (err) {
-      console.warn("TaskLeg termination map query failed, using cached/empty map:", err.message);
-
-      // Important: Do not fail /api/wallboard if Search API rate-limits or errors.
-      // Return last good cache if present. This prevents the widget from getting stuck.
-      return taskLegTerminationCache.map || new Map();
-    } finally {
-      taskLegTerminationCache.inFlight = null;
-    }
-  })();
-
-  return taskLegTerminationCache.inFlight;
-}
-
-async function callWxccRestDiscovery(method, path, body = null) {
-  const token = await getValidServiceToken();
-
-  const endpoint = /^https?:\/\//i.test(path)
-    ? path
-    : `${WXCC_BASE_URL}${path.startsWith("/") ? path : `/${path}`}`;
-
-  const response = await fetch(endpoint, {
-    method,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/json",
-      ...(body ? { "Content-Type": "application/json" } : {})
-    },
-    ...(body ? { body: JSON.stringify(body) } : {})
-  });
-
-  const text = await response.text();
-
-  let json = null;
-  try {
-    json = text ? JSON.parse(text) : null;
-  } catch {
-    json = null;
-  }
-
-  return {
-    ok: response.ok,
-    status: response.status,
-    endpoint,
-    body: json,
-    text: json ? undefined : text
-  };
-}
-
-
-function getLiveTaskSeconds(task) {
-  const now = Date.now();
-
-  const candidates = [
-    task?.connectedTime,
-    task?.answeredTime,
-    task?.lastStateChangeTime,
-    task?.lastActivityTime,
-    task?.createdTime
-  ]
-    .map(v => Number(v || 0))
-    .filter(v => Number.isFinite(v) && v > 0);
-
-  if (!candidates.length) return 0;
-
-  // Use the newest available timestamp as best live start reference.
-  return Math.max(0, Math.floor((now - Math.max(...candidates)) / 1000));
-}
-
-function getTaskDurationSeconds(task) {
-  const totalDuration = Number(task?.totalDuration || 0);
-  const connectedDuration = Number(task?.connectedDuration || 0);
-  const queueDuration = Number(task?.queueDuration || 0);
-
-  if (totalDuration > 0) return Math.round(totalDuration / 1000);
-  if (connectedDuration > 0) return Math.round(connectedDuration / 1000);
-  if (queueDuration > 0) return Math.round(queueDuration / 1000);
-
-  return getLiveTaskSeconds(task);
-}
-
-async function buildWallboardPayload(session, forceRefresh = false) {
-  const access = await getAllowedQueuesForSession(session);
-  const allowedQueues = access.allowedQueues || [];
-  const sourceData = await getWallboardSourceData(forceRefresh);
-
-  const allAgents = sourceData.allAgents || [];
-  const allTasks = sourceData.allTasks || [];
-
-  const userTeamId = session?.user?.teamId || "";
-
-  const agents = allAgents
-    .filter(a => a.isActive === true)
-    .filter(a => a.teamId === userTeamId);
-
-  const telephonyTasks = allTasks
-    .filter(t => String(t.channelType).toLowerCase() === "telephony");
-
-  enrichActiveCallEventCacheFromTasks(telephonyTasks);
-
-  const allowedQueueTasks = telephonyTasks
-    .filter(t => queueNameAllowed(getQueueNameFromTask(t), allowedQueues));
-
-  const waitingTasks = allowedQueueTasks
-    .filter(t => t?.isActive === true)
-    .filter(t => ["new", "parked"].includes(String(t.status).toLowerCase()));
-
-  let connectedTasks = allowedQueueTasks.filter(
-    t => String(t.status).toLowerCase() === "connected"
-  );
-
-  connectedTasks = mergeConnectedTasksWithEventCache(connectedTasks, agents, allowedQueues);
-
-  // Call history for the currently allowed voice queues.
-  // getTaskDetails() already queries the last 24 hours.
-  const callHistoryTasks = allowedQueueTasks
-    .slice()
-    .sort((a, b) => Number(b.createdTime || 0) - Number(a.createdTime || 0));
-
-  const terminationByTaskId = await getTaskLegTerminationMap();
-
-  const avgWaitSeconds =
-    allowedQueueTasks.length > 0
-      ? Math.round(
-          allowedQueueTasks.reduce((sum, t) => sum + Number(t.queueDuration || 0), 0) /
-            allowedQueueTasks.length /
-            1000
-        )
-      : 0;
-
-  const avgHandleSeconds =
-    allowedQueueTasks.length > 0
-      ? Math.round(
-          allowedQueueTasks.reduce((sum, t) => sum + Number(t.connectedDuration || 0), 0) /
-            allowedQueueTasks.length /
-            1000
-        )
-      : 0;
-
-  const longestWaitingSeconds =
-    waitingTasks.length > 0
-      ? Math.max(
-          ...waitingTasks.map(t =>
-            Math.floor((Date.now() - Number(t.createdTime || 0)) / 1000)
-          )
-        )
-      : 0;
-
-  const availableAgents = agents.filter(a =>
-    String(getDisplayState(a)).toLowerCase() === "available"
-  );
-
-  const payload = {
-    ok: true,
-    source: "webex-search-api",
-    delivery: "sse-ready",
-    activeCallReconstruction: true,
-    activeCallEventCacheSize: activeCallEventCache.size,
-    queueSource: access.source,
-    queueAccessError: access.error,
-    userProfileId: access.user?.userProfileId || null,
-    userProfileName: access.profile?.name || null,
-    entryPointId: ENTRY_POINT_ID,
-    teamId: userTeamId,
-    generatedAt: new Date().toISOString(),
-    allowedQueues,
-
-    queue: {
-      callsInQueue: waitingTasks.length,
-      activeCalls: connectedTasks.length,
-      longestWaitingSeconds,
-      avgWaitSeconds,
-      avgHandleSeconds
-    },
-
-    agents: {
-      loggedIn: agents.length,
-      available: availableAgents.length
-    },
-
-    agentList: agents.map(agent => {
-      const channel = getPrimaryChannelInfo(agent);
-
-      return {
-        id: agent.agentId || "",
-        agentId: agent.agentId || "",
-        name: agent.agentName || "",
-        login: agent.userLoginId || "",
-        state: getDisplayState(agent),
-        currentState: channel?.currentState || "",
-        idleCodeName: channel?.idleCodeName || "",
-        teamId: agent.teamId || "",
-        team: agent.teamName || "",
-        site: agent.siteName || "",
-        startTime: agent.startTime || null,
-        lastActivityTime: channel?.lastActivityTime || null
-      };
-    }),
-
-    taskList: connectedTasks.map(task => {
-      const liveHandleSeconds = getLiveTaskSeconds(task);
-      const connectedSeconds = Math.round(Number(task.connectedDuration || 0) / 1000);
-
-      return {
-        id: task.id,
-        status: task.status,
-        reconstructed: task.reconstructed === true,
-        reconstructedSource: task.reconstructedSource || "",
-        caller: task.origin || "",
-        queue: task?.lastQueue?.name || "",
-        firstQueue: task?.firstQueueName || "",
-        entryPoint: task?.lastEntryPoint?.name || "",
-        agent: task?.lastAgent?.name || "",
-        createdTime: task.createdTime || null,
-        lastActivityTime: task.lastActivityTime || null,
-        queueDuration: task.queueDuration || 0,
-        connectedDuration: task.connectedDuration || 0,
-        connectedStartTime: task.lastActivityTime || task.createdTime || null,
-        liveHandleSeconds: task.liveHandleSeconds || liveHandleSeconds,
-        handleSeconds: Number(task.handleSeconds || 0) > 0 ? Number(task.handleSeconds) : (connectedSeconds > 0 ? connectedSeconds : liveHandleSeconds),
-        handleBaseTimestamp: Date.now(),
-        wrapupReason: getWrapupReasonFromTask(task),
-        terminationReason: terminationByTaskId.get(task.id)?.terminationReason || "",
-        taskLegId: terminationByTaskId.get(task.id)?.taskLegId || "",
-        taskLegStatus: terminationByTaskId.get(task.id)?.taskLegStatus || ""
-      };
-    }),
-
-    waitingTaskList: waitingTasks.map(task => ({
-      id: task.id,
-      status: task.status,
-      caller: task.origin || "",
-      queue: task?.lastQueue?.name || "",
-      firstQueue: task?.firstQueueName || "",
-      entryPoint: task?.lastEntryPoint?.name || "",
-      createdTime: task.createdTime || null,
-      waitingSeconds: task.createdTime
-        ? Math.floor((Date.now() - Number(task.createdTime)) / 1000)
-        : 0,
-      wrapupReason: getWrapupReasonFromTask(task)
-    })),
-
-    callHistoryList: callHistoryTasks.map(task => {
-      const taskId = task.id || task.taskId || "";
-      const termination = terminationByTaskId.get(taskId) || {};
-
-      return {
-        id: taskId,
-        status: task.status,
-        caller: task.origin || "",
-        destination: task.destination || "",
-        queue: task?.lastQueue?.name || "",
-        firstQueue: task?.firstQueueName || "",
-        entryPoint: task?.lastEntryPoint?.name || "",
-        agent: task?.lastAgent?.name || "",
-        createdTime: task.createdTime || null,
-        endedTime: task.endedTime || null,
-        queueDuration: task.queueDuration || 0,
-        connectedDuration: task.connectedDuration || 0,
-        totalDuration: task.totalDuration || 0,
-        liveDurationSeconds: getTaskDurationSeconds(task),
-        isActive: task.isActive === true,
-        isContactHandled: task.isContactHandled === true,
-        abandonedType: task.abandonedType || "",
-        contactHandleType: task.contactHandleType || "",
-        handleType: task.contactHandleType || task.abandonedType || termination.abandonedType || "",
-        wrapupReason: getWrapupReasonFromTask(task),
-        terminationReason: termination.terminationReason || "",
-        taskLegId: termination.taskLegId || "",
-        taskLegStatus: termination.taskLegStatus || ""
-      };
-    })
-  };
-
-  payload.__publishedAtMs = Date.now();
-  return applyAgentEventOverrides(payload);
-}
-
-function writeSseEvent(res, eventName, payload) {
-  res.write(`event: ${eventName}\n`);
-  res.write(`data: ${JSON.stringify(payload)}\n\n`);
-}
-
-function broadcastSseEvent(eventName, payload) {
-  for (const client of wallboardSseClients) {
-    try {
-      writeSseEvent(client.res, eventName, payload);
+      const value = localStorage.getItem("wxccSupervisorWidgetKpiRangeV58") || "60m";
+      return ["today", "60m", "30m"].includes(value) ? value : "60m";
     } catch {
-      wallboardSseClients.delete(client);
+      return "60m";
     }
   }
-}
 
-async function pushWallboardUpdateToClient(client, force = false) {
-  try {
-    let payload = await buildWallboardPayload(client.session, force);
-    payload = mergeStableListsForPublish(payload, client.lastPayloadObj || lastGoodWallboardPayload);
-    payload.__publishedAtMs = Date.now();
-
-    const serialized = JSON.stringify(payload);
-
-    if (serialized !== client.lastPayload || force) {
-      client.lastPayload = serialized;
-      client.lastPayloadObj = payload;
-      lastGoodWallboardPayload = payload;
-      lastGoodWallboardPayloadTs = Date.now();
-      writeSseEvent(client.res, "wallboard", payload);
-    }
-  } catch (err) {
-    // Keep the SSE connection alive. The frontend can fetch /api/wallboard as fallback.
-    writeSseEvent(client.res, "wallboard-error", {
-      ok: false,
-      error: err.message,
-      name: err.name || "Error",
-      generatedAt: new Date().toISOString()
-    });
-  }
-}
-
-
-async function runQueuedWallboardRefresh(reason = "wxcc-event") {
-  if (wallboardRefreshInFlight) {
-    wallboardRefreshPending = true;
-    wallboardRefreshPendingReason = wallboardRefreshPendingReason
-      ? `${wallboardRefreshPendingReason},${reason}`
-      : reason;
-    addWidgetDiagLog("wallboard-refresh-coalesced", { reason, pendingReason: wallboardRefreshPendingReason });
-    return;
+  saveAnalyticsKpiRange() {
+    try { localStorage.setItem(this.analyticsKpiRangeStorageKey, this.analyticsKpiRange || "60m"); } catch {}
   }
 
-  wallboardRefreshInFlight = true;
-  let currentReason = reason;
-
-  try {
-    do {
-      wallboardRefreshPending = false;
-      wallboardRefreshPendingReason = "";
-
-      const sinceLastRunMs = Date.now() - wallboardLastRefreshRunTs;
-      if (sinceLastRunMs < WALLBOARD_REFRESH_MIN_GAP_MS) {
-        await new Promise(resolve => setTimeout(resolve, WALLBOARD_REFRESH_MIN_GAP_MS - sinceLastRunMs));
-      }
-
-      const startedAt = Date.now();
-      addWidgetDiagLog("wallboard-refresh-run-start", {
-        reason: currentReason,
-        clients: wallboardSseClients.size
-      });
-
-      await getWallboardSourceData(true);
-
-      for (const client of wallboardSseClients) {
-        await pushWallboardUpdateToClient(client, true);
-      }
-
-      wallboardLastRefreshRunTs = Date.now();
-
-      broadcastSseEvent("event-refresh", {
-        ok: true,
-        reason: currentReason,
-        generatedAt: new Date().toISOString(),
-        durationMs: Date.now() - startedAt,
-        clientCount: wallboardSseClients.size,
-        concurrencyMode: "single-flight-coalesced"
-      });
-
-      addWidgetDiagLog("wallboard-refresh-run-complete", {
-        reason: currentReason,
-        durationMs: Date.now() - startedAt,
-        clients: wallboardSseClients.size
-      });
-
-      currentReason = wallboardRefreshPendingReason || "coalesced-wxcc-events";
-    } while (wallboardRefreshPending);
-  } catch (err) {
-    addWidgetDiagLog("wallboard-refresh-run-error", {
-      reason: currentReason,
-      error: err?.stack || err?.message || String(err)
-    });
-
-    broadcastSseEvent("wallboard-error", {
-      ok: false,
-      reason: currentReason,
-      error: err.message,
-      generatedAt: new Date().toISOString(),
-      concurrencyMode: "single-flight-coalesced"
-    });
-  } finally {
-    wallboardRefreshInFlight = false;
-  }
-}
-
-function scheduleEventDrivenWallboardRefresh(reason = "wxcc-event") {
-  eventRefreshGeneration += 1;
-  const generation = eventRefreshGeneration;
-
-  if (eventRefreshTimer) {
-    clearTimeout(eventRefreshTimer);
-  }
-
-  eventRefreshTimer = setTimeout(() => {
-    // WXCC events can arrive before Search/State APIs are consistent.
-    // v37 keeps the consistency checks but runs them single-flight and coalesced,
-    // preventing retry-1..4 from overwriting each other out of order.
-    EVENT_REFRESH_RETRY_DELAYS_MS.forEach((delay, index) => {
-      setTimeout(() => {
-        if (generation !== eventRefreshGeneration) {
-          addWidgetDiagLog("wallboard-refresh-skipped-old-generation", {
-            reason,
-            retry: index + 1,
-            generation,
-            currentGeneration: eventRefreshGeneration
-          });
-          return;
-        }
-
-        runQueuedWallboardRefresh(`${reason}:retry-${index + 1}`);
-      }, delay);
-    });
-  }, EVENT_REFRESH_DEBOUNCE_MS);
-}
-
-
-function isWebhookSecretValid(req) {
-  if (!WXCC_EVENT_WEBHOOK_SECRET) return true;
-
-  const headerSecret =
-    req.headers["x-wxcc-event-secret"] ||
-    req.headers["x-webhook-secret"] ||
-    req.headers["x-hook-secret"] ||
-    req.headers["x-cisco-webex-contact-center-secret"];
-
-  const querySecret = req.query?.secret;
-
-  return String(headerSecret || querySecret || "") === WXCC_EVENT_WEBHOOK_SECRET;
-}
-
-
-
-// v58 isolated Analyzer KPI route. This endpoint is optional for the frontend and must not affect SSE/wallboard behavior.
-const ANALYZER_BASE_URL = process.env.ANALYZER_BASE_URL || "https://analyzer-v2.wxcc-eu2.cisco.com";
-const QUEUE_ALL_FIELDS_REPORT_ID = process.env.QUEUE_ALL_FIELDS_REPORT_ID || "1268";
-const ANALYZER_REQUEST_TIMEOUT_MS = Number(process.env.ANALYZER_REQUEST_TIMEOUT_MS || 8000);
-
-function getMetricRange(value = "60m") {
-  const key = String(value || "60m").toLowerCase();
-  const now = Date.now();
-  const berlinNow = new Date();
-  let from;
-  if (key === "today") {
-    // Server is UTC on Render; this approximation is sufficient for request metadata.
-    const d = new Date();
-    d.setHours(0, 0, 0, 0);
-    from = d.getTime();
-    return { range: "today", from, to: now };
-  }
-  if (key === "30m") return { range: "30m", from: now - 30 * 60 * 1000, to: now };
-  return { range: "60m", from: now - 60 * 60 * 1000, to: now };
-}
-
-function parseReportDurationSeconds(value) {
-  if (value == null) return 0;
-  if (typeof value === "number") {
-    if (!Number.isFinite(value) || value <= 0) return 0;
-    return value > 10000 ? Math.round(value / 1000) : Math.round(value);
-  }
-  const text = String(value || "").trim();
-  if (!text) return 0;
-  const parts = text.split(":").map(v => v.trim());
-  if (parts.length >= 3) {
-    const [h, m, secPart] = parts.slice(-3);
-    const seconds = Number(String(secPart).replace(",", "."));
-    const total = Number(h) * 3600 + Number(m) * 60 + seconds;
-    return Number.isFinite(total) && total > 0 ? Math.round(total) : 0;
-  }
-  const numeric = Number(text.replace(",", "."));
-  return Number.isFinite(numeric) && numeric > 0 ? Math.round(numeric) : 0;
-}
-
-function normalizeReportKey(key = "") {
-  return String(key || "").toLowerCase().replace(/[^a-z0-9]+/g, "").trim();
-}
-
-function metricFromObject(obj = {}, possibleKeys = []) {
-  if (!obj || typeof obj !== "object") return null;
-  const entries = Object.entries(obj);
-  for (const wanted of possibleKeys) {
-    const wantedNorm = normalizeReportKey(wanted);
-    const match = entries.find(([key]) => {
-      const normalized = normalizeReportKey(key);
-      return normalized === wantedNorm || normalized.includes(wantedNorm);
-    });
-    if (match) return match[1];
-  }
-  return null;
-}
-
-function collectReportMetricRows(payload, rows = []) {
-  if (!payload) return rows;
-  if (Array.isArray(payload)) {
-    payload.forEach(item => collectReportMetricRows(item, rows));
-    return rows;
-  }
-  if (typeof payload !== "object") return rows;
-
-  const avgQueue = metricFromObject(payload, ["Average Queue Time", "averageQueueTime", "avgQueueTime"]);
-  const maxQueue = metricFromObject(payload, ["Maximum Queue Time", "maximumQueueTime", "maxQueueTime"]);
-  const avgHandled = metricFromObject(payload, ["Average Handled Time", "averageHandledTime", "avgHandledTime", "Average Handle Time"]);
-  const queueName = metricFromObject(payload, ["Queue Name", "queueName", "Queue"]);
-
-  if (avgQueue != null || maxQueue != null || avgHandled != null) {
-    rows.push({ queueName, avgQueue, maxQueue, avgHandled, raw: payload });
-  }
-
-  const columns = Array.isArray(payload.columns) ? payload.columns : Array.isArray(payload.headers) ? payload.headers : [];
-  const dataRows = Array.isArray(payload.rows) ? payload.rows : Array.isArray(payload.data) ? payload.data : [];
-  if (columns.length && dataRows.length) {
-    const columnNames = columns.map(c => String(c?.label || c?.name || c?.fieldName || c?.title || c || ""));
-    dataRows.forEach(row => {
-      if (!Array.isArray(row)) return;
-      const obj = {};
-      row.forEach((cell, idx) => { obj[columnNames[idx] || `col${idx}`] = cell?.value ?? cell; });
-      collectReportMetricRows(obj, rows);
-    });
-  }
-
-  Object.values(payload).forEach(value => {
-    if (value && typeof value === "object") collectReportMetricRows(value, rows);
-  });
-  return rows;
-}
-
-function selectReportMetricRow(rows = [], selectedQueues = []) {
-  if (!rows.length) return null;
-  const normalizedSelected = selectedQueues.map(q => normalizeText(q)).filter(Boolean);
-  if (normalizedSelected.length) {
-    const direct = rows.find(row => normalizedSelected.includes(normalizeText(row.queueName || "")));
-    if (direct) return direct;
-  }
-  return rows.find(row => row.avgHandled != null || row.avgQueue != null || row.maxQueue != null) || rows[0];
-}
-
-function buildAnalyzerDurationFilter(range = "60m") {
-  const key = String(range || "60m").toLowerCase();
-  if (key === "today") return { label: "Today since midnight", duration: "TODAY", analyzerDuration: "Today" };
-  if (key === "30m") return { label: "Last 30 minutes", duration: "LAST_30_MINUTES", analyzerDuration: "Last 30 Minutes" };
-  return { label: "Last 60 minutes", duration: "LAST_60_MINUTES", analyzerDuration: "Last 60 Minutes" };
-}
-
-async function fetchWithTimeout(url, options = {}, timeoutMs = ANALYZER_REQUEST_TIMEOUT_MS) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...options, signal: controller.signal });
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function fetchQueueAllFieldsReportMetrics({ selectedQueues = [], range = "60m", requestId = "" } = {}) {
-  const token = await getValidServiceToken();
-  const durationFilter = buildAnalyzerDurationFilter(range);
-  const queueName = selectedQueues.length === 1 ? selectedQueues[0] : "All";
-  const payload = {
-    cid: WEBEX_ORG_ID,
-    orgId: WEBEX_ORG_ID,
-    rId: QUEUE_ALL_FIELDS_REPORT_ID,
-    reportId: QUEUE_ALL_FIELDS_REPORT_ID,
-    filters: {
-      queueName,
-      queueNames: selectedQueues,
-      duration: durationFilter.duration,
-      analyzerDuration: durationFilter.analyzerDuration,
-      channelType: "All",
-      serviceLevelConfig: "All"
-    },
-    variables: {
-      queueName,
-      queueNames: selectedQueues,
-      duration: durationFilter.duration,
-      analyzerDuration: durationFilter.analyzerDuration,
-      channelType: "All",
-      serviceLevelConfig: "All"
-    }
-  };
-
-  const candidates = [
-    { method: "POST", path: `/analyzer/api/v1/reports/${QUEUE_ALL_FIELDS_REPORT_ID}/execute`, body: payload },
-    { method: "POST", path: `/analyzer/reporting/api/v1/reports/${QUEUE_ALL_FIELDS_REPORT_ID}/execute`, body: payload },
-    { method: "POST", path: `/api/v1/reports/${QUEUE_ALL_FIELDS_REPORT_ID}/execute`, body: payload },
-    { method: "POST", path: `/api/reporting/v1/reports/${QUEUE_ALL_FIELDS_REPORT_ID}/execute`, body: payload },
-    { method: "POST", path: `/analyzer/api/report/execute`, body: payload },
-    { method: "POST", path: `/api/report/execute`, body: payload }
-  ];
-  const attempts = [];
-
-  for (const candidate of candidates) {
-    const url = `${ANALYZER_BASE_URL}${candidate.path}`;
-    const startedAt = Date.now();
+  readSelectedQueueFilters() {
     try {
-      const response = await fetchWithTimeout(url, {
-        method: candidate.method,
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: "application/json, text/plain, */*",
-          ...(candidate.method === "POST" ? { "Content-Type": "application/json" } : {})
-        },
-        ...(candidate.method === "POST" ? { body: JSON.stringify(candidate.body) } : {})
-      });
-      const text = await response.text();
-      const contentType = response.headers.get("content-type") || "";
-      let json = null;
-      if (contentType.includes("json") || text.trim().startsWith("{") || text.trim().startsWith("[")) {
-        try { json = JSON.parse(text); } catch {}
-      }
-      const rows = json ? collectReportMetricRows(json) : [];
-      const selected = selectReportMetricRow(rows, selectedQueues);
-      attempts.push({
-        path: candidate.path,
-        method: candidate.method,
-        ok: response.ok,
-        status: response.status,
-        contentType,
-        durationMs: Date.now() - startedAt,
-        rowCount: rows.length,
-        preview: String(text || "").slice(0, 500)
-      });
-      if (response.ok && selected) {
-        const metrics = {
-          longestWaitingSeconds: parseReportDurationSeconds(selected.maxQueue),
-          avgWaitSeconds: parseReportDurationSeconds(selected.avgQueue),
-          avgHandleSeconds: parseReportDurationSeconds(selected.avgHandled)
-        };
-        return {
-          ok: true,
-          source: "wxcc-analyzer-queue-all-fields-report",
-          reportId: QUEUE_ALL_FIELDS_REPORT_ID,
-          analyzerBaseUrl: ANALYZER_BASE_URL,
-          durationFilter,
-          selectedRow: {
-            queueName: selected.queueName || queueName,
-            averageQueueTime: selected.avgQueue,
-            maximumQueueTime: selected.maxQueue,
-            averageHandledTime: selected.avgHandled
-          },
-          metrics,
-          attempts
-        };
-      }
-    } catch (err) {
-      attempts.push({ path: candidate.path, method: candidate.method, ok: false, error: err?.message || String(err), durationMs: Date.now() - startedAt });
+      const raw = localStorage.getItem("supervisorWidgetSelectedQueues");
+      const parsed = JSON.parse(raw || "[]");
+      return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+    } catch {
+      return [];
     }
   }
 
-  return { ok: false, source: "wxcc-analyzer-queue-all-fields-report", reportId: QUEUE_ALL_FIELDS_REPORT_ID, analyzerBaseUrl: ANALYZER_BASE_URL, durationFilter, attempts };
-}
+  saveSelectedQueueFilters() {
+    try {
+      localStorage.setItem(
+        "supervisorWidgetSelectedQueues",
+        JSON.stringify(Array.isArray(this.selectedQueueFilters) ? this.selectedQueueFilters : [])
+      );
+    } catch {
+      // Ignore storage issues inside embedded desktop.
+    }
+  }
 
-app.get("/api/analytics/queue-metrics", requireSession, async (req, res) => {
-  const requestId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
-  const startedAt = Date.now();
-  const range = getMetricRange(req.query?.range || "60m");
-  try {
-    const access = await getAllowedQueuesForSession(req.session || {});
-    const allowedQueues = Array.isArray(access.allowedQueues) ? access.allowedQueues : [];
-    const requestedQueues = String(req.query?.queues || "").split(",").map(v => v.trim()).filter(Boolean);
-    const selectedQueues = requestedQueues.length ? requestedQueues.filter(q => queueNameAllowed(q, allowedQueues)) : allowedQueues;
+  render() {
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host {
+          all: initial;
+          display: block;
+          width: 100%;
+          min-height: 100%;
+          box-sizing: border-box;
+          font-family: Arial, Helvetica, sans-serif !important;
 
-    const analyzerResult = await fetchQueueAllFieldsReportMetrics({ selectedQueues, range: range.range, requestId });
-    if (analyzerResult.ok) {
-      const payload = {
-        ok: true,
-        backendBuildId: BUILD_ID,
-        requestId,
-        source: analyzerResult.source,
-        reportId: analyzerResult.reportId,
-        range: range.range,
-        durationFilter: analyzerResult.durationFilter,
-        from: range.from,
-        to: range.to,
-        generatedAt: new Date().toISOString(),
-        queues: selectedQueues,
-        metrics: analyzerResult.metrics,
-        reportFields: analyzerResult.selectedRow,
-        sample: {
-          source: "Queue All Fields Report",
-          durationMs: Date.now() - startedAt,
-          attempts: analyzerResult.attempts.map(a => ({ path: a.path, method: a.method, ok: a.ok, status: a.status, rowCount: a.rowCount || 0, durationMs: a.durationMs }))
+          --card: rgba(255,255,255,0.90);
+          --cardBorder: rgba(0,0,0,0.10);
+          --panelBorder: rgba(0,0,0,0.30);
+          --input: rgba(255,255,255,0.95);
+          --inputBorder: rgba(0,0,0,0.18);
+          --text: #111827;
+          --muted: rgba(17,24,39,0.72);
+          --kpi: rgba(0,0,0,0.08);
+          --switch: #9ca3af;
+          --button: #0a84ff;
+          --tableBorder: rgba(0,0,0,0.10);
+
+          color: var(--text);
         }
-      };
-      addWidgetDiagLog("analytics-queue-all-fields-report-success", {
-        requestId,
-        range: payload.range,
-        queues: payload.queues,
-        reportFields: payload.reportFields,
-        metrics: payload.metrics,
-        sample: payload.sample
-      });
-      return res.json(payload);
+
+        :host(.theme-dark) {
+          --card: rgba(15, 23, 42, 0.82);
+          --cardBorder: rgba(255,255,255,0.08);
+          --panelBorder: rgba(255,255,255,0.28);
+          --input: rgba(255,255,255,0.10);
+          --inputBorder: rgba(255,255,255,0.14);
+          --text: #ffffff;
+          --muted: rgba(255,255,255,0.75);
+          --kpi: rgba(255,255,255,0.14);
+          --switch: #4b5563;
+          --button: #0a84ff;
+          --tableBorder: rgba(255,255,255,0.08);
+        }
+
+        :host *,
+        :host *::before,
+        :host *::after {
+          box-sizing: border-box !important;
+          font-family: Arial, Helvetica, sans-serif !important;
+          text-transform: none !important;
+          font-variant: normal !important;
+          font-variant-caps: normal !important;
+          font-feature-settings: normal !important;
+          letter-spacing: normal !important;
+        }
+
+        .wrapper {
+          width: 100%;
+          height: 100vh;
+          overflow-y: auto;
+          overflow-x: hidden;
+          padding: 22px;
+          color: var(--text);
+          scrollbar-width: thin;
+          scrollbar-color: rgba(255,255,255,0.35) rgba(255,255,255,0.08);
+        }
+
+        .wrapper::-webkit-scrollbar {
+          width: 8px;
+        }
+
+        .wrapper::-webkit-scrollbar-track {
+          background: rgba(255,255,255,0.06);
+          border-radius: 999px;
+        }
+
+        .wrapper::-webkit-scrollbar-thumb {
+          background: rgba(255,255,255,0.35);
+          border-radius: 999px;
+        }
+
+        .wrapper::-webkit-scrollbar-thumb:hover {
+          background: rgba(255,255,255,0.50);
+        }
+
+        :host(.theme-light) .wrapper {
+          scrollbar-color: rgba(0,0,0,0.35) rgba(0,0,0,0.08);
+        }
+
+        :host(.theme-light) .wrapper::-webkit-scrollbar-track {
+          background: rgba(0,0,0,0.06);
+        }
+
+        :host(.theme-light) .wrapper::-webkit-scrollbar-thumb {
+          background: rgba(0,0,0,0.35);
+        }
+
+        :host(.theme-light) .wrapper::-webkit-scrollbar-thumb:hover {
+          background: rgba(0,0,0,0.50);
+        }
+
+        .card {
+          width: 100%;
+          border-radius: 18px;
+          background: var(--card);
+          border: 1px solid var(--cardBorder);
+          padding: 28px;
+          backdrop-filter: blur(10px);
+          -webkit-backdrop-filter: blur(10px);
+          color: var(--text);
+        }
+
+        .header {
+          display: flex;
+          justify-content: space-between;
+          gap: 30px;
+          margin-bottom: 30px;
+        }
+
+        .title {
+          font-size: 28px;
+          font-weight: 700;
+          margin: 0;
+          color: var(--text);
+          line-height: 1.2;
+        }
+
+        .subtitle {
+          margin-top: 8px;
+          font-size: 13px;
+          color: var(--muted);
+        }
+
+        .badge-row {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          margin-top: 12px;
+          justify-content: flex-end;
+        }
+
+        .badge,
+        .theme-btn {
+          background: var(--kpi);
+          border-radius: 999px;
+          padding: 6px 12px;
+          font-size: 12px;
+          color: var(--text);
+          border: 1px solid var(--cardBorder);
+        }
+
+        .theme-btn {
+          cursor: pointer;
+        }
+
+        .toggle-row {
+          display: flex;
+          align-items: center;
+          gap: 14px;
+          margin-bottom: 28px;
+          font-size: 14px;
+          color: var(--text);
+        }
+
+        .switch {
+          position: relative;
+          width: 52px;
+          height: 28px;
+          display: inline-block;
+          flex: 0 0 auto;
+        }
+
+        .switch input {
+          opacity: 0;
+          width: 0;
+          height: 0;
+        }
+
+        .slider {
+          position: absolute;
+          inset: 0;
+          cursor: pointer;
+          background: var(--switch);
+          border-radius: 999px;
+          transition: .25s;
+        }
+
+        .slider:before {
+          position: absolute;
+          content: "";
+          height: 20px;
+          width: 20px;
+          left: 4px;
+          top: 4px;
+          background: white;
+          border-radius: 50%;
+          transition: .25s;
+        }
+
+        input:checked + .slider {
+          background: #22c55e;
+        }
+
+        input:checked + .slider:before {
+          transform: translateX(24px);
+        }
+
+
+        .config-toggle {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          margin: 10px 0 18px 0;
+          padding: 12px 16px;
+          border-radius: 12px;
+          background: var(--kpi);
+          border: 1px solid var(--cardBorder);
+          cursor: pointer;
+          user-select: none;
+        }
+
+        .config-toggle-title {
+          font-size: 14px;
+          font-weight: 600;
+          color: var(--text);
+        }
+
+        .config-toggle-icon {
+          transition: transform 0.25s ease;
+          color: var(--text);
+        }
+
+        .config-toggle.collapsed .config-toggle-icon {
+          transform: rotate(-90deg);
+        }
+
+        .config-content {
+          overflow: hidden;
+          transition: max-height 0.35s ease, opacity 0.25s ease;
+          max-height: 1200px;
+          opacity: 1;
+        }
+
+        .config-content.collapsed {
+          max-height: 0;
+          opacity: 0;
+          pointer-events: none;
+        }
+
+        .kpi.calls-in-queue-card {
+          position: relative;
+          overflow: visible;
+        }
+
+        .kpi-topline {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 10px;
+        }
+
+        .queue-filter-inline {
+          position: relative;
+          display: none;
+          flex: 0 0 auto;
+        }
+
+        .queue-filter-inline.visible {
+          display: block;
+        }
+
+        .kpi-filter-row {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          flex: 0 0 auto;
+        }
+
+        .kpi-duration-select {
+          width: auto !important;
+          min-height: 24px;
+          max-width: 78px;
+          padding: 4px 8px !important;
+          border-radius: 999px !important;
+          border: 1px solid var(--cardBorder) !important;
+          background: rgba(255,255,255,0.10) !important;
+          color: var(--text) !important;
+          font-size: 11px !important;
+          line-height: 1 !important;
+        }
+
+        :host(.theme-light) .kpi-duration-select {
+          background: rgba(0,0,0,0.06) !important;
+        }
+
+        .queue-filter-button {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          min-height: 24px;
+          max-width: 150px;
+          padding: 4px 8px;
+          border-radius: 999px;
+          border: 1px solid var(--cardBorder);
+          background: rgba(255,255,255,0.10);
+          color: var(--text) !important;
+          font-size: 11px;
+          line-height: 1;
+          cursor: pointer;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        :host(.theme-light) .queue-filter-button {
+          background: rgba(0,0,0,0.06);
+        }
+
+        .queue-filter-menu {
+          position: absolute;
+          top: 30px;
+          right: 0;
+          z-index: 50;
+          display: none;
+          min-width: 210px;
+          padding: 10px;
+          border-radius: 12px;
+          border: 1px solid var(--cardBorder);
+          background: var(--card);
+          box-shadow: 0 12px 30px rgba(0,0,0,0.35);
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+        }
+
+        .queue-filter-inline.open .queue-filter-menu {
+          display: block;
+        }
+
+        .queue-filter-option {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 7px 4px;
+          color: var(--text);
+          font-size: 12px;
+          cursor: pointer;
+        }
+
+        .queue-filter-option input {
+          width: auto;
+          margin: 0;
+        }
+
+        .queue-filter-hint {
+          margin-top: 6px;
+          padding-top: 8px;
+          border-top: 1px solid var(--tableBorder);
+          color: var(--muted);
+          font-size: 11px;
+          line-height: 1.3;
+        }
+
+        .section-grid {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0,1fr));
+          gap: 42px;
+        }
+
+        .section-title,
+        .dashboard-title,
+        .agents-title,
+        .calls-title {
+          font-size: 22px;
+          font-weight: 700;
+          margin: 0 0 18px 0;
+          color: var(--text);
+          line-height: 1.25;
+        }
+
+        .field {
+          margin-bottom: 18px;
+        }
+
+        .field label {
+          display: block;
+          font-size: 13px;
+          margin-bottom: 8px;
+          color: var(--muted);
+        }
+
+        input[type="text"],
+        select {
+          width: 100%;
+          padding: 14px;
+          border-radius: 12px;
+          border: 1px solid var(--inputBorder);
+          background: var(--input);
+          color: var(--text) !important;
+          outline: none;
+          font-size: 14px;
+        }
+
+        select {
+          color-scheme: dark;
+        }
+
+        select option {
+          background: #1f2937;
+          color: #ffffff;
+        }
+
+        select option:checked,
+        select option:hover {
+          background: #2563eb;
+          color: #ffffff;
+        }
+
+        :host(.theme-light) select {
+          color-scheme: light;
+        }
+
+        :host(.theme-light) select option {
+          background: #ffffff;
+          color: #111827;
+        }
+
+        :host(.theme-light) select option:checked,
+        :host(.theme-light) select option:hover {
+          background: #0a84ff;
+          color: #ffffff;
+        }
+
+        input[type="text"]::placeholder {
+          color: var(--muted);
+        }
+
+        button {
+          background: var(--button);
+          color: white !important;
+          border: none;
+          border-radius: 10px;
+          padding: 10px 16px;
+          cursor: pointer;
+          font-size: 14px;
+        }
+
+        button[disabled],
+        input[disabled],
+        select[disabled] {
+          opacity: 0.55;
+          cursor: not-allowed;
+        }
+
+        .status {
+          margin-top: 14px;
+          font-size: 13px;
+          color: var(--muted);
+          min-height: 18px;
+        }
+
+        .dashboard {
+          margin-top: 34px;
+        }
+
+        .kpis {
+          display: grid;
+          grid-template-columns: repeat(7, minmax(0,1fr));
+          gap: 12px;
+        }
+
+        .kpi {
+          background: var(--kpi);
+          border: 1px solid transparent;
+          border-radius: 14px;
+          padding: 14px;
+          min-height: 74px;
+          transition: background .25s ease, border-color .25s ease, box-shadow .25s ease;
+        }
+
+        .kpi-green {
+          background: linear-gradient(135deg, rgba(34,197,94,0.22), rgba(34,197,94,0.10));
+          border-color: rgba(34,197,94,0.72);
+          box-shadow: 0 0 0 1px rgba(34,197,94,0.10), 0 0 18px rgba(34,197,94,0.16);
+        }
+
+        .kpi-orange {
+          background: linear-gradient(135deg, rgba(245,158,11,0.24), rgba(245,158,11,0.10));
+          border-color: rgba(245,158,11,0.78);
+          box-shadow: 0 0 0 1px rgba(245,158,11,0.10), 0 0 18px rgba(245,158,11,0.16);
+        }
+
+        .kpi-red,
+        .kpi-critical {
+          background: linear-gradient(135deg, rgba(239,68,68,0.24), rgba(239,68,68,0.10));
+          border-color: rgba(239,68,68,0.82);
+          box-shadow: 0 0 0 1px rgba(239,68,68,0.12), 0 0 18px rgba(239,68,68,0.18);
+        }
+
+        .kpi-critical {
+          animation: supervisorCriticalPulse 1.4s ease-in-out infinite;
+        }
+
+        @keyframes supervisorCriticalPulse {
+          0%, 100% {
+            border-color: rgba(239,68,68,0.70);
+            box-shadow: 0 0 0 1px rgba(239,68,68,0.10), 0 0 14px rgba(239,68,68,0.16);
+          }
+          50% {
+            border-color: rgba(239,68,68,1);
+            box-shadow: 0 0 0 1px rgba(239,68,68,0.26), 0 0 26px rgba(239,68,68,0.42);
+          }
+        }
+
+        .kpi-label {
+          font-size: 13px;
+          color: var(--muted);
+        }
+
+        .kpi-value {
+          font-size: 24px;
+          font-weight: 700;
+          margin-top: 8px;
+          color: var(--text);
+        }
+
+        .agents-section {
+          margin-top: 28px;
+        }
+
+        .table {
+          width: 100%;
+        }
+
+        .table-row {
+          display: grid;
+          grid-template-columns: 1.2fr 1fr 1fr 1fr;
+          gap: 16px;
+          padding: 12px 0;
+          border-bottom: 1px solid var(--tableBorder);
+          align-items: center;
+          color: var(--text);
+          font-size: 14px;
+          transition: background .25s ease, border-color .25s ease, box-shadow .25s ease;
+        }
+
+        .table-row.agent-available,
+        .table-row.agent-unavailable {
+          border: 1px solid transparent;
+          border-radius: 14px;
+          padding: 14px;
+          margin: 10px 0;
+        }
+
+        .table-row.agent-available {
+          background: linear-gradient(135deg, rgba(34,197,94,0.18), rgba(34,197,94,0.08));
+          border-color: rgba(34,197,94,0.78);
+          box-shadow: 0 0 0 1px rgba(34,197,94,0.08), 0 0 18px rgba(34,197,94,0.14);
+        }
+
+        .table-row.agent-unavailable {
+          background: linear-gradient(135deg, rgba(239,68,68,0.18), rgba(239,68,68,0.08));
+          border-color: rgba(239,68,68,0.82);
+          box-shadow: 0 0 0 1px rgba(239,68,68,0.08), 0 0 18px rgba(239,68,68,0.14);
+        }
+
+        .table-header,
+        .call-header {
+          color: var(--muted);
+          font-weight: 700;
+        }
+
+        .calls-wrapper {
+          margin-top: 34px;
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 18px;
+        }
+
+        .calls-card.call-history-card {
+          grid-column: 1 / -1;
+        }
+
+        @media (max-width: 1200px) {
+          .calls-wrapper {
+            grid-template-columns: 1fr;
+          }
+
+          .calls-card.call-history-card {
+            grid-column: auto;
+          }
+        }
+
+        .calls-card {
+          border: 2px solid var(--panelBorder);
+          border-radius: 16px;
+          padding: 20px;
+          overflow-x: auto;
+          min-width: 0;
+          background: rgba(255,255,255,0.02);
+        }
+
+        .calls-card.collapsible {
+          padding: 0;
+          overflow: hidden;
+        }
+
+        .calls-toggle {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          padding: 16px 20px;
+          cursor: pointer;
+          user-select: none;
+          border-bottom: 1px solid var(--tableBorder);
+        }
+
+        .calls-toggle-title {
+          font-size: 18px;
+          font-weight: 700;
+          color: var(--text);
+        }
+
+        .calls-toggle-subtitle {
+          margin-top: 4px;
+          font-size: 12px;
+          color: var(--muted);
+          font-weight: 500;
+        }
+
+        .calls-toggle-icon {
+          transition: transform 0.25s ease;
+          color: var(--text);
+          font-size: 16px;
+        }
+
+        .calls-toggle.collapsed .calls-toggle-icon {
+          transform: rotate(-90deg);
+        }
+
+        .calls-content {
+          overflow-x: auto;
+          overflow-y: hidden;
+          transition: max-height 0.35s ease, opacity 0.25s ease;
+          max-height: 900px;
+          opacity: 1;
+          padding: 0 20px 20px 20px;
+        }
+
+        .calls-content.collapsed {
+          max-height: 0;
+          opacity: 0;
+          pointer-events: none;
+          padding-bottom: 0;
+        }
+
+        :host(.theme-light) .calls-card {
+          background: rgba(0,0,0,0.02);
+        }
+
+        .calls-table {
+          min-width: 760px;
+        }
+
+        #callHistoryList {
+          min-width: 1400px;
+        }
+
+        .call-row {
+          display: grid;
+          grid-template-columns:
+            minmax(90px,0.8fr)
+            minmax(140px,1fr)
+            minmax(160px,1.1fr)
+            minmax(180px,1.2fr)
+            minmax(90px,0.7fr)
+            minmax(90px,0.7fr);
+          gap: 14px;
+          padding: 12px 0;
+          border-bottom: 1px solid var(--tableBorder);
+          align-items: center;
+          color: var(--text);
+          white-space: nowrap;
+          font-size: 14px;
+        }
+
+        .call-row.active {
+          grid-template-columns:
+            minmax(90px,0.8fr)
+            minmax(140px,1fr)
+            minmax(160px,1.1fr)
+            minmax(140px,1fr)
+            minmax(90px,0.7fr)
+            minmax(90px,0.7fr);
+        }
+
+        .call-row.history {
+          grid-template-columns:
+            minmax(90px,0.8fr)
+            minmax(140px,1fr)
+            minmax(150px,1fr)
+            minmax(140px,1fr)
+            minmax(180px,1.1fr)
+            minmax(140px,0.9fr)
+            minmax(110px,0.8fr)
+            minmax(100px,0.7fr)
+            minmax(90px,0.7fr)
+            minmax(160px,1fr);
+        }
+
+        #wallboardStatus {
+          margin-top: 12px;
+          font-size: 13px;
+          color: var(--muted);
+        }
+
+        @media (max-width: 1400px) {
+          .kpis {
+            grid-template-columns: repeat(4, minmax(0,1fr));
+          }
+        }
+
+        @media (max-width: 980px) {
+  
+        .config-toggle {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          margin: 10px 0 18px 0;
+          padding: 12px 16px;
+          border-radius: 12px;
+          background: var(--kpi);
+          border: 1px solid var(--cardBorder);
+          cursor: pointer;
+          user-select: none;
+        }
+
+        .config-toggle-title {
+          font-size: 14px;
+          font-weight: 600;
+          color: var(--text);
+        }
+
+        .config-toggle-icon {
+          transition: transform 0.25s ease;
+          color: var(--text);
+        }
+
+        .config-toggle.collapsed .config-toggle-icon {
+          transform: rotate(-90deg);
+        }
+
+        .config-content {
+          overflow: hidden;
+          transition: max-height 0.35s ease, opacity 0.25s ease;
+          max-height: 1200px;
+          opacity: 1;
+        }
+
+        .config-content.collapsed {
+          max-height: 0;
+          opacity: 0;
+          pointer-events: none;
+        }
+
+        .kpi.calls-in-queue-card {
+          position: relative;
+          overflow: visible;
+        }
+
+        .kpi-topline {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 10px;
+        }
+
+        .queue-filter-inline {
+          position: relative;
+          display: none;
+          flex: 0 0 auto;
+        }
+
+        .queue-filter-inline.visible {
+          display: block;
+        }
+
+        .kpi-filter-row {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          flex: 0 0 auto;
+        }
+
+        .kpi-duration-select {
+          width: auto !important;
+          min-height: 24px;
+          max-width: 78px;
+          padding: 4px 8px !important;
+          border-radius: 999px !important;
+          border: 1px solid var(--cardBorder) !important;
+          background: rgba(255,255,255,0.10) !important;
+          color: var(--text) !important;
+          font-size: 11px !important;
+          line-height: 1 !important;
+        }
+
+        :host(.theme-light) .kpi-duration-select {
+          background: rgba(0,0,0,0.06) !important;
+        }
+
+        .queue-filter-button {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          min-height: 24px;
+          max-width: 150px;
+          padding: 4px 8px;
+          border-radius: 999px;
+          border: 1px solid var(--cardBorder);
+          background: rgba(255,255,255,0.10);
+          color: var(--text) !important;
+          font-size: 11px;
+          line-height: 1;
+          cursor: pointer;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        :host(.theme-light) .queue-filter-button {
+          background: rgba(0,0,0,0.06);
+        }
+
+        .queue-filter-menu {
+          position: absolute;
+          top: 30px;
+          right: 0;
+          z-index: 50;
+          display: none;
+          min-width: 210px;
+          padding: 10px;
+          border-radius: 12px;
+          border: 1px solid var(--cardBorder);
+          background: var(--card);
+          box-shadow: 0 12px 30px rgba(0,0,0,0.35);
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+        }
+
+        .queue-filter-inline.open .queue-filter-menu {
+          display: block;
+        }
+
+        .queue-filter-option {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 7px 4px;
+          color: var(--text);
+          font-size: 12px;
+          cursor: pointer;
+        }
+
+        .queue-filter-option input {
+          width: auto;
+          margin: 0;
+        }
+
+        .queue-filter-hint {
+          margin-top: 6px;
+          padding-top: 8px;
+          border-top: 1px solid var(--tableBorder);
+          color: var(--muted);
+          font-size: 11px;
+          line-height: 1.3;
+        }
+
+        .section-grid {
+            grid-template-columns: 1fr;
+          }
+
+          .kpis {
+            grid-template-columns: repeat(2, minmax(0,1fr));
+          }
+
+          .table-row {
+            grid-template-columns: 1fr;
+          }
+        }
+
+        @media (max-width: 640px) {
+          .wrapper {
+            padding: 8px;
+          }
+
+          .card {
+            padding: 18px;
+          }
+
+          .header {
+            flex-direction: column;
+          }
+
+          .badge-row {
+            justify-content: flex-start;
+          }
+
+          .kpis {
+            grid-template-columns: 1fr;
+          }
+
+          .calls-wrapper {
+            grid-template-columns: 1fr;
+          }
+        }
+      
+      .diag-card { border: 1px solid var(--border-color, #c7c7c7); border-radius: 12px; padding: 12px; margin: 14px 0; background: rgba(127,127,127,0.06); }
+      .diag-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+      .diag-subtitle { font-size: 11px; opacity: .75; margin-left: 8px; }
+      .diag-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+      .diag-actions button { border: 1px solid var(--border-color, #bbb); border-radius: 8px; background: transparent; padding: 4px 8px; font-size: 11px; cursor: pointer; }
+      .diag-log { max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; font-size: 11px; line-height: 1.35; margin: 10px 0 0; padding: 10px; border-radius: 8px; background: rgba(0,0,0,.08); }
+
+    </style>
+
+      <div class="wrapper">
+        <div class="card">
+          <div class="header">
+            <div>
+              <h2 class="title">Supervisor Access Control</h2>
+              <div class="subtitle" id="userInfo">Loading...</div>
+            </div>
+
+            <div>
+              <h2 class="title">Conscia Demo Support</h2>
+              <div class="badge-row">
+                <button class="theme-btn" id="themeToggleBtn" type="button">Theme: Dark</button>
+                <div class="badge" id="roleBadge">...</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="config-toggle" id="configToggle">
+            <div class="config-toggle-title">Call flow settings</div>
+            <div class="config-toggle-icon">▼</div>
+          </div>
+
+          <div class="config-content" id="configContent">
+          <div class="toggle-row">
+            <label class="switch">
+              <input type="checkbox" id="emergencyToggle">
+              <span class="slider"></span>
+            </label>
+            <div>Emergency Mode: <span id="stateLabel">OFF</span></div>
+          </div>
+
+          <div class="section-grid">
+            <div>
+              <div class="section-title">Prompts</div>
+              <div class="field">
+                <label>Emergency Prompt</label>
+                <input id="emergencyPrompt" type="text">
+              </div>
+              <div class="field">
+                <label>Holiday Prompt</label>
+                <input id="holidayPrompt" type="text">
+              </div>
+            </div>
+
+            <div>
+              <div class="section-title">Language Settings</div>
+              <div class="field">
+                <label>Global Language</label>
+                <select id="globalLanguage"></select>
+              </div>
+              <div class="field">
+                <label>Global Voice Name</label>
+                <select id="globalVoiceName"></select>
+              </div>
+            </div>
+
+            <div>
+              <div class="section-title">Queue Settings</div>
+              <div class="field">
+                <label>Prio Queue</label>
+                <select id="priorityQueue"></select>
+              </div>
+              <div class="field">
+                <label>MoH Sales Queue</label>
+                <input id="mohSalesQueue" type="text">
+              </div>
+            </div>
+          </div>
+
+          <div style="margin-top:18px;">
+            <button id="saveBtn">Save</button>
+          </div>
+
+          <div class="status" id="status">Loading...</div>
+
+          </div>
+
+          <div class="dashboard">
+            <div class="dashboard-title">Dashboard</div>
+
+            <div class="kpis">
+              <div class="kpi calls-in-queue-card" id="kpiCardCallsInQueue">
+                <div class="kpi-topline">
+                  <div class="kpi-label">Calls in Queue</div>
+                  <div class="kpi-filter-row">
+                    <div class="queue-filter-inline" id="queueFilterWrapper">
+                      <button class="queue-filter-button" id="queueFilterButton" type="button">Queues ▾</button>
+                      <div class="queue-filter-menu" id="queueFilterMenu"></div>
+                    </div>
+                    <select class="kpi-duration-select" id="kpiDurationSelect" title="KPI Zeitraum">
+                      <option value="today">Heute</option>
+                      <option value="60m">60 min</option>
+                      <option value="30m">30 min</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="kpi-value" id="kpiCallsInQueue">0</div>
+              </div>
+              <div class="kpi"><div class="kpi-label">Active Calls</div><div class="kpi-value" id="kpiActiveCalls">0</div></div>
+              <div class="kpi"><div class="kpi-label">Longest Waiting</div><div class="kpi-value" id="kpiLongestWaiting">0s</div></div>
+              <div class="kpi"><div class="kpi-label">Avg Wait</div><div class="kpi-value" id="kpiAvgWait">0s</div></div>
+              <div class="kpi"><div class="kpi-label">Avg Handle</div><div class="kpi-value" id="kpiAvgHandle">0s</div></div>
+              <div class="kpi"><div class="kpi-label">Logged-in Agents</div><div class="kpi-value" id="kpiLoggedIn">0</div></div>
+              <div class="kpi"><div class="kpi-label">Available Agents</div><div class="kpi-value" id="kpiAvailable">0</div></div>
+            </div>
+          </div>
+
+          <div class="agents-section">
+            <div class="agents-title">Agents</div>
+            <div class="table" id="agentList">
+              <div class="table-row table-header">
+                <div>Name</div><div>Status</div><div>Team</div><div>Active Since</div>
+              </div>
+            </div>
+            <div id="wallboardStatus">Loading dashboard...</div>
+          </div>
+
+          <div class="calls-wrapper">
+            <div class="calls-card">
+              <div class="calls-title">Waiting Calls</div>
+              <div class="calls-table" id="waitingCallList">
+                <div class="call-row call-header">
+                  <div>Status</div><div>Queue</div><div>Caller</div><div>Entry Point</div><div>Waiting</div><div>Task</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="calls-card">
+              <div class="calls-title">Active Calls</div>
+              <div class="calls-table" id="activeCallList">
+                <div class="call-row active call-header">
+                  <div>Status</div><div>Queue</div><div>Caller</div><div>Agent</div><div>Handle</div><div>Task</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="calls-card collapsible call-history-card">
+              <div class="calls-toggle" id="callHistoryToggle">
+                <div>
+                  <div class="calls-toggle-title">
+        <div class="diag-card">
+          <div class="diag-header">
+            <div>
+              <strong>Diagnostics</strong>
+              <span class="diag-subtitle">Frontend + Wallboard Log · Entries: <span id="diagLogCount">0</span></span>
+            </div>
+            <div class="diag-actions">
+              <button type="button" id="diagToggle">Show Diagnostics</button>
+              <button type="button" id="diagCopy">Copy Log</button>
+              <button type="button" id="diagClear">Clear</button>
+            </div>
+          </div>
+          <pre id="diagLogPanel" class="diag-log" style="display:none;"><code id="diagLogText"></code></pre>
+        </div>
+
+Call History</div>
+                  <div class="calls-toggle-subtitle">Current selected queues · Last 24h</div>
+                </div>
+                <div class="calls-toggle-icon">▼</div>
+              </div>
+              <div class="calls-content" id="callHistoryContent">
+                <div class="calls-table" id="callHistoryList">
+                  <div class="call-row history call-header">
+                    <div>Status</div><div>Queue</div><div>Caller</div><div>Agent</div><div>Wrapup Reason</div><div>Handle / Type</div><div>Termination Reason</div><div>Started</div><div>Duration</div><div>Task</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  applyTheme() {
+    this.classList.toggle("theme-light", this.themeMode === "light");
+    this.classList.toggle("theme-dark", this.themeMode === "dark");
+
+    const btn = this.shadowRoot.getElementById("themeToggleBtn");
+    if (btn) {
+      btn.textContent = this.themeMode === "dark" ? "Theme: Dark" : "Theme: Light";
+    }
+  }
+
+  toggleTheme() {
+    this.themeMode = this.themeMode === "dark" ? "light" : "dark";
+    localStorage.setItem("supervisorWidgetTheme", this.themeMode);
+    this.applyTheme();
+  }
+
+  populateStaticOptions() {
+    this.setSelectOptions(this.$priorityQueue(), Array.from({ length: 10 }, (_, i) => String(i + 1)));
+    this.setSelectOptions(this.$globalLanguage(), ["de-DE", "en-US"]);
+    this.updateVoiceOptions();
+  }
+
+  setSelectOptions(el, values) {
+    el.innerHTML = "";
+    values.forEach(value => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = value;
+      el.appendChild(option);
+    });
+  }
+
+  readSessionCollapsed(key, defaultCollapsed = true) {
+    try {
+      const value = sessionStorage.getItem(key);
+      if (value === null) return defaultCollapsed;
+      return value !== "open";
+    } catch {
+      return defaultCollapsed;
+    }
+  }
+
+  writeSessionCollapsed(key, collapsed) {
+    try {
+      sessionStorage.setItem(key, collapsed ? "collapsed" : "open");
+    } catch {
+      // Ignore storage issues inside embedded desktop.
+    }
+  }
+
+  applySessionCollapseState() {
+    const configToggle = this.shadowRoot.getElementById("configToggle");
+    const configContent = this.shadowRoot.getElementById("configContent");
+    const callHistoryToggle = this.shadowRoot.getElementById("callHistoryToggle");
+    const callHistoryContent = this.shadowRoot.getElementById("callHistoryContent");
+
+    const configCollapsed = this.readSessionCollapsed(this.configCollapsedSessionKey, true);
+    const callHistoryCollapsed = this.readSessionCollapsed(this.callHistoryCollapsedSessionKey, true);
+
+    if (configToggle && configContent) {
+      configToggle.classList.toggle("collapsed", configCollapsed);
+      configContent.classList.toggle("collapsed", configCollapsed);
     }
 
-    addWidgetDiagLog("analytics-queue-all-fields-report-unavailable", {
-      requestId,
-      range: range.range,
-      queues: selectedQueues,
-      attempts: analyzerResult.attempts
-    });
-    return res.status(503).json({
-      ok: false,
-      backendBuildId: BUILD_ID,
-      requestId,
-      source: "wxcc-analyzer-queue-all-fields-report",
-      reportId: QUEUE_ALL_FIELDS_REPORT_ID,
-      analyzerBaseUrl: ANALYZER_BASE_URL,
-      analyzerReportUnavailable: true,
-      range: range.range,
-      durationFilter: buildAnalyzerDurationFilter(range.range),
-      from: range.from,
-      to: range.to,
-      generatedAt: new Date().toISOString(),
-      queues: selectedQueues,
-      metrics: null,
-      reportFields: null,
-      attempts: analyzerResult.attempts
-    });
-  } catch (err) {
-    addWidgetDiagLog("analytics-queue-metrics-error", { requestId, error: err?.stack || err?.message || String(err), durationMs: Date.now() - startedAt });
-    res.status(500).json({ ok: false, backendBuildId: BUILD_ID, requestId, error: err?.message || String(err), source: "wxcc-analyzer-queue-all-fields-report" });
+    if (callHistoryToggle && callHistoryContent) {
+      callHistoryToggle.classList.toggle("collapsed", callHistoryCollapsed);
+      callHistoryContent.classList.toggle("collapsed", callHistoryCollapsed);
+    }
   }
-});
 
+  bindEvents() {
+    this.bindDiagLogEvents();
+    this.$themeToggleBtn().addEventListener("click", () => this.toggleTheme());
 
-app.get("/api/wallboard", requireSession, async (req, res) => {
-  const requestId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
-  addWidgetDiagLog("wallboard-build-start", { requestId, sessionTokenPresent: !!req.query?.token });
-
-  try {
-    const payload = await buildWallboardPayload(req.session || {});
-
-    lastGoodWallboardPayload = payload;
-    lastGoodWallboardPayloadTs = Date.now();
-    lastWallboardBuildError = "";
-
-    addWidgetDiagLog("wallboard-build-success", {
-      requestId,
-      summary: summarizeWallboardPayloadForLog(payload)
+    this.$toggle().addEventListener("change", () => {
+      this.hasUnsavedChanges = true;
+      this.updateLabel();
+      this.setStatus("Unsaved changes");
     });
 
-    res.json({
-      ...payload,
-      backendBuildId: BUILD_ID,
-      requestId
-    });
-  } catch (err) {
-    wallboardFailureCount += 1;
-    lastWallboardBuildError = err?.stack || err?.message || String(err);
+    [
+      this.$priorityQueue(),
+      this.$emergencyPrompt(),
+      this.$holidayPrompt(),
+      this.$globalVoiceName(),
+      this.$mohSalesQueue()
+    ].forEach(el => el.addEventListener("input", () => this.markDirty()));
 
-    addWidgetDiagLog("wallboard-build-error", {
-      requestId,
-      wallboardFailureCount,
-      error: lastWallboardBuildError
+    this.$globalLanguage().addEventListener("change", () => {
+      this.updateVoiceOptions();
+      this.markDirty();
     });
 
-    console.error("[wallboard] build failed", {
-      buildId: BUILD_ID,
-      error: lastWallboardBuildError
-    });
+    this.$saveBtn().addEventListener("click", async () => await this.saveState());
 
-    // Do not disconnect/break the widget on a transient WXCC/Search/Analyzer failure.
-    // Return the last known good payload for up to 10 minutes.
-    if (lastGoodWallboardPayload && Date.now() - lastGoodWallboardPayloadTs < 600000) {
-      return res.status(200).json({
-        ...lastGoodWallboardPayload,
-        ok: true,
-        stale: true,
-        staleReason: "wallboard-build-failed",
-        staleAgeMs: Date.now() - lastGoodWallboardPayloadTs,
-        wallboardFailureCount,
-        lastError: lastWallboardBuildError
+    const queueFilterButton = this.$queueFilterButton();
+    const queueFilterWrapper = this.shadowRoot.getElementById("queueFilterWrapper");
+
+    const kpiDurationSelect = this.shadowRoot.getElementById("kpiDurationSelect");
+    if (kpiDurationSelect) {
+      kpiDurationSelect.value = this.analyticsKpiRange || "60m";
+      kpiDurationSelect.addEventListener("change", () => {
+        this.analyticsKpiRange = kpiDurationSelect.value || "60m";
+        this.saveAnalyticsKpiRange();
+        this.analyticsKpiData = null;
+        this.applyAnalyticsKpisToUi();
+        this.loadAnalyticsMetrics("duration-change", this.runtimeId).catch(() => {});
       });
     }
 
-    // If no cache exists yet, still return a valid minimal payload.
-    return res.status(200).json({
-      ok: true,
-      stale: true,
-      staleReason: "wallboard-build-failed-no-cache",
-      buildId: BUILD_ID,
-      generatedAt: Date.now(),
-      allowedQueues: [],
-      queue: null,
-      agents: [],
-      agentList: [],
-      taskList: [],
-      waitingTaskList: [],
-      callHistoryList: [],
-      wallboardFailureCount,
-      lastError: lastWallboardBuildError
-    });
-  }
-});
+    if (queueFilterButton && queueFilterWrapper) {
+      queueFilterButton.addEventListener("click", event => {
+        event.stopPropagation();
+        queueFilterWrapper.classList.toggle("open");
+      });
 
+      this.shadowRoot.addEventListener("click", event => {
+        if (!queueFilterWrapper.contains(event.target)) {
+          queueFilterWrapper.classList.remove("open");
+        }
+      });
+    }
 
-app.get("/api/wallboard/stream", async (req, res) => {
-  const session = getSessionFromRequest(req);
+    const configToggle = this.shadowRoot.getElementById("configToggle");
+    const configContent = this.shadowRoot.getElementById("configContent");
 
-  if (!session) {
-    return res.status(401).json({
-      error: "Invalid or expired session"
-    });
-  }
+    if (configToggle && configContent) {
+      configToggle.addEventListener("click", () => {
+        const collapsed = configContent.classList.toggle("collapsed");
+        configToggle.classList.toggle("collapsed", collapsed);
+        this.writeSessionCollapsed(this.configCollapsedSessionKey, collapsed);
+      });
+    }
 
-  req.session = session;
+    const callHistoryToggle = this.shadowRoot.getElementById("callHistoryToggle");
+    const callHistoryContent = this.shadowRoot.getElementById("callHistoryContent");
 
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache, no-transform",
-    "Connection": "keep-alive",
-    "X-Accel-Buffering": "no"
-  });
-
-  if (typeof res.flushHeaders === "function") {
-    res.flushHeaders();
+    if (callHistoryToggle && callHistoryContent) {
+      callHistoryToggle.addEventListener("click", () => {
+        const collapsed = callHistoryContent.classList.toggle("collapsed");
+        callHistoryToggle.classList.toggle("collapsed", collapsed);
+        this.writeSessionCollapsed(this.callHistoryCollapsedSessionKey, collapsed);
+      });
+    }
   }
 
-  const client = {
-    id: crypto.randomUUID(),
-    session,
-    res,
-    lastPayload: ""
-  };
-
-  wallboardSseClients.add(client);
-
-  writeSseEvent(res, "ready", {
-    ok: true,
-    mode: WALLBOARD_FALLBACK_POLLING_ENABLED ? "event-bridge-with-fallback" : "event-only",
-    generatedAt: new Date().toISOString(),
-    fallbackPollingEnabled: WALLBOARD_FALLBACK_POLLING_ENABLED,
-    fallbackRefreshMs: WALLBOARD_FALLBACK_POLLING_ENABLED ? WALLBOARD_DATA_CACHE_TTL_MS : null,
-    eventRefreshDebounceMs: EVENT_REFRESH_DEBOUNCE_MS
-  });
-
-  // Initial load once when the widget connects.
-  await pushWallboardUpdateToClient(client, true);
-
-  const fallbackTimer = WALLBOARD_FALLBACK_POLLING_ENABLED
-    ? setInterval(() => {
-        pushWallboardUpdateToClient(client, false);
-      }, WALLBOARD_DATA_CACHE_TTL_MS)
-    : null;
-
-  const heartbeatTimer = setInterval(() => {
-    res.write(`: heartbeat ${Date.now()}\n\n`);
-  }, SSE_HEARTBEAT_MS);
-
-  req.on("close", () => {
-    wallboardSseClients.delete(client);
-    if (fallbackTimer) clearInterval(fallbackTimer);
-    clearInterval(heartbeatTimer);
-  });
-});
-
-app.post("/api/wxcc/events", (req, res) => {
-  if (!isWebhookSecretValid(req)) {
-    return res.status(401).json({
-      ok: false,
-      error: "Invalid webhook secret"
-    });
+  markDirty() {
+    this.hasUnsavedChanges = true;
+    this.setStatus("Unsaved changes");
   }
 
-  lastWxccEvent = {
-    receivedAt: new Date().toISOString(),
-    headers: {
-      event: req.headers["x-event-type"] || req.headers["x-webhook-event"] || "",
-      resource: req.headers["x-resource"] || "",
-      deliveryId: req.headers["x-webhook-delivery"] || req.headers["x-request-id"] || ""
-    },
-    body: req.body || {}
-  };
+  async init(runtimeId = this.runtimeId) {
+    try {
+      if (!this.guardRuntime(runtimeId)) return;
+      await this.bootstrapSession();
+      if (!this.guardRuntime(runtimeId)) return;
 
-  rememberAgentStateFromWxccEvent(lastWxccEvent.body);
-  rememberActiveCallFromWxccEvent(lastWxccEvent.body);
+      // v38 lifecycle resilience:
+      // The WXCC desktop can temporarily switch/park this iframe when the active user
+      // accepts a call and Cisco Call Control takes focus. On return, the backend
+      // entrypoint read may briefly fail with HTTP 500 although wallboard/SSE is fine.
+      // Do not block wallboard startup on entrypoint configuration loading.
+      try {
+        await this.loadEntryPoint(true);
+        this.setStatus("Ready");
+      } catch (entryErr) {
+        this.addDiagLog("entrypoint-load-nonfatal", {
+          phase: "init",
+          error: this.serializeError(entryErr)
+        });
+        this.setStatus(`Config temporarily unavailable: ${entryErr.message || entryErr}. Wallboard running.`);
+        this.scheduleEntryPointRetry("init-entrypoint-failed");
+      }
 
-  broadcastSseEvent("wxcc-event", {
-    ok: true,
-    receivedAt: lastWxccEvent.receivedAt,
-    headers: lastWxccEvent.headers,
-    eventBody: lastWxccEvent.body
-  });
-
-  scheduleEventDrivenWallboardRefresh(
-    lastWxccEvent.headers.event || lastWxccEvent.body?.eventType || lastWxccEvent.body?.type || "wxcc-webhook"
-  );
-
-  res.json({
-    ok: true,
-    receivedAt: lastWxccEvent.receivedAt
-  });
-});
-
-app.post("/api/wxcc/events/test", requireSession, (req, res) => {
-  lastWxccEvent = {
-    receivedAt: new Date().toISOString(),
-    headers: {
-      event: "manual-test",
-      resource: "manual-test",
-      deliveryId: crypto.randomUUID()
-    },
-    body: req.body || {}
-  };
-
-  broadcastSseEvent("wxcc-event", {
-    ok: true,
-    receivedAt: lastWxccEvent.receivedAt,
-    headers: lastWxccEvent.headers
-  });
-
-  scheduleEventDrivenWallboardRefresh("manual-test");
-
-  res.json({
-    ok: true,
-    message: "Manual event accepted. Wallboard refresh scheduled.",
-    receivedAt: lastWxccEvent.receivedAt
-  });
-});
-
-app.get("/api/debug/events", requireSession, (req, res) => {
-  res.json({
-    ok: true,
-    sseClients: wallboardSseClients.size,
-    lastWxccEvent,
-    fallbackPollingEnabled: WALLBOARD_FALLBACK_POLLING_ENABLED,
-    fallbackRefreshMs: WALLBOARD_FALLBACK_POLLING_ENABLED ? WALLBOARD_DATA_CACHE_TTL_MS : null,
-    eventRefreshDebounceMs: EVENT_REFRESH_DEBOUNCE_MS,
-    eventRefreshRetryDelaysMs: EVENT_REFRESH_RETRY_DELAYS_MS,
-    concurrency: {
-      mode: "single-flight-coalesced",
-      inFlight: wallboardRefreshInFlight,
-      pending: wallboardRefreshPending,
-      pendingReason: wallboardRefreshPendingReason,
-      generation: eventRefreshGeneration,
-      lastRunAt: wallboardLastRefreshRunTs ? new Date(wallboardLastRefreshRunTs).toISOString() : null,
-      agentEventStateCacheSize: agentEventStateCache.size
-    },
-    webhookSecretConfigured: Boolean(WXCC_EVENT_WEBHOOK_SECRET)
-  });
-});
-
-
-
-app.get("/api/debug/profile-queues", requireSession, async (req, res) => {
-  try {
-    const access = await getAllowedQueuesForSession(req.session);
-    const config = await getAccessConfig(false);
-
-    res.json({
-      ok: true,
-      sessionUser: req.session?.user || {},
-      queueSource: access.source,
-      queueAccessError: access.error,
-      allowedQueues: access.allowedQueues,
-      contactCenterUser: access.user ? {
-        id: access.user.id,
-        ciUserId: access.user.ciUserId,
-        email: access.user.email,
-        userProfileId: access.user.userProfileId,
-        teamIds: access.user.teamIds
-      } : null,
-      userProfile: access.profile ? {
-        id: access.profile.id,
-        name: access.profile.name,
-        profileType: access.profile.profileType,
-        accessAllQueues: access.profile.accessAllQueues,
-        queues: access.profile.queues,
-        rawQueueRefsFound: collectQueueRefs(access.profile)
-      } : null,
-      allVoiceQueues: getAllTelephonyQueueNames(config.queues)
-    });
-  } catch (err) {
-    res.status(500).json({
-      ok: false,
-      error: err.message
-    });
-  }
-});
-
-
-function getSubscriptionEndpointUrl(path = WXCC_SUBSCRIPTION_ENDPOINT) {
-  if (/^https?:\/\//i.test(path)) return path;
-  if (path.startsWith("/")) return `${WEBEX_BASE_URL}${path}`;
-  return `${WEBEX_BASE_URL}/${path}`;
-}
-
-function buildSubscriptionPayload(eventTypes = WXCC_SUBSCRIPTION_EVENTS) {
-  const payload = {
-    name: "WXCC Supervisor Widget Realtime Events",
-    description: "Realtime events for the WXCC Supervisor Access Control widget",
-    destinationUrl: WXCC_SUBSCRIPTION_TARGET_URL,
-    eventTypes: Array.isArray(eventTypes) ? eventTypes : [eventTypes],
-    orgId: WEBEX_ORG_ID
-  };
-
-  if (WXCC_EVENT_WEBHOOK_SECRET) {
-    payload.secret = WXCC_EVENT_WEBHOOK_SECRET;
+      this.startWallboardStream(runtimeId);
+      this.startAnalyticsKpiPolling(runtimeId);
+    } catch (err) {
+      this.addDiagLog("init-failed", { error: this.serializeError(err) });
+      this.setStatus(`Load failed: ${err.message}`);
+    }
   }
 
-  return payload;
-}
+  $userInfo() { return this.shadowRoot.getElementById("userInfo"); }
+  $roleBadge() { return this.shadowRoot.getElementById("roleBadge"); }
+  $themeToggleBtn() { return this.shadowRoot.getElementById("themeToggleBtn"); }
+  $toggle() { return this.shadowRoot.getElementById("emergencyToggle"); }
+  $priorityQueue() { return this.shadowRoot.getElementById("priorityQueue"); }
+  $emergencyPrompt() { return this.shadowRoot.getElementById("emergencyPrompt"); }
+  $holidayPrompt() { return this.shadowRoot.getElementById("holidayPrompt"); }
+  $globalLanguage() { return this.shadowRoot.getElementById("globalLanguage"); }
+  $globalVoiceName() { return this.shadowRoot.getElementById("globalVoiceName"); }
+  $mohSalesQueue() { return this.shadowRoot.getElementById("mohSalesQueue"); }
+  $saveBtn() { return this.shadowRoot.getElementById("saveBtn"); }
+  $stateLabel() { return this.shadowRoot.getElementById("stateLabel"); }
+  $status() { return this.shadowRoot.getElementById("status"); }
+  $queueFilterButton() { return this.shadowRoot.getElementById("queueFilterButton"); }
+  $queueFilterMenu() { return this.shadowRoot.getElementById("queueFilterMenu"); }
+  $kpiDurationSelect() { return this.shadowRoot.getElementById("kpiDurationSelect"); }
 
-async function callSubscriptionApi(method, path = WXCC_SUBSCRIPTION_ENDPOINT, body = null) {
-  const token = await getValidServiceToken();
-
-  const response = await fetch(getSubscriptionEndpointUrl(path), {
-    method,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/json",
-      ...(body ? { "Content-Type": "application/json" } : {})
-    },
-    ...(body ? { body: JSON.stringify(body) } : {})
-  });
-
-  const text = await response.text();
-
-  let json = null;
-  try {
-    json = text ? JSON.parse(text) : null;
-  } catch {
-    json = null;
+  setStatus(msg) {
+    this.$status().textContent = msg || "";
   }
 
-  return {
-    ok: response.ok,
-    status: response.status,
-    endpoint: getSubscriptionEndpointUrl(path),
-    body: json,
-    text: json ? undefined : text
-  };
-}
-
-async function callWxccApi(method, path, body = null) {
-  const token = await getValidServiceToken();
-
-  const endpoint = getSubscriptionEndpointUrl(path);
-
-  const response = await fetch(endpoint, {
-    method,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/json",
-      ...(body ? { "Content-Type": "application/json" } : {})
-    },
-    ...(body ? { body: JSON.stringify(body) } : {})
-  });
-
-  const text = await response.text();
-
-  let json = null;
-  try {
-    json = text ? JSON.parse(text) : null;
-  } catch {
-    json = null;
+  setWallboardStatus(msg) {
+    const el = this.shadowRoot.getElementById("wallboardStatus");
+    if (el) el.textContent = msg || "";
   }
 
-  return {
-    ok: response.ok,
-    status: response.status,
-    endpoint,
-    body: json,
-    text: json ? undefined : text
-  };
-}
+  getVoiceOptions(lang) {
+    return lang === "en-US" ? ["en-US-Daniel", "en-US-Maria"] : ["de-DE-Jonas", "de-DE-Emma"];
+  }
 
-function extractEventTypesFromPayload(payload) {
-  const values = new Set();
+  updateVoiceOptions(selected = "") {
+    const lang = this.$globalLanguage().value || "de-DE";
+    const options = this.getVoiceOptions(lang);
+    const select = this.$globalVoiceName();
+    const current = selected || select.value;
+    this.setSelectOptions(select, options);
+    select.value = options.includes(current) ? current : options[0];
+  }
 
-  function visit(value) {
-    if (!value) return;
+  getOverrideValue(overrides, name, fallback = "") {
+    return overrides.find(o => o.name === name)?.value ?? fallback;
+  }
 
-    if (Array.isArray(value)) {
-      value.forEach(visit);
+  async resolveDesktopIdentity() {
+    return {
+      email: this.email || "",
+      userId: this.userId || "",
+      teamId: this.teamId || "",
+      displayName: this.displayName || "Unknown User"
+    };
+  }
+
+  async readJsonResponse(res) {
+    const text = await res.text();
+    if (!text) return {};
+    try {
+      return JSON.parse(text);
+    } catch (err) {
+      this.addDiagLog("response-json-parse-failed", {
+        status: res?.status,
+        url: res?.url || "",
+        message: err?.message || String(err),
+        bodyPreview: String(text).slice(0, 1200)
+      });
+      return { error: text };
+    }
+  }
+
+  async bootstrapSession() {
+    if (this.isBootstrapping) return;
+    this.isBootstrapping = true;
+
+    try {
+      const identity = await this.resolveDesktopIdentity();
+      this.addDiagLog("bootstrap-start", { identity });
+      const bootstrapStart = performance.now();
+
+      const res = await fetch(`${this.API_URL}/api/session/bootstrap`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(identity)
+      });
+
+      const data = await this.readJsonResponse(res);
+      this.addDiagLog("bootstrap-response", { status: res.status, durationMs: Math.round(performance.now() - bootstrapStart), role: data?.role || "", hasToken: Boolean(data?.sessionToken), error: data?.error || "" });
+
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      if (!data.sessionToken) throw new Error("Bootstrap response did not include a session token");
+
+      this.sessionToken = data.sessionToken;
+      this.currentRole = data.role || "viewer";
+      this.currentIdentity = data.user || identity || null;
+      this.rememberCurrentIdentity(this.currentIdentity);
+
+      this.$userInfo().textContent = data.user?.displayName || "Unknown User";
+      this.$roleBadge().textContent = this.currentRole === "supervisor" ? "Supervisor" : "Viewer";
+
+      this.applyRoleState();
+    } finally {
+      this.isBootstrapping = false;
+    }
+  }
+
+  applyRoleState() {
+    const writable = ["supervisor", "admin"].includes(this.currentRole);
+    [
+      this.$toggle(),
+      this.$priorityQueue(),
+      this.$emergencyPrompt(),
+      this.$holidayPrompt(),
+      this.$globalLanguage(),
+      this.$globalVoiceName(),
+      this.$mohSalesQueue(),
+      this.$saveBtn()
+    ].forEach(el => el.disabled = !writable);
+  }
+
+  async authorizedFetch(path, options = {}, retryOn401 = true) {
+    if (!this.sessionToken) await this.bootstrapSession();
+
+    const method = options.method || "GET";
+    const makeRequest = async attempt => {
+      const start = performance.now();
+      this.addDiagLog("fetch-request", { path, method, attempt, hasSessionToken: Boolean(this.sessionToken) });
+      try {
+        const res = await fetch(`${this.API_URL}${path}`, {
+          ...options,
+          headers: {
+            ...(options.headers || {}),
+            Authorization: `Bearer ${this.sessionToken}`
+          }
+        });
+        this.addDiagLog("fetch-response", {
+          path,
+          method,
+          attempt,
+          status: res.status,
+          ok: res.ok,
+          durationMs: Math.round(performance.now() - start),
+          url: res.url || ""
+        });
+        return res;
+      } catch (err) {
+        this.addDiagLog("fetch-exception", {
+          path,
+          method,
+          attempt,
+          durationMs: Math.round(performance.now() - start),
+          error: this.serializeError(err)
+        });
+        throw err;
+      }
+    };
+
+    let res = await makeRequest(1);
+
+    if (res.status === 401 && retryOn401) {
+      this.addDiagLog("fetch-401-rebootstrap", { path, method });
+      await this.bootstrapSession();
+      res = await makeRequest(2);
+    }
+
+    return res;
+  }
+
+  async loadEntryPoint(force = false) {
+    if (!force && (this.isUpdating || this.hasUnsavedChanges)) return;
+
+    const res = await this.authorizedFetch(`/api/entrypoint/${this.ENTRY_POINT_ID}`);
+    const data = await this.readJsonResponse(res);
+
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+    if (data?.stale === true || data?.configStale === true) {
+      this.addDiagLog("entrypoint-stale-cache-used", {
+        staleReason: data?.staleReason || data?.configStaleReason || "",
+        lastError: data?.lastError ? String(data.lastError).slice(0, 800) : ""
+      });
+    }
+
+    const overrides = Array.isArray(data.flowOverrideSettings) ? data.flowOverrideSettings : [];
+
+    this.$priorityQueue().value = this.getOverrideValue(overrides, "Priority_Queue", "2");
+    this.$toggle().checked = this.getOverrideValue(overrides, "EmergencyCase", "false") === "true";
+    this.$emergencyPrompt().value = this.getOverrideValue(overrides, "EmergencyPrompt", "");
+    this.$holidayPrompt().value = this.getOverrideValue(overrides, "HolidayPrompt", "");
+
+    const lang = this.getOverrideValue(overrides, "Global_Language", "de-DE");
+    const voice = this.getOverrideValue(overrides, "Global_VoiceName", "");
+
+    this.$globalLanguage().value = ["de-DE", "en-US"].includes(lang) ? lang : "de-DE";
+    this.updateVoiceOptions(voice);
+    this.$mohSalesQueue().value = this.getOverrideValue(overrides, "Moh_Sales_Queue", "");
+
+    this.updateLabel();
+    this.hasUnsavedChanges = false;
+  }
+
+  scheduleEntryPointRetry(reason = "entrypoint-retry", runtimeId = this.runtimeId) {
+    if (!this.guardRuntime(runtimeId)) return;
+    if (this.entryPointRetryTimer) {
+      this.addDiagLog("entrypoint-retry-already-scheduled", { reason, runtimeId });
       return;
     }
 
-    if (typeof value !== "object") return;
-
-    const candidate =
-      value.eventType ||
-      value.eventName ||
-      value.type ||
-      value.name ||
-      value.id;
-
-    if (candidate && typeof candidate === "string") {
-      values.add(candidate);
-    }
-
-    for (const child of Object.values(value)) {
-      if (typeof child === "object") visit(child);
-    }
-  }
-
-  visit(payload);
-
-  return [...values].sort();
-}
-
-async function discoverWxccEventTypes() {
-  const results = [];
-
-  for (const endpoint of WXCC_EVENT_TYPES_ENDPOINTS) {
-    const result = await callWxccApi("GET", endpoint);
-    results.push({
-      endpoint: result.endpoint,
-      ok: result.ok,
-      status: result.status,
-      eventTypes: result.body ? extractEventTypesFromPayload(result.body) : [],
-      body: result.body,
-      text: result.text
-    });
-  }
-
-  return results;
-}
-
-
-async function createWxccSubscription(eventTypes = WXCC_SUBSCRIPTION_EVENTS) {
-  const payload = buildSubscriptionPayload(eventTypes);
-  const result = await callSubscriptionApi("POST", WXCC_SUBSCRIPTION_ENDPOINT, payload);
-
-  return {
-    eventTypes: payload.eventTypes,
-    payload,
-    result
-  };
-}
-
-app.get("/api/admin/wxcc-subscriptions/config", requireSession, requireWriteRole, (req, res) => {
-  res.json({
-    ok: true,
-    buildId: BUILD_ID,
-    endpoint: getSubscriptionEndpointUrl(),
-    targetUrl: WXCC_SUBSCRIPTION_TARGET_URL,
-    events: WXCC_SUBSCRIPTION_EVENTS,
-    webhookSecretConfigured: Boolean(WXCC_EVENT_WEBHOOK_SECRET),
-    expectedPayload: WXCC_SUBSCRIPTION_EVENTS.length ? buildSubscriptionPayload(WXCC_SUBSCRIPTION_EVENTS) : null,
-    eventTypeDiscoveryEndpoints: WXCC_EVENT_TYPES_ENDPOINTS.map(getSubscriptionEndpointUrl)
-  });
-});
-
-app.get("/api/admin/wxcc-subscriptions", requireSession, requireWriteRole, async (req, res) => {
-  try {
-    const result = await callSubscriptionApi("GET", WXCC_SUBSCRIPTION_ENDPOINT);
-
-    res.status(result.ok ? 200 : result.status).json({
-      ok: result.ok,
-      endpoint: result.endpoint,
-      status: result.status,
-      body: result.body,
-      text: result.text
-    });
-  } catch (err) {
-    res.status(500).json({
-      ok: false,
-      error: err.message
-    });
-  }
-});
-
-app.post("/api/admin/create-wxcc-subscriptions", requireSession, requireWriteRole, async (req, res) => {
-  try {
-    const requestedEvents = Array.isArray(req.body?.events) && req.body.events.length
-      ? req.body.events.map(v => String(v).trim()).filter(Boolean)
-      : WXCC_SUBSCRIPTION_EVENTS;
-
-    if (!requestedEvents.length) {
-      return res.status(400).json({
-        ok: false,
-        error: "No WXCC subscription event types configured. Call GET /api/admin/wxcc-event-types first, then set WXCC_SUBSCRIPTION_EVENTS or pass { events: [...] } in the POST body.",
-        endpoint: getSubscriptionEndpointUrl(),
-        targetUrl: WXCC_SUBSCRIPTION_TARGET_URL
-      });
-    }
-
-    const result = await createWxccSubscription(requestedEvents);
-
-    res.status(result.result.ok ? 200 : result.result.status).json({
-      ok: result.result.ok,
-      endpoint: getSubscriptionEndpointUrl(),
-      targetUrl: WXCC_SUBSCRIPTION_TARGET_URL,
-      events: requestedEvents,
-      webhookSecretConfigured: Boolean(WXCC_EVENT_WEBHOOK_SECRET),
-      payload: result.payload,
-      result: result.result
-    });
-  } catch (err) {
-    res.status(500).json({
-      ok: false,
-      error: err.message
-    });
-  }
-});
-
-app.post("/api/admin/test-wxcc-event-bridge", requireSession, requireWriteRole, (req, res) => {
-  lastWxccEvent = {
-    receivedAt: new Date().toISOString(),
-    headers: {
-      event: "admin-test",
-      resource: "admin-test",
-      deliveryId: crypto.randomUUID()
-    },
-    body: req.body || {}
-  };
-
-  broadcastSseEvent("wxcc-event", {
-    ok: true,
-    receivedAt: lastWxccEvent.receivedAt,
-    headers: lastWxccEvent.headers
-  });
-
-  scheduleEventDrivenWallboardRefresh("admin-test");
-
-  res.json({
-    ok: true,
-    message: "Admin test event accepted. Wallboard refresh scheduled.",
-    receivedAt: lastWxccEvent.receivedAt
-  });
-});
-
-
-app.get("/api/debug/build", (req, res) => {
-  res.json({
-    ok: true,
-    buildId: BUILD_ID,
-    hasEventTypesEndpoint: true,
-    hasSubscriptionConfigEndpoint: true,
-    hasEventBridge: true,
-    guiDiagnosticLogV32: true,
-    historyEndRefreshFixV31: true,
-    wallboard500IsolationFixV30: true,
-    stableRollbackBaselineV29: true,
-    frontendTimerHistoryCacheFix: true,
-    clientLiveTimerEnabled: true,
-    taskLegTerminationCacheEnabled: true,
-    taskLegTerminationEnabled: true,
-    taskLegTerminationCacheEnabled: true,
-    analyzerReportDiscoveryEnabled: true,
-    csrReportTodayDebugEnabled: true,
-    searchSchemaDebugEnabled: true,
-    eventOnlyRealtime: true,
-    eventTriggeredRetryBurst: true,
-    callVisibilityRetryOptimized: true,
-    callHistoryEnabled: true,
-    callHistoryWrapupEnabled: true,
-    callHistoryHandleTypeEnabled: true,
-    wrapupDiscoveryEnabled: true,
-    csrReportTodayDebugEnabled: true,
-    searchSchemaDebugEnabled: true,
-    callHistoryFullWidth: true,
-    taskDetailsWrapupVariant: lastTaskDetailsQueryVariant,
-    callHistoryWindow: "last-24h",
-    defaultEventRefreshDebounceMs: 1200,
-    eventRefreshRetryDelaysMs: EVENT_REFRESH_RETRY_DELAYS_MS,
-    fallbackPollingEnabled: WALLBOARD_FALLBACK_POLLING_ENABLED,
-    expectedEventTypesPath: "/api/admin/wxcc-event-types"
-  });
-});
-
-app.get("/api/admin/wxcc-event-types", requireSession, requireWriteRole, async (req, res) => {
-  try {
-    const results = await discoverWxccEventTypes();
-
-    res.json({
-      ok: true,
-      buildId: BUILD_ID,
-      configuredEventTypes: WXCC_SUBSCRIPTION_EVENTS,
-      discoveryEndpoints: WXCC_EVENT_TYPES_ENDPOINTS.map(getSubscriptionEndpointUrl),
-      results
-    });
-  } catch (err) {
-    res.status(500).json({ ok: false, buildId: BUILD_ID, error: err.message });
-  }
-});
-
-app.get("/api/admin/wxcc-eventtypes", requireSession, requireWriteRole, async (req, res) => {
-  try {
-    const results = await discoverWxccEventTypes();
-
-    res.json({
-      ok: true,
-      buildId: BUILD_ID,
-      alias: "/api/admin/wxcc-eventtypes",
-      configuredEventTypes: WXCC_SUBSCRIPTION_EVENTS,
-      discoveryEndpoints: WXCC_EVENT_TYPES_ENDPOINTS.map(getSubscriptionEndpointUrl),
-      results
-    });
-  } catch (err) {
-    res.status(500).json({ ok: false, buildId: BUILD_ID, error: err.message });
-  }
-});
-
-app.get("/api/admin/event-types", requireSession, requireWriteRole, async (req, res) => {
-  try {
-    const results = await discoverWxccEventTypes();
-
-    res.json({
-      ok: true,
-      buildId: BUILD_ID,
-      alias: "/api/admin/event-types",
-      configuredEventTypes: WXCC_SUBSCRIPTION_EVENTS,
-      discoveryEndpoints: WXCC_EVENT_TYPES_ENDPOINTS.map(getSubscriptionEndpointUrl),
-      results
-    });
-  } catch (err) {
-    res.status(500).json({ ok: false, buildId: BUILD_ID, error: err.message });
-  }
-});
-
-
-app.get("/api/debug/task-sample", requireSession, requireWriteRole, async (req, res) => {
-  try {
-    const tasks = await getTaskDetails();
-    const sample = tasks.slice(0, 5);
-
-    res.json({
-      ok: true,
-      buildId: BUILD_ID,
-      lastTaskDetailsQueryVariant,
-      count: tasks.length,
-      sample
-    });
-  } catch (err) {
-    res.status(500).json({
-      ok: false,
-      buildId: BUILD_ID,
-      error: err.message
-    });
-  }
-});
-
-
-
-function summarizeSearchResult(result, maxRows = 5) {
-  const summary = {
-    keys: result && typeof result === "object" ? Object.keys(result) : [],
-    sample: null
-  };
-
-  function findArrays(value, path = []) {
-    const arrays = [];
-
-    if (!value || typeof value !== "object") return arrays;
-
-    if (Array.isArray(value)) {
-      arrays.push({
-        path: path.join(".") || "root",
-        length: value.length,
-        sample: value.slice(0, maxRows)
-      });
-      return arrays;
-    }
-
-    for (const [key, child] of Object.entries(value)) {
-      arrays.push(...findArrays(child, [...path, key]));
-    }
-
-    return arrays;
-  }
-
-  summary.arrays = findArrays(result);
-  return summary;
-}
-
-async function runWrapupDiscoveryQuery(name, query, variables) {
-  try {
-    const result = await postSearchQuery(query, variables);
-
-    return {
-      name,
-      ok: true,
-      summary: summarizeSearchResult(result),
-      raw: result
-    };
-  } catch (err) {
-    return {
-      name,
-      ok: false,
-      error: err.message
-    };
-  }
-}
-
-app.get("/api/debug/wrapup-discovery", requireSession, requireWriteRole, async (req, res) => {
-  const now = Date.now();
-  const variables = {
-    from: now - 86400000,
-    to: now
-  };
-
-  const queries = [
-    {
-      name: "customerActivityRecords",
-      query: `
-        query WrapupDiscovery($from: Long!, $to: Long!) {
-          customerActivityRecords(from: $from, to: $to) {
-            records {
-              contactSessionId
-              recordId
-              recordUniqueId
-              taskId
-              queueName
-              agentName
-              wrapUpCodeName
-              wrapupCodeName
-              wrapUpReason
-              wrapupReason
-              contactHandleType
-              createdTime
-              endedTime
-            }
-          }
-        }
-      `
-    },
-    {
-      name: "customerActivityRecord",
-      query: `
-        query WrapupDiscovery($from: Long!, $to: Long!) {
-          customerActivityRecord(from: $from, to: $to) {
-            records {
-              contactSessionId
-              recordId
-              recordUniqueId
-              taskId
-              queueName
-              agentName
-              wrapUpCodeName
-              wrapupCodeName
-              wrapUpReason
-              wrapupReason
-              contactHandleType
-              createdTime
-              endedTime
-            }
-          }
-        }
-      `
-    },
-    {
-      name: "contactSession",
-      query: `
-        query WrapupDiscovery($from: Long!, $to: Long!) {
-          contactSession(from: $from, to: $to) {
-            sessions {
-              contactSessionId
-              taskId
-              queueName
-              agentName
-              wrapUpCodeName
-              wrapupCodeName
-              wrapUpReason
-              wrapupReason
-              contactHandleType
-              createdTime
-              endedTime
-            }
-          }
-        }
-      `
-    },
-    {
-      name: "contactSessions",
-      query: `
-        query WrapupDiscovery($from: Long!, $to: Long!) {
-          contactSessions(from: $from, to: $to) {
-            sessions {
-              contactSessionId
-              taskId
-              queueName
-              agentName
-              wrapUpCodeName
-              wrapupCodeName
-              wrapUpReason
-              wrapupReason
-              contactHandleType
-              createdTime
-              endedTime
-            }
-          }
-        }
-      `
-    },
-    {
-      name: "wrapupReports",
-      query: `
-        query WrapupDiscovery($from: Long!, $to: Long!) {
-          wrapupReports(from: $from, to: $to) {
-            records {
-              agentName
-              teamName
-              queueName
-              wrapUpCodeName
-              wrapupCodeName
-              wrapUpReason
-              count
-              createdTime
-            }
-          }
-        }
-      `
-    },
-    {
-      name: "wrapUpReports",
-      query: `
-        query WrapupDiscovery($from: Long!, $to: Long!) {
-          wrapUpReports(from: $from, to: $to) {
-            records {
-              agentName
-              teamName
-              queueName
-              wrapUpCodeName
-              wrapupCodeName
-              wrapUpReason
-              count
-              createdTime
-            }
-          }
-        }
-      `
-    },
-    {
-      name: "taskDetailsWithPotentialWrapupFields",
-      query: `
-        query WrapupDiscovery($from: Long!, $to: Long!) {
-          taskDetails(from: $from, to: $to) {
-            tasks {
-              id
-              status
-              channelType
-              createdTime
-              endedTime
-              firstQueueName
-              contactHandleType
-              abandonedType
-              wrapUpReason
-              wrapupReason
-              wrapUpCodeName
-              wrapupCodeName
-              wrapUpCode
-              wrapupCode
-              wrapUpReasonName
-              wrapupReasonName
-              lastQueue { id name }
-              lastAgent { id name }
-            }
-          }
-        }
-      `
-    }
-  ];
-
-  const results = [];
-
-  for (const item of queries) {
-    results.push(await runWrapupDiscoveryQuery(item.name, item.query, variables));
-  }
-
-  res.json({
-    ok: true,
-    buildId: BUILD_ID,
-    from: variables.from,
-    to: variables.to,
-    note: "This endpoint tests candidate Analyzer/Search GraphQL contexts for per-call wrap-up fields. Failed queries are expected during discovery.",
-    results
-  });
-});
-
-
-
-function getTodayRange(timeZone = "Europe/Berlin") {
-  // Render läuft typischerweise in UTC. Für den Debug nehmen wir bewusst lokale Browser/Server-Logik
-  // plus einen Tagesbereich, der den aktuellen Tag großzügig abdeckt.
-  const now = new Date();
-  const start = new Date(now);
-  start.setHours(0, 0, 0, 0);
-
-  return {
-    from: start.getTime(),
-    to: now.getTime(),
-    timeZone
-  };
-}
-
-function summarizeCsrResult(result, maxRows = 5) {
-  function findArrays(value, path = []) {
-    const arrays = [];
-
-    if (!value || typeof value !== "object") return arrays;
-
-    if (Array.isArray(value)) {
-      arrays.push({
-        path: path.join(".") || "root",
-        length: value.length,
-        sample: value.slice(0, maxRows)
-      });
-      return arrays;
-    }
-
-    for (const [key, child] of Object.entries(value)) {
-      arrays.push(...findArrays(child, [...path, key]));
-    }
-
-    return arrays;
-  }
-
-  return {
-    keys: result && typeof result === "object" ? Object.keys(result) : [],
-    arrays: findArrays(result)
-  };
-}
-
-async function runCsrDiscoveryQuery(name, query, variables) {
-  try {
-    const result = await postSearchQuery(query, variables);
-
-    return {
-      name,
-      ok: true,
-      summary: summarizeCsrResult(result),
-      raw: result
-    };
-  } catch (err) {
-    return {
-      name,
-      ok: false,
-      error: err.message
-    };
-  }
-}
-
-
-app.get("/api/debug/csr-report-today", requireSession, requireWriteRole, async (req, res) => {
-  const range = getTodayRange("Europe/Berlin");
-  const variables = {
-    from: range.from,
-    to: range.to
-  };
-
-  const queries = [
-    {
-      name: "csrReport",
-      query: `
-        query CsrReportToday($from: Long!, $to: Long!) {
-          csrReport(from: $from, to: $to) {
-            records {
-              contactSessionId
-              recordId
-              recordUniqueId
-              taskId
-              interactionId
-              channelType
-              origin
-              destination
-              direction
-              queueName
-              entryPointName
-              siteName
-              teamName
-              agentName
-              wrapUpReason
-              wrapupReason
-              wrapUpCodeName
-              wrapupCodeName
-              wrapUpCode
-              wrapupCode
-              contactHandleType
-              abandonedType
-              createdTime
-              connectedTime
-              endedTime
-              queueDuration
-              connectedDuration
-              totalDuration
-            }
-          }
-        }
-      `
-    },
-    {
-      name: "csrReports",
-      query: `
-        query CsrReportToday($from: Long!, $to: Long!) {
-          csrReports(from: $from, to: $to) {
-            records {
-              contactSessionId
-              recordId
-              recordUniqueId
-              taskId
-              interactionId
-              channelType
-              origin
-              destination
-              direction
-              queueName
-              entryPointName
-              siteName
-              teamName
-              agentName
-              wrapUpReason
-              wrapupReason
-              wrapUpCodeName
-              wrapupCodeName
-              wrapUpCode
-              wrapupCode
-              contactHandleType
-              abandonedType
-              createdTime
-              connectedTime
-              endedTime
-              queueDuration
-              connectedDuration
-              totalDuration
-            }
-          }
-        }
-      `
-    },
-    {
-      name: "customerSessionRecords",
-      query: `
-        query CsrReportToday($from: Long!, $to: Long!) {
-          customerSessionRecords(from: $from, to: $to) {
-            records {
-              contactSessionId
-              recordId
-              recordUniqueId
-              taskId
-              interactionId
-              channelType
-              origin
-              destination
-              direction
-              queueName
-              entryPointName
-              teamName
-              agentName
-              wrapUpCodeName
-              wrapupCodeName
-              wrapUpReason
-              wrapupReason
-              contactHandleType
-              abandonedType
-              createdTime
-              endedTime
-              totalDuration
-            }
-          }
-        }
-      `
-    },
-    {
-      name: "customerSessionRecord",
-      query: `
-        query CsrReportToday($from: Long!, $to: Long!) {
-          customerSessionRecord(from: $from, to: $to) {
-            records {
-              contactSessionId
-              recordId
-              recordUniqueId
-              taskId
-              interactionId
-              channelType
-              origin
-              destination
-              direction
-              queueName
-              entryPointName
-              teamName
-              agentName
-              wrapUpCodeName
-              wrapupCodeName
-              wrapUpReason
-              wrapupReason
-              contactHandleType
-              abandonedType
-              createdTime
-              endedTime
-              totalDuration
-            }
-          }
-        }
-      `
-    },
-    {
-      name: "contactSessionRecords",
-      query: `
-        query CsrReportToday($from: Long!, $to: Long!) {
-          contactSessionRecords(from: $from, to: $to) {
-            records {
-              contactSessionId
-              recordId
-              recordUniqueId
-              taskId
-              interactionId
-              channelType
-              origin
-              destination
-              direction
-              queueName
-              entryPointName
-              teamName
-              agentName
-              wrapUpCodeName
-              wrapupCodeName
-              wrapUpReason
-              wrapupReason
-              contactHandleType
-              abandonedType
-              createdTime
-              endedTime
-              totalDuration
-            }
-          }
-        }
-      `
-    },
-    {
-      name: "csrReportMinimal",
-      query: `
-        query CsrReportToday($from: Long!, $to: Long!) {
-          csrReport(from: $from, to: $to) {
-            records {
-              contactSessionId
-              taskId
-              queueName
-              agentName
-              wrapUpCodeName
-              contactHandleType
-              createdTime
-              endedTime
-            }
-          }
-        }
-      `
-    }
-  ];
-
-  const results = [];
-
-  for (const item of queries) {
-    results.push(await runCsrDiscoveryQuery(item.name, item.query, variables));
-  }
-
-  res.json({
-    ok: true,
-    buildId: BUILD_ID,
-    report: "CSR Report - Today discovery",
-    from: variables.from,
-    to: variables.to,
-    timeZone: range.timeZone,
-    note: "This endpoint tests likely Search/Analyzer GraphQL contexts for the CSR Report with today's duration. Failed queries are expected during discovery.",
-    results
-  });
-});
-
-
-function unwrapGraphqlType(type) {
-  if (!type) return "";
-
-  if (type.kind === "NON_NULL") {
-    return `${unwrapGraphqlType(type.ofType)}!`;
-  }
-
-  if (type.kind === "LIST") {
-    return `[${unwrapGraphqlType(type.ofType)}]`;
-  }
-
-  return type.name || type.kind || "";
-}
-
-function summarizeGraphqlField(field) {
-  return {
-    name: field.name,
-    type: unwrapGraphqlType(field.type),
-    args: (field.args || []).map(arg => ({
-      name: arg.name,
-      type: unwrapGraphqlType(arg.type)
-    }))
-  };
-}
-
-app.get("/api/debug/search-schema", requireSession, requireWriteRole, async (req, res) => {
-  const query = `
-    query SearchSchemaIntrospection {
-      __schema {
-        queryType {
-          fields {
-            name
-            type {
-              kind
-              name
-              ofType {
-                kind
-                name
-                ofType {
-                  kind
-                  name
-                  ofType {
-                    kind
-                    name
-                    ofType {
-                      kind
-                      name
-                    }
-                  }
-                }
-              }
-            }
-            args {
-              name
-              type {
-                kind
-                name
-                ofType {
-                  kind
-                  name
-                  ofType {
-                    kind
-                    name
-                    ofType {
-                      kind
-                      name
-                      ofType {
-                        kind
-                        name
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
+    const retryDelayMs = 5000;
+    this.addDiagLog("entrypoint-retry-scheduled", { reason, retryDelayMs, runtimeId });
+
+    this.entryPointRetryTimer = this.safeSetTimeout(async () => {
+      this.entryPointRetryTimer = null;
+      if (!this.guardRuntime(runtimeId)) return;
+      try {
+        this.addDiagLog("entrypoint-retry-start", { reason, runtimeId });
+        await this.loadEntryPoint(true);
+        if (!this.guardRuntime(runtimeId)) return;
+        this.addDiagLog("entrypoint-retry-success", { reason, runtimeId });
+        if (!this.hasUnsavedChanges) this.setStatus("Ready");
+      } catch (err) {
+        this.addDiagLog("entrypoint-retry-failed", {
+          reason,
+          error: this.serializeError(err),
+          runtimeId
+        });
+        this.scheduleEntryPointRetry("retry-failed", runtimeId);
       }
+    }, retryDelayMs, runtimeId);
+  }
+
+  updateLabel() {
+    this.$stateLabel().textContent = this.$toggle().checked ? "ON" : "OFF";
+  }
+
+  toNumber(value, fallback = 0) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  setKpiClass(elementId, state) {
+    const el = this.shadowRoot.getElementById(elementId);
+    const card = el?.closest(".kpi");
+    if (!card) return;
+
+    card.classList.remove("kpi-green", "kpi-orange", "kpi-red", "kpi-critical");
+    if (state) card.classList.add(state);
+  }
+
+  applyWallboardThresholds({ callsInQueue, loggedInAgents, availableAgents }) {
+    const queue = this.toNumber(callsInQueue);
+    const loggedIn = this.toNumber(loggedInAgents);
+    const available = this.toNumber(availableAgents);
+
+    this.setKpiClass(
+      "kpiCallsInQueue",
+      queue > 1 ? "kpi-critical" : queue === 1 ? "kpi-orange" : ""
+    );
+
+    this.setKpiClass(
+      "kpiLoggedIn",
+      loggedIn > 1 ? "kpi-green" : loggedIn === 1 ? "kpi-orange" : "kpi-red"
+    );
+
+    this.setKpiClass(
+      "kpiAvailable",
+      available > 1 ? "kpi-green" : available === 1 ? "kpi-orange" : "kpi-red"
+    );
+  }
+
+  getAgentRowClass(state) {
+    return String(state || "").trim().toLowerCase() === "available"
+      ? "table-row agent-available"
+      : "table-row agent-unavailable";
+  }
+
+  formatDuration(seconds) {
+    const value = Number(seconds || 0);
+    if (value < 60) return `${value}s`;
+    const min = Math.floor(value / 60);
+    const sec = value % 60;
+    if (min < 60) return `${min}m ${sec}s`;
+    return `${Math.floor(min / 60)}h ${min % 60}m`;
+  }
+
+  shortId(id) {
+    return id ? String(id).slice(0, 8) : "-";
+  }
+
+  formatDateTime(timestamp) {
+    const value = Number(timestamp || 0);
+    if (!value) return "-";
+
+    try {
+      return new Date(value).toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit"
+      });
+    } catch {
+      return "-";
     }
-  `;
+  }
 
-  try {
-    const result = await postSearchQuery(query, {});
-    const fields = result?.data?.__schema?.queryType?.fields || [];
-    const summarizedFields = fields.map(summarizeGraphqlField);
+  getAgentDuration(agent) {
+    const base = Number(agent.lastActivityTime || agent.startTime || 0);
+    return base > 0 ? Math.max(0, Math.floor((Date.now() - base) / 1000)) : 0;
+  }
 
-    const keywords = [
-      "csr",
-      "customer",
-      "contact",
-      "session",
-      "activity",
-      "record",
-      "wrap",
-      "wrapup",
-      "wrapUp",
-      "aux",
-      "auxiliary",
-      "agent",
-      "task"
-    ];
 
-    const interestingFields = summarizedFields.filter(field => {
-      const haystack = `${field.name} ${field.type}`.toLowerCase();
-      return keywords.some(keyword => haystack.includes(keyword.toLowerCase()));
+  normalizeText(value) {
+    return String(value || "").trim().toLowerCase();
+  }
+
+  extractAllowedQueuesFromWallboardData(data = {}) {
+    const directQueues =
+      data.allowedQueues ||
+      data.user?.allowedQueues ||
+      data.user?.queues ||
+      data.queues ||
+      [];
+
+    return Array.from(
+      new Set(
+        (Array.isArray(directQueues) ? directQueues : [])
+          .map(q => String(q || "").trim())
+          .filter(Boolean)
+      )
+    );
+  }
+
+  getCallQueueName(call) {
+    return (
+      call?.queue ||
+      call?.queueName ||
+      call?.firstQueue ||
+      call?.firstQueueName ||
+      call?.lastQueue ||
+      call?.destinationQueue ||
+      call?.queueDisplayName ||
+      ""
+    );
+  }
+
+  normalizeEmpty(value) {
+    const text = String(value || "").trim();
+    return text || "-";
+  }
+
+  getWrapupReason(call) {
+    const value =
+      call?.wrapupReason ||
+      call?.wrapUpReason ||
+      call?.wrapUpCodeName ||
+      call?.wrapupCodeName ||
+      call?.wrapUpCode ||
+      call?.wrapupCode ||
+      call?.wrapUpReasonName ||
+      call?.wrapupReasonName ||
+      call?.wrapUpData?.name ||
+      call?.wrapupData?.name ||
+      call?.wrapUp?.name ||
+      call?.wrapup?.name ||
+      "";
+
+    return String(value || "").trim() || "-";
+  }
+
+  getHandleType(call) {
+    const value =
+      call?.handleType ||
+      call?.contactHandleType ||
+      call?.abandonedType ||
+      "";
+
+    return String(value || "").trim() || "-";
+  }
+
+  getTerminationReason(call) {
+    const value =
+      call?.terminationReason ||
+      call?.taskLegTerminationReason ||
+      call?.taskLegStatus ||
+      "";
+
+    return String(value || "").trim() || "-";
+  }
+
+  updateQueueFilterOptions() {
+    const wrapper = this.shadowRoot.getElementById("queueFilterWrapper");
+    const button = this.$queueFilterButton();
+    const menu = this.$queueFilterMenu();
+
+    if (!wrapper || !button || !menu) return;
+
+    menu.innerHTML = "";
+
+    const allowedQueues = Array.isArray(this.allowedQueueNames)
+      ? this.allowedQueueNames.filter(Boolean)
+      : [];
+
+    if (allowedQueues.length <= 1) {
+      wrapper.classList.remove("visible", "open");
+      this.selectedQueueFilters = allowedQueues.length === 1 ? [allowedQueues[0]] : [];
+      this.saveSelectedQueueFilters();
+      button.textContent = allowedQueues.length === 1 ? `${allowedQueues[0]} ▾` : "Queues ▾";
+      return;
+    }
+
+    wrapper.classList.add("visible");
+
+    const selected = Array.isArray(this.selectedQueueFilters)
+      ? this.selectedQueueFilters.filter(q => allowedQueues.includes(q))
+      : [];
+
+    this.selectedQueueFilters = selected.length ? selected : [allowedQueues[0]];
+    this.saveSelectedQueueFilters();
+
+    allowedQueues.forEach(queueName => {
+      const label = document.createElement("label");
+      label.className = "queue-filter-option";
+
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.value = queueName;
+      checkbox.checked = this.selectedQueueFilters.includes(queueName);
+
+      checkbox.addEventListener("change", async () => {
+        const checkedValues = Array.from(
+          menu.querySelectorAll('input[type="checkbox"]:checked')
+        ).map(input => input.value);
+
+        if (!checkedValues.length) {
+          checkbox.checked = true;
+          return;
+        }
+
+        this.selectedQueueFilters = checkedValues;
+        this.saveSelectedQueueFilters();
+        this.updateQueueFilterButtonLabel();
+
+        if (this.lastWallboardData) {
+          this.processWallboardData(this.lastWallboardData);
+        } else {
+          await this.loadWallboard();
+        }
+        this.analyticsKpiData = null;
+        this.applyAnalyticsKpisToUi();
+        this.loadAnalyticsMetrics("queue-filter-change", this.runtimeId).catch(() => {});
+      });
+
+      const text = document.createElement("span");
+      text.textContent = queueName;
+
+      label.appendChild(checkbox);
+      label.appendChild(text);
+      menu.appendChild(label);
     });
 
-    res.json({
-      ok: true,
-      buildId: BUILD_ID,
-      fieldCount: summarizedFields.length,
-      interestingFieldCount: interestingFields.length,
-      interestingFields,
-      allFields: summarizedFields
-    });
-  } catch (err) {
-    res.status(500).json({
-      ok: false,
-      buildId: BUILD_ID,
-      error: err.message,
-      note: "If introspection is disabled, we need to discover the Analyzer report API via REST/report definitions instead."
+    const hint = document.createElement("div");
+    hint.className = "queue-filter-hint";
+    hint.textContent = "Mehrere Queues können gleichzeitig ausgewählt werden.";
+    menu.appendChild(hint);
+
+    this.updateQueueFilterButtonLabel();
+  }
+
+  updateQueueFilterButtonLabel() {
+    const button = this.$queueFilterButton();
+    if (!button) return;
+
+    const selected = Array.isArray(this.selectedQueueFilters)
+      ? this.selectedQueueFilters
+      : [];
+
+    if (!selected.length) {
+      button.textContent = "Queues ▾";
+    } else if (selected.length === 1) {
+      button.textContent = `${selected[0]} ▾`;
+    } else {
+      button.textContent = `${selected.length} Queues ▾`;
+    }
+  }
+
+  getVisibleQueueNames() {
+    const allowedQueues = Array.isArray(this.allowedQueueNames) ? this.allowedQueueNames : [];
+
+    if (!allowedQueues.length) return [];
+
+    const selected = Array.isArray(this.selectedQueueFilters)
+      ? this.selectedQueueFilters.filter(q => allowedQueues.includes(q))
+      : [];
+
+    return selected.length ? selected : [allowedQueues[0]];
+  }
+
+  isQueueVisibleForCurrentUser(queueName) {
+    const allowedQueues = Array.isArray(this.allowedQueueNames) ? this.allowedQueueNames : [];
+
+    if (!allowedQueues.length) return false;
+
+    const visibleQueues = this.getVisibleQueueNames();
+    const normalizedQueue = this.normalizeText(queueName);
+
+    return visibleQueues.some(q => this.normalizeText(q) === normalizedQueue);
+  }
+
+  filterCallsByAllowedQueues(calls) {
+    const list = Array.isArray(calls) ? calls : [];
+
+    return list.filter(call => {
+      const queueName = this.getCallQueueName(call);
+      if (!queueName && call?.reconstructed === true) return true;
+      return this.isQueueVisibleForCurrentUser(queueName);
     });
   }
-});
 
-app.get("/api/debug/search-field-candidates", requireSession, requireWriteRole, async (req, res) => {
-  const now = Date.now();
-  const variables = {
-    from: now - 86400000,
-    to: now
-  };
+  calculateQueueKpisFromVisibleCalls(waitingCalls, activeCalls, originalQueue = {}) {
+    const visibleWaiting = Array.isArray(waitingCalls) ? waitingCalls : [];
+    const visibleActive = Array.isArray(activeCalls) ? activeCalls : [];
 
-  const candidates = [
-    "agentWrapupAuxiliary",
-    "agentWrapUpAuxiliary",
-    "agentWrapupAuxiliaryReport",
-    "agentWrapUpAuxiliaryReport",
-    "agentWrapup",
-    "agentWrapUp",
-    "wrapupAuxiliary",
-    "wrapUpAuxiliary",
-    "wrapupAuxiliaryReport",
-    "wrapUpAuxiliaryReport",
-    "agentAuxiliary",
-    "agentAuxiliaryReport",
-    "csr",
-    "CSR",
-    "csrReport",
-    "customerSession",
-    "customerSessions",
-    "customerActivity",
-    "customerActivities",
-    "customerActivityRecord",
-    "customerActivityRecords"
-  ];
+    const waitingDurations = visibleWaiting
+      .map(call => Number(call.waitingSeconds || 0))
+      .filter(value => Number.isFinite(value) && value >= 0);
 
-  const results = [];
+    const activeDurations = visibleActive
+      .map(call => Math.round(Number(call.connectedDuration || 0) / 1000))
+      .filter(value => Number.isFinite(value) && value >= 0);
 
-  for (const field of candidates) {
-    const query = `
-      query Candidate($from: Long!, $to: Long!) {
-        ${field}(from: $from, to: $to) {
-          __typename
-        }
-      }
+    const avg = values => {
+      if (!values.length) return 0;
+      return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+    };
+
+    return {
+      callsInQueue: visibleWaiting.length,
+      activeCalls: visibleActive.length,
+      longestWaitingSeconds: waitingDurations.length ? Math.max(...waitingDurations) : 0,
+      avgWaitSeconds: waitingDurations.length ? avg(waitingDurations) : 0,
+      avgHandleSeconds: activeDurations.length ? avg(activeDurations) : Number(originalQueue.avgHandleSeconds || 0)
+    };
+  }
+
+  renderWaitingCalls(calls) {
+    const list = this.shadowRoot.getElementById("waitingCallList");
+    list.innerHTML = `
+      <div class="call-row call-header">
+        <div>Status</div><div>Queue</div><div>Caller</div><div>Entry Point</div><div>Waiting</div><div>Task</div>
+      </div>
     `;
 
-    try {
-      const result = await postSearchQuery(query, variables);
-      results.push({
-        field,
-        ok: true,
-        result
-      });
-    } catch (err) {
-      results.push({
-        field,
-        ok: false,
-        error: err.message
-      });
-    }
-  }
-
-  res.json({
-    ok: true,
-    buildId: BUILD_ID,
-    note: "This probes likely report/query field names with a minimal __typename selection.",
-    results
-  });
-});
-
-
-
-function summarizeTaskLegResult(result, maxRows = 5) {
-  function findArrays(value, path = []) {
-    const arrays = [];
-
-    if (!value || typeof value !== "object") return arrays;
-
-    if (Array.isArray(value)) {
-      arrays.push({
-        path: path.join(".") || "root",
-        length: value.length,
-        sample: value.slice(0, maxRows)
-      });
-      return arrays;
+    if (!calls.length) {
+      const row = document.createElement("div");
+      row.className = "call-row";
+      row.innerHTML = `<div>No waiting calls</div><div></div><div></div><div></div><div></div><div></div>`;
+      list.appendChild(row);
+      return;
     }
 
-    for (const [key, child] of Object.entries(value)) {
-      arrays.push(...findArrays(child, [...path, key]));
-    }
-
-    return arrays;
-  }
-
-  return {
-    keys: result && typeof result === "object" ? Object.keys(result) : [],
-    arrays: findArrays(result)
-  };
-}
-
-async function runTaskLegDiscoveryQuery(name, query, variables) {
-  try {
-    const result = await postSearchQuery(query, variables);
-
-    return {
-      name,
-      ok: true,
-      summary: summarizeTaskLegResult(result),
-      raw: result
-    };
-  } catch (err) {
-    return {
-      name,
-      ok: false,
-      error: err.message
-    };
-  }
-}
-
-
-app.get("/api/debug/taskleg-schema", requireSession, requireWriteRole, async (req, res) => {
-  const query = `
-    query TaskLegDetailsTypeOnly {
-      __type(name: "TaskLegDetails") {
-        name
-        kind
-        fields {
-          name
-          type {
-            kind
-            name
-            ofType {
-              kind
-              name
-              ofType {
-                kind
-                name
-              }
-            }
-          }
-        }
-      }
-    }
-  `;
-
-  try {
-    const result = await postSearchQuery(query, {});
-    const fields = result?.data?.__type?.fields || [];
-
-    const normalizedFields = fields.map(field => ({
-      name: field.name,
-      type: unwrapGraphqlType(field.type)
-    }));
-
-    const keywords = [
-      "wrap", "reason", "disconnect", "disposition", "termination",
-      "ended", "end", "handle", "agent", "queue", "task", "session",
-      "leg", "contact", "code"
-    ];
-
-    const interestingFields = normalizedFields.filter(field => {
-      const haystack = `${field.name} ${field.type}`.toLowerCase();
-      return keywords.some(keyword => haystack.includes(keyword));
-    });
-
-    res.json({
-      ok: true,
-      buildId: BUILD_ID,
-      note: "Light introspection only. This avoids Cisco's anti-abuse protection for deep introspection.",
-      detailType: {
-        name: result?.data?.__type?.name || "TaskLegDetails",
-        fieldCount: normalizedFields.length,
-        interestingFields,
-        allFields: normalizedFields
-      }
-    });
-  } catch (err) {
-    res.status(500).json({
-      ok: false,
-      buildId: BUILD_ID,
-      error: err.message
+    calls.map(call => this.enrichActiveCallDeterministically(call)).forEach(call => {
+      const row = document.createElement("div");
+      row.className = "call-row";
+      row.innerHTML = `
+        <div>${call.status || "-"}</div>
+        <div>${this.getCallQueueName(call) || "-"}</div>
+        <div>${call.caller || "-"}</div>
+        <div>${call.entryPoint || "-"}</div>
+        <div>${this.formatDuration(call.waitingSeconds)}</div>
+        <div>${this.shortId(call.id)}</div>
+      `;
+      list.appendChild(row);
     });
   }
-});
-
-app.get("/api/debug/taskleg-sample", requireSession, requireWriteRole, async (req, res) => {
-  const now = Date.now();
-  const variables = {
-    from: now - 86400000,
-    to: now
-  };
-
-  const queries = [
-    {
-      name: "minimal",
-      query: `
-        query TaskLegSample($from: Long!, $to: Long!) {
-          taskLegDetails(from: $from, to: $to) {
-            tasks { id }
-          }
-        }
-      `
-    },
-    {
-      name: "commonFields",
-      query: `
-        query TaskLegSample($from: Long!, $to: Long!) {
-          taskLegDetails(from: $from, to: $to) {
-            tasks {
-              id
-              status
-              channelType
-              createdTime
-              endedTime
-              origin
-              destination
-              direction
-              queueDuration
-              connectedDuration
-              totalDuration
-              contactHandleType
-              abandonedType
-              firstQueueName
-              lastQueue { id name }
-              lastAgent { id name }
-              lastTeam { id name }
-            }
-          }
-        }
-      `
-    },
-    {
-      name: "handleFields",
-      query: `
-        query TaskLegSample($from: Long!, $to: Long!) {
-          taskLegDetails(from: $from, to: $to) {
-            tasks {
-              id
-              contactHandleType
-              abandonedType
-            }
-          }
-        }
-      `
-    },
-    {
-      name: "taskLegsNode",
-      query: `
-        query TaskLegSample($from: Long!, $to: Long!) {
-          taskLegDetails(from: $from, to: $to) {
-            taskLegs { id }
-          }
-        }
-      `
-    },
-    {
-      name: "recordsNode",
-      query: `
-        query TaskLegSample($from: Long!, $to: Long!) {
-          taskLegDetails(from: $from, to: $to) {
-            records { id }
-          }
-        }
-      `
-    }
-  ];
-
-  const results = [];
-
-  for (const item of queries) {
-    results.push(await runTaskLegDiscoveryQuery(item.name, item.query, variables));
-  }
-
-  res.json({
-    ok: true,
-    buildId: BUILD_ID,
-    from: variables.from,
-    to: variables.to,
-    note: "This probes taskLegDetails shape and wrapup/disconnect candidates. Failed variants are expected.",
-    results
-  });
-});
 
 
-app.get("/api/debug/taskleg-field-probe", requireSession, requireWriteRole, async (req, res) => {
-  const now = Date.now();
-  const variables = {
-    from: now - 86400000,
-    to: now
-  };
+  updateDeterministicDirectories(snapshot = {}) {
+    const now = Date.now();
+    const agents = Array.isArray(snapshot.agentList) ? snapshot.agentList : [];
+    const calls = [];
+    if (Array.isArray(snapshot.taskList)) calls.push(...snapshot.taskList);
+    if (Array.isArray(snapshot.waitingTaskList)) calls.push(...snapshot.waitingTaskList);
+    if (Array.isArray(snapshot.callHistoryList)) calls.push(...snapshot.callHistoryList);
 
-  const candidateFields = [
-    "id",
-    "taskId",
-    "status",
-    "channelType",
-    "createdTime",
-    "endedTime",
-    "origin",
-    "destination",
-    "direction",
-    "queueName",
-    "agentName",
-    "contactHandleType",
-    "abandonedType",
-    "wrapUpReason",
-    "wrapupReason",
-    "wrapUpCodeName",
-    "wrapupCodeName",
-    "wrapUpCode",
-    "wrapupCode",
-    "wrapUpReasonName",
-    "wrapupReasonName",
-    "disconnectReason",
-    "endReason",
-    "reason",
-    "disposition",
-    "dispositionCode",
-    "dispositionName"
-  ];
-
-  const results = [];
-
-  for (const fieldName of candidateFields) {
-    const query = `
-      query TaskLegFieldProbe($from: Long!, $to: Long!) {
-        taskLegDetails(from: $from, to: $to) {
-          tasks {
-            ${fieldName}
-          }
-        }
-      }
-    `;
-
-    try {
-      const result = await postSearchQuery(query, variables);
-      const tasks = result?.data?.taskLegDetails?.tasks || [];
-      results.push({
-        fieldName,
-        ok: true,
-        count: tasks.length,
-        sample: tasks.slice(0, 3)
+    agents.forEach(agent => {
+      const agentId = this.resolveAgentId(agent);
+      if (!agentId) return;
+      const previous = this.agentDirectory.get(agentId) || {};
+      this.agentDirectory.set(agentId, {
+        ...previous,
+        agentId,
+        name: agent.name || agent.agentName || agent.displayName || agent.login || previous.name || "",
+        login: agent.login || previous.login || "",
+        team: agent.team || agent.teamName || previous.team || "",
+        teamId: agent.teamId || previous.teamId || "",
+        lastSeenMs: now
       });
-    } catch (err) {
-      results.push({
-        fieldName,
-        ok: false,
-        error: err.message
-      });
-    }
-  }
-
-  res.json({
-    ok: true,
-    buildId: BUILD_ID,
-    note: "This probes TaskLegDetails fields one-by-one to find supported wrapup/disposition fields without heavy introspection.",
-    results
-  });
-});
-
-
-app.get("/api/debug/taskleg-rootnode-probe", requireSession, requireWriteRole, async (req, res) => {
-  const now = Date.now();
-  const variables = {
-    from: now - 86400000,
-    to: now
-  };
-
-  const candidateNodes = [
-    "data",
-    "items",
-    "records",
-    "results",
-    "nodes",
-    "edges",
-    "taskLegs",
-    "legs",
-    "taskLegDetails",
-    "taskLeg",
-    "rows",
-    "list",
-    "content"
-  ];
-
-  const results = [];
-
-  for (const nodeName of candidateNodes) {
-    const query = `
-      query TaskLegRootNodeProbe($from: Long!, $to: Long!) {
-        taskLegDetails(from: $from, to: $to) {
-          ${nodeName} {
-            __typename
-          }
-        }
-      }
-    `;
-
-    try {
-      const result = await postSearchQuery(query, variables);
-      results.push({
-        nodeName,
-        ok: true,
-        result
-      });
-    } catch (err) {
-      results.push({
-        nodeName,
-        ok: false,
-        error: err.message
-      });
-    }
-  }
-
-  res.json({
-    ok: true,
-    buildId: BUILD_ID,
-    from: variables.from,
-    to: variables.to,
-    note: "This probes possible child/root nodes below taskLegDetails. We need the node that is not FieldUndefined.",
-    results
-  });
-});
-
-app.get("/api/debug/taskleg-rootfield-schema", requireSession, requireWriteRole, async (req, res) => {
-  const query = `
-    query TaskLegListTypeOnly {
-      __type(name: "TaskLegDetailsList") {
-        name
-        fields {
-          name
-          type {
-            kind
-            name
-            ofType {
-              kind
-              name
-              ofType {
-                kind
-                name
-              }
-            }
-          }
-        }
-      }
-    }
-  `;
-
-  try {
-    const result = await postSearchQuery(query, {});
-    const fields = result?.data?.__type?.fields || [];
-
-    res.json({
-      ok: true,
-      buildId: BUILD_ID,
-      fields: fields.map(field => ({
-        name: field.name,
-        type: unwrapGraphqlType(field.type)
-      }))
     });
-  } catch (err) {
-    res.status(500).json({
-      ok: false,
-      buildId: BUILD_ID,
-      error: err.message
-    });
-  }
-});
 
-
-app.get("/api/debug/taskleg-field-probe-v2", requireSession, requireWriteRole, async (req, res) => {
-  const now = Date.now();
-  const variables = {
-    from: now - 86400000,
-    to: now
-  };
-
-  const candidateFields = [
-    "id",
-    "taskId",
-    "status",
-    "channelType",
-    "createdTime",
-    "endedTime",
-    "origin",
-    "destination",
-    "direction",
-    "queueName",
-    "agentName",
-    "teamName",
-    "siteName",
-    "contactHandleType",
-    "abandonedType",
-    "wrapUpReason",
-    "wrapupReason",
-    "wrapUpCodeName",
-    "wrapupCodeName",
-    "wrapUpCode",
-    "wrapupCode",
-    "wrapUpReasonName",
-    "wrapupReasonName",
-    "disconnectReason",
-    "endReason",
-    "reason",
-    "disposition",
-    "dispositionCode",
-    "dispositionName",
-    "terminationReason",
-    "terminationType",
-    "queueDuration",
-    "connectedDuration",
-    "totalDuration",
-    "lastQueue",
-    "lastAgent",
-    "lastTeam"
-  ];
-
-  const results = [];
-
-  for (const fieldName of candidateFields) {
-    const query = `
-      query TaskLegFieldProbe($from: Long!, $to: Long!) {
-        taskLegDetails(from: $from, to: $to) {
-          taskLegs {
-            ${fieldName}
-          }
-        }
+    // v50: bind the signed-in desktop identity id to the canonical wallboard row if
+    // both represent the same display name but use different ids.
+    try {
+      const currentIdentityId = String(this.currentIdentity?.userId || this.currentIdentity?.agentId || this.currentIdentity?.id || "");
+      const currentIdentityName = this.cleanDisplayValue(this.currentIdentity?.displayName || this.currentIdentity?.name || "");
+      if (currentIdentityId && currentIdentityName) {
+        const match = agents.map(a => ({ agent: a, id: this.resolveAgentId(a), name: this.cleanDisplayValue(a.name || a.agentName || a.displayName || a.login) }))
+          .find(x => x.id && x.name && x.name.toLowerCase() === currentIdentityName.toLowerCase());
+        if (match && match.id !== currentIdentityId) this.rememberAgentIdAlias(currentIdentityId, match.id, "directory-current-identity-name-match");
       }
-    `;
+    } catch {}
 
-    try {
-      const result = await postSearchQuery(query, variables);
-      const taskLegs = result?.data?.taskLegDetails?.taskLegs || [];
-      results.push({
-        fieldName,
-        ok: true,
-        count: taskLegs.length,
-        sample: taskLegs.slice(0, 3)
-      });
-    } catch (err) {
-      results.push({
-        fieldName,
-        ok: false,
-        error: err.message
-      });
-    }
-  }
+    calls.forEach(call => {
+      const taskId = String(call.id || call.taskId || "");
+      const agentId = String(call.agentId || call.lastAgentId || call.lastAgent?.id || "");
+      const queueId = String(call.queueId || call.firstQueueId || call.lastQueueId || call.lastQueue?.id || "");
+      const queueName = this.getCallQueueName(call) || call.lastQueue?.name || "";
 
-  res.json({
-    ok: true,
-    buildId: BUILD_ID,
-    from: variables.from,
-    to: variables.to,
-    note: "Fixed probe: taskLegDetails.taskLegs is the valid root node.",
-    results
-  });
-});
+      if (queueId && queueName && queueName !== "-") {
+        this.queueDirectory.set(queueId, { id: queueId, name: queueName, lastSeenMs: now });
+      }
+      if (!taskId) return;
 
-app.get("/api/debug/taskleg-sample-v2", requireSession, requireWriteRole, async (req, res) => {
-  const now = Date.now();
-  const variables = {
-    from: now - 86400000,
-    to: now
-  };
-
-  const queries = [
-    {
-      name: "minimal",
-      query: `
-        query TaskLegSample($from: Long!, $to: Long!) {
-          taskLegDetails(from: $from, to: $to) {
-            taskLegs {
-              id
-            }
-          }
-        }
-      `
-    },
-    {
-      name: "commonSupportedCandidates",
-      query: `
-        query TaskLegSample($from: Long!, $to: Long!) {
-          taskLegDetails(from: $from, to: $to) {
-            taskLegs {
-              id
-              taskId
-              status
-              channelType
-              createdTime
-              endedTime
-              contactHandleType
-              abandonedType
-            }
-          }
-        }
-      `
-    },
-    {
-      name: "wrapupCandidatesSmall1",
-      query: `
-        query TaskLegSample($from: Long!, $to: Long!) {
-          taskLegDetails(from: $from, to: $to) {
-            taskLegs {
-              id
-              wrapUpReason
-              wrapupReason
-              wrapUpCodeName
-              wrapupCodeName
-            }
-          }
-        }
-      `
-    },
-    {
-      name: "wrapupCandidatesSmall2",
-      query: `
-        query TaskLegSample($from: Long!, $to: Long!) {
-          taskLegDetails(from: $from, to: $to) {
-            taskLegs {
-              id
-              disconnectReason
-              endReason
-              disposition
-              dispositionName
-            }
-          }
-        }
-      `
-    }
-  ];
-
-  const results = [];
-
-  for (const item of queries) {
-    results.push(await runTaskLegDiscoveryQuery(item.name, item.query, variables));
-  }
-
-  res.json({
-    ok: true,
-    buildId: BUILD_ID,
-    from: variables.from,
-    to: variables.to,
-    note: "Fixed sample: taskLegDetails.taskLegs is the valid root node.",
-    results
-  });
-});
-
-
-app.get("/api/debug/analyzer-report-discovery", requireSession, requireWriteRole, async (req, res) => {
-  const candidates = [
-    "/v1/reports",
-    "/v1/report",
-    "/v1/reports/definitions",
-    "/v1/report-definitions",
-    "/v1/analyzer/reports",
-    "/v1/analyzer/report-definitions",
-    "/v1/analyzer/stock-reports",
-    "/v1/stock-reports",
-    "/v1/custom-reports",
-    "/v1/reporting/reports",
-    "/v1/reporting/report-definitions",
-    "/v1/reporting/analyzer/reports"
-  ];
-
-  const results = [];
-
-  for (const path of candidates) {
-    try {
-      const result = await callWxccRestDiscovery("GET", path);
-      results.push({
-        path,
-        ok: result.ok,
-        status: result.status,
-        endpoint: result.endpoint,
-        body: result.body,
-        text: result.text
-      });
-    } catch (err) {
-      results.push({
-        path,
-        ok: false,
-        error: err.message
-      });
-    }
-  }
-
-  res.json({
-    ok: true,
-    buildId: BUILD_ID,
-    note: "This probes likely REST endpoints for Analyzer/Report definitions. We are looking for CSR Report or Agent WrapUp Auxiliary.",
-    results
-  });
-});
-
-app.get("/api/debug/taskleg-termination-sample", requireSession, requireWriteRole, async (req, res) => {
-  try {
-    const map = await getTaskLegTerminationMap();
-
-    res.json({
-      ok: true,
-      buildId: BUILD_ID,
-      count: map.size,
-      sample: Array.from(map.entries()).slice(0, 10).map(([taskId, value]) => ({
+      const previous = this.taskOwnershipMap.get(taskId) || {};
+      this.taskOwnershipMap.set(taskId, {
+        ...previous,
         taskId,
-        ...value
-      }))
+        agentId: agentId || previous.agentId || "",
+        queueId: queueId || previous.queueId || "",
+        queueName: queueName || previous.queueName || "",
+        caller: call.caller || call.origin || previous.caller || "",
+        destination: call.destination || previous.destination || "",
+        updatedAtMs: now
+      });
     });
-  } catch (err) {
-    res.status(500).json({
-      ok: false,
-      buildId: BUILD_ID,
-      error: err.message
-    });
+
+    this.pruneTaskOwnershipMap(now);
+    this.persistTaskOwnership();
   }
-});
 
-
-
-app.get("/api/debug/call-history-payload", requireSession, requireWriteRole, async (req, res) => {
-  try {
-    const data = await buildWallboardPayload(req.session || {});
-    res.json({
-      ok: true,
-      buildId: BUILD_ID,
-      count: Array.isArray(data.callHistoryList) ? data.callHistoryList.length : 0,
-      sample: Array.isArray(data.callHistoryList) ? data.callHistoryList.slice(0, 10) : []
-    });
-  } catch (err) {
-    res.status(500).json({
-      ok: false,
-      buildId: BUILD_ID,
-      error: err.message
-    });
+  pruneTaskOwnershipMap(now = Date.now()) {
+    for (const [taskId, row] of this.taskOwnershipMap.entries()) {
+      if (Number(row.updatedAtMs || 0) && now - Number(row.updatedAtMs || 0) > this.taskOwnershipTtlMs) {
+        this.taskOwnershipMap.delete(taskId);
+      }
+    }
   }
-});
 
-
-
-app.get("/api/debug/termination-cache", requireSession, requireWriteRole, async (req, res) => {
-  res.json({
-    ok: true,
-    buildId: BUILD_ID,
-    ttlMs: TASK_LEG_TERMINATION_CACHE_TTL_MS,
-    cacheAgeMs: taskLegTerminationCache.ts ? Date.now() - taskLegTerminationCache.ts : null,
-    cacheCount: taskLegTerminationCache.map ? taskLegTerminationCache.map.size : 0,
-    inFlight: !!taskLegTerminationCache.inFlight
-  });
-});
-
-
-
-app.get("/api/debug/live-duration-payload", requireSession, requireWriteRole, async (req, res) => {
-  try {
-    const data = await buildWallboardPayload(req.session || {});
-    res.json({
-      ok: true,
-      buildId: BUILD_ID,
-      activeCalls: data.taskList || [],
-      callHistorySample: Array.isArray(data.callHistoryList) ? data.callHistoryList.slice(0, 5) : []
+  rememberCurrentIdentity(user = {}) {
+    const agentId = String(user?.userId || user?.agentId || user?.id || "");
+    if (!agentId) return;
+    const name = this.cleanDisplayValue(user?.displayName) || this.cleanDisplayValue(user?.name) || this.cleanDisplayValue(user?.email) || agentId;
+    const previous = this.agentDirectory.get(agentId) || {};
+    this.agentDirectory.set(agentId, {
+      ...previous,
+      agentId,
+      id: agentId,
+      name: previous.name || name,
+      login: previous.login || this.cleanDisplayValue(user?.email) || "",
+      team: previous.team || "",
+      teamId: previous.teamId || String(user?.teamId || ""),
+      lastSeenMs: Date.now(),
+      source: previous.source || "bootstrap-identity"
     });
-  } catch (err) {
-    res.status(500).json({
-      ok: false,
-      buildId: BUILD_ID,
-      error: err.message
-    });
+    this.currentUserById.set(agentId, { agentId, name, user });
   }
-});
+
+  getAgentNameById(agentId) {
+    const id = String(agentId || "");
+    const row = this.agentDirectory.get(id);
+    const current = this.currentUserById.get(id);
+    return this.cleanDisplayValue(row?.name) || this.cleanDisplayValue(row?.login) || this.cleanDisplayValue(current?.name) || "";
+  }
 
 
+  getVisibleAgentDisplayNameById(agentId) {
+    const id = String(agentId || "");
+    if (!id) return "";
+    const list = Array.isArray(this.lastWallboardData?.agentList) ? this.lastWallboardData.agentList : [];
+    const row = list.find(agent => this.resolveAgentId(agent) === id);
+    return this.cleanDisplayValue(row?.name || row?.agentName || row?.displayName || row?.login) || this.getAgentNameById(id) || "";
+  }
 
-app.get("/api/debug/wallboard-error", requireSession, requireWriteRole, async (req, res) => {
-  res.json({
-    ok: true,
-    buildId: BUILD_ID,
-    wallboardFailureCount,
-    lastError: lastWallboardBuildError || "",
-    hasCache: !!lastGoodWallboardPayload,
-    cacheAgeMs: lastGoodWallboardPayloadTs ? Date.now() - lastGoodWallboardPayloadTs : null,
-    cacheShape: lastGoodWallboardPayload
-      ? {
-          agents: Array.isArray(lastGoodWallboardPayload.agents) ? lastGoodWallboardPayload.agents.length : null,
-          agentList: Array.isArray(lastGoodWallboardPayload.agentList) ? lastGoodWallboardPayload.agentList.length : null,
-          taskList: Array.isArray(lastGoodWallboardPayload.taskList) ? lastGoodWallboardPayload.taskList.length : null,
-          waitingTaskList: Array.isArray(lastGoodWallboardPayload.waitingTaskList) ? lastGoodWallboardPayload.waitingTaskList.length : null,
-          callHistoryList: Array.isArray(lastGoodWallboardPayload.callHistoryList) ? lastGoodWallboardPayload.callHistoryList.length : null
+  getSingleConnectedRosterAgentForActiveCall(call = {}) {
+    const list = Array.isArray(this.lastWallboardData?.agentList) ? this.lastWallboardData.agentList : [];
+    if (!list.length) return null;
+
+    const connectedRows = list.filter(agent => String(agent.state || agent.currentState || "").toLowerCase() === "connected");
+    if (connectedRows.length !== 1) return null;
+
+    const activeCalls = Array.isArray(this.lastWallboardData?.taskList)
+      ? this.lastWallboardData.taskList.filter(task => String(task.status || "").toLowerCase() === "connected")
+      : [];
+    if (activeCalls.length > 1) return null;
+
+    const row = connectedRows[0];
+    const agentId = this.resolveAgentId(row);
+    const agentName = this.cleanDisplayValue(row.name || row.agentName || row.displayName || row.login) || this.getAgentNameById(agentId);
+    if (!agentId || !agentName) return null;
+
+    return { agentId, agentName, source: "single-connected-roster-agent" };
+  }
+
+  rememberAgentIdAlias(eventAgentId, canonicalAgentId, reason = "") {
+    const source = String(eventAgentId || "");
+    const target = String(canonicalAgentId || "");
+    if (!source || !target || source === target) return;
+    this.agentIdAliasMap.set(source, { source, target, reason, updatedAtMs: Date.now() });
+    this.addDiagLog("agent-id-alias-bound", { source, target, reason });
+  }
+
+  pruneAgentIdAliases(now = Date.now()) {
+    for (const [source, row] of this.agentIdAliasMap.entries()) {
+      const updatedAtMs = Number(row?.updatedAtMs || 0);
+      if (updatedAtMs && now - updatedAtMs > this.agentIdAliasTtlMs) this.agentIdAliasMap.delete(source);
+    }
+  }
+
+  getCanonicalAgentIdForEvent(eventAgentId, byId = new Map(), override = {}) {
+    const source = String(eventAgentId || "");
+    if (!source) return "";
+    if (byId.has(source)) return source;
+
+    const now = Date.now();
+    this.pruneAgentIdAliases(now);
+    const existing = this.agentIdAliasMap.get(source);
+    if (existing?.target && byId.has(existing.target)) return existing.target;
+
+    // v50: WXCC events can use a different user/contact-center id than the wallboard roster.
+    // If this is the signed-in desktop user, bind the event id to the visible roster row by name.
+    const currentIdentityId = String(this.currentIdentity?.userId || this.currentIdentity?.agentId || this.currentIdentity?.id || "");
+    const currentIdentityName = this.cleanDisplayValue(this.currentIdentity?.displayName || this.currentIdentity?.name || "");
+    if (source === currentIdentityId && currentIdentityName) {
+      const target = Array.from(byId.values()).find(row => this.cleanDisplayValue(row.name || row.displayName || row.login).toLowerCase() === currentIdentityName.toLowerCase());
+      if (target) {
+        const targetId = this.resolveAgentId(target);
+        this.rememberAgentIdAlias(source, targetId, "current-identity-name-match");
+        return targetId;
+      }
+    }
+
+    // If a task ownership record contains a human agent name, use it to bind event-id -> roster-id.
+    const taskId = String(override?.taskId || "");
+    if (taskId) {
+      const binding = this.taskOwnershipMap.get(taskId) || {};
+      const bindingName = this.cleanDisplayValue(binding.agentName || binding.name || "");
+      if (bindingName) {
+        const target = Array.from(byId.values()).find(row => this.cleanDisplayValue(row.name || row.displayName || row.login).toLowerCase() === bindingName.toLowerCase());
+        if (target) {
+          const targetId = this.resolveAgentId(target);
+          this.rememberAgentIdAlias(source, targetId, "task-ownership-name-match");
+          return targetId;
         }
-      : null
-  });
-});
+      }
+    }
+
+    // Conservative fallback for the common supervisor test case:
+    // an event-only terminal state arrives for the one visible agent that is not currently in a call.
+    // This allows status changes for Agent3/Agent4 while Supervisor1 is on an active call, without
+    // rendering UUID phantom rows. If more than one candidate exists, do not guess.
+    const eventState = String(override?.currentState || "").toLowerCase();
+    const terminalOrIdle = ["available", "idle", "wrapup-done"].includes(eventState);
+    if (terminalOrIdle && byId.size <= 3) {
+      const currentNameLower = currentIdentityName.toLowerCase();
+      const candidates = Array.from(byId.values()).filter(row => {
+        const name = this.cleanDisplayValue(row.name || row.displayName || row.login);
+        if (!name) return false;
+        if (currentNameLower && name.toLowerCase() === currentNameLower && source !== currentIdentityId) return false;
+        const state = String(row.state || row.currentState || "").toLowerCase();
+        return !["connected", "ringing", "wrapup"].includes(state);
+      });
+      if (candidates.length === 1) {
+        const targetId = this.resolveAgentId(candidates[0]);
+        this.rememberAgentIdAlias(source, targetId, "single-visible-nonbusy-roster-candidate");
+        return targetId;
+      }
+    }
+
+    return "";
+  }
+
+  getAuthoritativeOverrideForAgent(agentId) {
+    const canonicalId = String(agentId || "");
+    if (!canonicalId) return null;
+    const direct = this.agentStateEventCache.get(canonicalId);
+    if (direct) return { override: direct, eventAgentId: canonicalId, canonicalAgentId: canonicalId, stateSource: "authoritative-event-direct" };
+    const now = Date.now();
+    this.pruneAgentIdAliases(now);
+    for (const [eventAgentId, alias] of this.agentIdAliasMap.entries()) {
+      if (alias?.target !== canonicalId) continue;
+      const override = this.agentStateEventCache.get(eventAgentId);
+      if (override) return { override, eventAgentId, canonicalAgentId: canonicalId, stateSource: "authoritative-event-alias" };
+    }
+    return null;
+  }
+
+  resolveAgentId(agent = {}) {
+    return String(agent.agentId || agent.id || agent.userId || agent.ciUserId || agent.ownerId || "");
+  }
+
+  cleanDisplayValue(value) {
+    const text = String(value || "").trim();
+    if (!text || text === "-" || text.toLowerCase() === "unknown" || text.toLowerCase() === "null") return "";
+    return text;
+  }
+
+  persistTaskOwnership() {
+    try {
+      const now = Date.now();
+      const rows = [];
+      for (const [taskId, row] of this.taskOwnershipMap.entries()) {
+        const updatedAtMs = Number(row?.updatedAtMs || 0);
+        if (updatedAtMs && now - updatedAtMs > this.taskOwnershipTtlMs) {
+          this.taskOwnershipMap.delete(taskId);
+          continue;
+        }
+        rows.push(row);
+      }
+      localStorage.setItem(this.taskOwnershipPersistenceKey, JSON.stringify(rows.slice(-200)));
+    } catch {}
+  }
+
+  restorePersistentTaskOwnership() {
+    try {
+      const raw = localStorage.getItem(this.taskOwnershipPersistenceKey);
+      const parsed = JSON.parse(raw || "[]");
+      const now = Date.now();
+      this.taskOwnershipMap = new Map();
+      if (Array.isArray(parsed)) {
+        parsed.forEach(row => {
+          const taskId = String(row?.taskId || "");
+          const updatedAtMs = Number(row?.updatedAtMs || 0);
+          if (!taskId || (updatedAtMs && now - updatedAtMs > this.taskOwnershipTtlMs)) return;
+          this.taskOwnershipMap.set(taskId, row);
+        });
+      }
+      this.addDiagLog("task-ownership-cache-restored", { rows: this.taskOwnershipMap.size });
+    } catch (err) {
+      this.taskOwnershipMap = new Map();
+      this.addDiagLog("task-ownership-cache-restore-failed", { message: err.message });
+    }
+  }
+
+  rebindActiveCallOwnership(taskId, agentId, details = {}) {
+    const id = String(taskId || "");
+    const boundAgentId = String(agentId || "");
+    if (!id || !boundAgentId) return false;
+
+    const now = Date.now();
+    const previousBinding = this.taskOwnershipMap.get(id) || {};
+    const currentName = this.currentUserById?.get(boundAgentId)?.name || "";
+    const agentName = this.cleanDisplayValue(details.agentName) || this.getVisibleAgentDisplayNameById(boundAgentId) || this.getAgentNameById(boundAgentId) || this.cleanDisplayValue(currentName) || previousBinding.agentName || "";
+    const queueId = String(details.queueId || previousBinding.queueId || "");
+    const queueName = this.cleanDisplayValue(details.queueName) || previousBinding.queueName || (queueId ? this.queueDirectory.get(queueId)?.name : "") || "";
+
+    this.taskOwnershipMap.set(id, {
+      ...previousBinding,
+      taskId: id,
+      agentId: boundAgentId,
+      agentName: agentName || previousBinding.agentName || "",
+      queueId: queueId || previousBinding.queueId || "",
+      queueName: queueName || previousBinding.queueName || "",
+      caller: details.caller || previousBinding.caller || "",
+      destination: details.destination || previousBinding.destination || "",
+      updatedAtMs: now
+    });
+
+    let patched = 0;
+    for (const [key, call] of Array.from(this.activeCallRenderCache.entries())) {
+      const sameTask = String(call.taskId || call.id || "") === id || key === id;
+      if (!sameTask) continue;
+      const enriched = this.enrichActiveCallDeterministically({
+        ...call,
+        id: call.id || id,
+        taskId: id,
+        agentId: boundAgentId,
+        agent: this.cleanDisplayValue(call.agent) || agentName || "",
+        queueId: queueId || call.queueId || "",
+        queue: this.cleanDisplayValue(call.queue) || queueName || "",
+        localLastSeenMs: now
+      });
+      this.activeCallRenderCache.set(key, enriched);
+      patched += 1;
+    }
+
+    this.persistTaskOwnership();
+    if (patched) this.persistActiveCalls();
+    this.addDiagLog("active-call-ownership-rebound", { taskId: id, agentId: boundAgentId, agentName, queueId, queueName, patched });
+    return patched > 0;
+  }
+
+  repairRestoredActiveCallOwnership() {
+    let repaired = 0;
+    for (const [id, call] of Array.from(this.activeCallRenderCache.entries())) {
+      const taskId = String(call.taskId || call.id || id || "");
+      if (!taskId) continue;
+      const binding = this.taskOwnershipMap.get(taskId) || {};
+      const agentId = String(call.agentId || binding.agentId || "");
+      const agent = this.cleanDisplayValue(call.agent) || this.cleanDisplayValue(binding.agentName) || this.getAgentNameById(agentId);
+      if (!agentId && !agent) continue;
+      if (this.cleanDisplayValue(call.agent) && String(call.agentId || "")) continue;
+      const patched = this.enrichActiveCallDeterministically({
+        ...call,
+        agentId: agentId || call.agentId || "",
+        agent: agent || "",
+        queueId: call.queueId || binding.queueId || "",
+        queue: this.cleanDisplayValue(call.queue) || binding.queueName || ""
+      });
+      this.activeCallRenderCache.set(id, patched);
+      repaired += 1;
+    }
+    if (repaired) {
+      this.persistActiveCalls();
+      this.addDiagLog("active-call-ownership-restored", { repaired });
+    }
+    return repaired;
+  }
+
+  rememberRelationalStateFromWxccEvent(details = {}) {
+    try {
+      const normalized = this.normalizeWxccEventBody(this.extractWxccEventBody(details));
+      const data = normalized.data || {};
+      const type = String(normalized.type || "");
+      const now = Date.now();
+      const taskId = String(data.taskId || data.interactionId || data.contactId || data.contactSessionId || data.id || "");
+      const agentId = String(data.agentId || data.ownerId || data.userId || "");
+      const queueId = String(data.queueId || data.firstQueueId || data.lastQueueId || "");
+      const queueName = String(data.queueName || data.firstQueueName || data.lastQueueName || "");
+
+      if (queueId && queueName) this.queueDirectory.set(queueId, { id: queueId, name: queueName, lastSeenMs: now });
+      if (!taskId) return;
+
+      const previous = this.taskOwnershipMap.get(taskId) || {};
+      const nextBinding = {
+        ...previous,
+        taskId,
+        agentId: agentId || previous.agentId || "",
+        agentName: data.agentName || data.agentDisplayName || previous.agentName || this.getAgentNameById(agentId || previous.agentId) || "",
+        queueId: queueId || previous.queueId || "",
+        queueName: queueName || previous.queueName || "",
+        caller: data.origin || data.from || data.ani || data.caller || previous.caller || "",
+        destination: data.destination || data.to || data.dnis || previous.destination || "",
+        eventType: type || previous.eventType || "",
+        eventState: data.currentState || data.state || previous.eventState || "",
+        updatedAtMs: now
+      };
+      this.taskOwnershipMap.set(taskId, nextBinding);
+      this.persistTaskOwnership();
+
+      if (agentId) {
+        this.rebindActiveCallOwnership(taskId, agentId, {
+          agentName: nextBinding.agentName,
+          queueId: nextBinding.queueId,
+          queueName: nextBinding.queueName,
+          caller: nextBinding.caller,
+          destination: nextBinding.destination
+        });
+      }
+
+      this.addDiagLog("deterministic-task-binding-updated", {
+        taskId,
+        agentId: agentId || previous.agentId || "",
+        queueId: queueId || previous.queueId || "",
+        type
+      });
+    } catch (err) {
+      this.addDiagLog("deterministic-task-binding-failed", { message: err.message });
+    }
+  }
+
+  enrichActiveCallDeterministically(call = {}) {
+    const id = String(call.id || call.taskId || "");
+    const binding = this.taskOwnershipMap.get(id) || {};
+    const agentId = String(call.agentId || binding.agentId || call.lastAgent?.id || "");
+    const queueId = String(call.queueId || binding.queueId || call.firstQueueId || call.lastQueue?.id || "");
+    const queueNameFromId = queueId ? this.queueDirectory.get(queueId)?.name : "";
+    const rosterFallback = this.getSingleConnectedRosterAgentForActiveCall(call);
+    const resolvedAgentId = agentId || rosterFallback?.agentId || "";
+    const agentName =
+      this.cleanDisplayValue(call.agent) ||
+      this.cleanDisplayValue(call.agentName) ||
+      this.cleanDisplayValue(call.lastAgent?.name) ||
+      this.cleanDisplayValue(binding.agentName) ||
+      this.getVisibleAgentDisplayNameById(resolvedAgentId) ||
+      rosterFallback?.agentName ||
+      "";
+    const queueName =
+      this.cleanDisplayValue(this.getCallQueueName(call)) ||
+      this.cleanDisplayValue(binding.queueName) ||
+      this.cleanDisplayValue(queueNameFromId) ||
+      this.cleanDisplayValue(call.queue) ||
+      this.cleanDisplayValue(call.queueName) ||
+      "";
+
+    return {
+      ...call,
+      id: id || call.id,
+      taskId: id || call.taskId,
+      agentId: resolvedAgentId,
+      queueId,
+      queue: queueName,
+      caller: call.caller || call.origin || binding.caller || "",
+      destination: call.destination || binding.destination || "",
+      agent: agentName,
+      agentFallbackSource: (!agentId && rosterFallback?.agentName) ? rosterFallback.source : "",
+      deterministicEnriched: true
+    };
+  }
+
+
+  isRealtimeBusyAgentState(state) {
+    const value = String(state || "").toLowerCase();
+    return ["ringing", "connected", "wrapup"].includes(value);
+  }
+
+  isSnapshotTerminalAgentState(state) {
+    const value = String(state || "").toLowerCase();
+    if (!value) return false;
+    return !["ringing", "connected", "wrapup"].includes(value);
+  }
+
+  getSnapshotAgentById(snapshot = {}, agentId = "") {
+    const id = String(agentId || "");
+    if (!id) return null;
+    const list = Array.isArray(snapshot.agentList) ? snapshot.agentList : [];
+    return list.find(agent => String(agent.agentId || agent.id || agent.userId || "") === id) || null;
+  }
+
+  reconcileAgentStateAuthorityBeforeProjection(snapshot = {}) {
+    const now = Date.now();
+    const activeTasks = Array.isArray(snapshot.taskList) ? snapshot.taskList : [];
+    const activeTaskIds = new Set(activeTasks.map(task => String(task.id || task.taskId || "")).filter(Boolean));
+    let removed = 0;
+    let terminalPromoted = 0;
+
+    for (const [agentId, override] of Array.from(this.agentStateEventCache.entries())) {
+      const ageMs = now - Number(override.receivedAtMs || 0);
+      if (!Number.isFinite(ageMs) || ageMs > this.agentStateEventTtlMs) {
+        this.agentStateEventCache.delete(agentId);
+        removed += 1;
+        continue;
+      }
+
+      const state = String(override.currentState || override.displayState || "").toLowerCase();
+      const taskId = String(override.taskId || "");
+      const snapshotAgent = this.getSnapshotAgentById(snapshot, agentId);
+      const snapshotState = String(snapshotAgent?.state || snapshotAgent?.currentState || "");
+
+      // v45: after reconnect, a stale Ringing/Connected/Wrapup event must not pin the row forever.
+      // If the current wallboard has no active task for that taskId and the snapshot already shows a
+      // non-busy state, drop the old event authority and let the snapshot/custom idle code win.
+      if (
+        this.isRealtimeBusyAgentState(state) &&
+        taskId &&
+        !activeTaskIds.has(taskId) &&
+        this.isSnapshotTerminalAgentState(snapshotState) &&
+        ageMs > 12000
+      ) {
+        this.agentStateEventCache.delete(agentId);
+        removed += 1;
+        this.addDiagLog("agent-state-authority-stale-busy-cleared", { agentId, taskId, state, snapshotState, ageMs });
+        continue;
+      }
+
+      // Idle without taskId is a terminal agent-state event. It should clear old task ownership and
+      // prevent a previous Wrapup projection from surviving a widget recreation.
+      if (state === "idle" && !taskId) {
+        terminalPromoted += 1;
+      }
+    }
+
+    if (removed || terminalPromoted) {
+      this.persistAgentStates();
+      this.addDiagLog("agent-state-authority-reconciled", { removed, terminalPromoted });
+    }
+  }
+
+  getDeterministicDisplayStateForAgent(agentId, baseAgent = {}, override = null) {
+    if (!override) return baseAgent.state || baseAgent.currentState || "";
+    const eventState = String(override.currentState || "").toLowerCase();
+    const snapshotState = String(baseAgent.state || baseAgent.currentState || "");
+
+    // v47: terminal realtime events are always authoritative. A stale Search snapshot must
+    // never render Wrapup/Meeting/Connected after an available/wrapup-done event was received.
+    if (eventState === "available" || eventState === "wrapup-done") return "Available";
+
+    // For custom idle codes, Search may know the readable idle label. Preserve only terminal
+    // labels; never preserve a busy snapshot over an idle event.
+    if (eventState === "idle") {
+      if (this.isSnapshotTerminalAgentState(snapshotState) && snapshotState.toLowerCase() !== "available") {
+        return snapshotState;
+      }
+      return override.displayState || "Idle";
+    }
+
+    return override.displayState || snapshotState || "";
+  }
+
+  buildAuthoritativeAgents(snapshot = {}) {
+    const now = Date.now();
+    const snapshotAgents = Array.isArray(snapshot.agentList) ? snapshot.agentList : [];
+    const byId = new Map();
+    let skippedNoId = 0;
+    let skippedBootstrapOnly = 0;
+    let dedupedByName = 0;
+
+    // v48 canonical identity rule:
+    // The WXCC desktop/bootstrap identity is useful as context and name enrichment,
+    // but it must never create a standalone agent row. Renderable rows are only
+    // created from WXCC wallboard agents or from a fresh event-authoritative state.
+    snapshotAgents.forEach(agent => {
+      const agentId = this.resolveAgentId(agent);
+      if (!agentId) {
+        skippedNoId += 1;
+        return;
+      }
+      const directory = this.agentDirectory.get(agentId) || {};
+      byId.set(agentId, {
+        ...directory,
+        ...agent,
+        agentId,
+        id: agentId,
+        renderSource: "snapshot-agent",
+        name: this.cleanDisplayValue(agent.name || agent.agentName || agent.displayName) || directory.name || directory.login || agentId,
+        team: this.cleanDisplayValue(agent.team || agent.teamName) || directory.team || "",
+        teamId: agent.teamId || directory.teamId || ""
+      });
+    });
+
+    // v50 final state authority:
+    // Keep the authoritative roster-only rule from v49, but allow event states whose WXCC
+    // event agentId can be mapped to a visible canonical roster row. This fixes the case
+    // where the Desktop status changes immediately, while the wallboard snapshot still
+    // shows the previous idle code during an active call.
+    let skippedEventOnly = 0;
+    let aliasedEventAuthority = 0;
+    const canonicalEvents = new Map();
+    for (const [eventAgentId, override] of this.agentStateEventCache.entries()) {
+      const ageMs = now - Number(override.receivedAtMs || 0);
+      if (!Number.isFinite(ageMs) || ageMs > this.agentStateEventTtlMs) continue;
+      const canonicalId = this.getCanonicalAgentIdForEvent(eventAgentId, byId, override);
+      if (!canonicalId || !byId.has(canonicalId)) {
+        skippedEventOnly += 1;
+        continue;
+      }
+      if (canonicalId !== eventAgentId) aliasedEventAuthority += 1;
+      const existing = canonicalEvents.get(canonicalId);
+      if (!existing || Number(override.createdTime || 0) >= Number(existing.override?.createdTime || 0)) {
+        canonicalEvents.set(canonicalId, { override, eventAgentId, canonicalId });
+      }
+    }
+
+    let applied = 0;
+    for (const [agentId, agent] of byId.entries()) {
+      const mapped = canonicalEvents.get(agentId);
+      if (!mapped) continue;
+      const { override, eventAgentId, canonicalId } = mapped;
+      const ageMs = now - Number(override.receivedAtMs || 0);
+      if (!Number.isFinite(ageMs) || ageMs > this.agentStateEventTtlMs) {
+        this.agentStateEventCache.delete(eventAgentId);
+        continue;
+      }
+      const sourceState = String(agent.state || agent.currentState || "");
+      const finalState = this.getDeterministicDisplayStateForAgent(agentId, agent, override);
+      agent.state = finalState;
+      agent.currentState = override.currentState;
+      agent.taskId = override.taskId || agent.taskId || "";
+      agent.queueId = override.queueId || agent.queueId || "";
+      agent.name = this.cleanDisplayValue(agent.name) || this.getAgentNameById(agentId) || agent.login || agentId;
+      agent.eventAuthority = {
+        applied: true,
+        ageMs,
+        eventState: override.currentState,
+        displayState: override.displayState,
+        finalState,
+        sourceState,
+        stateSource: eventAgentId === canonicalId ? "authoritative-event-direct" : "authoritative-event-alias",
+        eventAgentId,
+        canonicalAgentId: canonicalId,
+        taskId: override.taskId || ""
+      };
+      applied += 1;
+    }
+
+    // Final v48 de-dupe: prefer real snapshot rows over event-only rows and never
+    // render Unknown/bootstrap-like duplicates with the same display name.
+    const preferredByName = new Map();
+    const priority = row => row.renderSource === "snapshot-agent" ? 3 : (row.eventAuthority?.applied ? 2 : 1);
+    for (const row of byId.values()) {
+      const agentId = this.resolveAgentId(row);
+      if (!agentId) { skippedNoId += 1; continue; }
+      const name = this.cleanDisplayValue(row.name || row.agentName || row.displayName || row.login);
+      if (!name) { skippedNoId += 1; continue; }
+      const state = String(row.state || row.currentState || "").toLowerCase();
+      if (row.renderSource !== "snapshot-agent" && !row.eventAuthority?.applied && (!state || state === "unknown")) {
+        skippedBootstrapOnly += 1;
+        continue;
+      }
+      const looksLikeUuidName = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(name);
+      if (looksLikeUuidName && row.renderSource !== "snapshot-agent") {
+        skippedBootstrapOnly += 1;
+        continue;
+      }
+      const key = name.toLowerCase();
+      const existing = preferredByName.get(key);
+      if (!existing || priority(row) > priority(existing)) {
+        if (existing) dedupedByName += 1;
+        preferredByName.set(key, row);
+      } else {
+        dedupedByName += 1;
+      }
+    }
+
+    const rows = Array.from(preferredByName.values()).sort((a, b) => String(a.name || a.login || "").localeCompare(String(b.name || b.login || "")));
+    const agentsSummary = {
+      loggedIn: rows.length,
+      available: rows.filter(agent => String(agent.state || "").toLowerCase() === "available").length,
+      connected: rows.filter(agent => String(agent.state || "").toLowerCase() === "connected").length
+    };
+    this.addDiagLog("deterministic-agent-projection-built", {
+      rows: rows.length,
+      eventAuthorityApplied: applied,
+      skippedNoId,
+      skippedBootstrapOnly,
+      skippedEventOnly,
+      aliasedEventAuthority,
+      dedupedByName,
+      sourceSnapshotRows: snapshotAgents.length,
+      authoritativeRosterOnly: true,
+      canonicalIdentity: true,
+      finalStateAuthority: true
+    });
+    return { rows, agentsSummary };
+  }
 
 
 
-app.post("/api/debug/client-log", (req, res) => {
-  try {
-    const body = req.body || {};
-    const entries = Array.isArray(body.entries) ? body.entries.slice(-100) : [];
-    const session = getSessionFromRequest(req);
-    for (const entry of entries) {
-      addWidgetDiagLog("client:" + String(entry.type || "unknown"), {
-        clientTs: entry.ts || null,
-        clientIso: entry.iso || "",
-        frontendBuildId: body.frontendBuildId || "",
-        href: body.href || "",
-        userAgent: body.userAgent || "",
-        sessionValid: Boolean(session),
-        details: entry
+  isTerminalCallState(state) {
+    const value = String(state || "").toLowerCase();
+    return ["available", "idle", "wrapup-done", "ended", "terminated", "disconnected", "completed"].includes(value);
+  }
+
+  rememberTerminalActiveCall(taskId, agentId = "", state = "terminal", reason = "event-terminal") {
+    const id = String(taskId || "");
+    const now = Date.now();
+    if (!id) return;
+    this.activeCallTerminalCache.set(id, {
+      id,
+      taskId: id,
+      agentId: String(agentId || ""),
+      state: String(state || "terminal").toLowerCase(),
+      reason,
+      terminalAtMs: now,
+      expiresAtMs: now + this.activeCallTerminalTtlMs
+    });
+    this.persistActiveCallTerminals();
+  }
+
+  restorePersistentActiveCallTerminals() {
+    try {
+      const raw = localStorage.getItem(this.activeCallTerminalPersistenceKey);
+      const parsed = JSON.parse(raw || "[]");
+      const now = Date.now();
+      this.activeCallTerminalCache = new Map();
+      if (Array.isArray(parsed)) {
+        parsed.forEach(row => {
+          const id = String(row?.id || row?.taskId || "");
+          const expiresAtMs = Number(row?.expiresAtMs || 0);
+          if (!id || (expiresAtMs && now > expiresAtMs)) return;
+          this.activeCallTerminalCache.set(id, row);
+        });
+      }
+      this.addDiagLog("active-call-terminal-cache-restored", { rows: this.activeCallTerminalCache.size });
+    } catch (err) {
+      this.activeCallTerminalCache = new Map();
+      this.addDiagLog("active-call-terminal-cache-restore-failed", { message: err.message });
+    }
+  }
+
+  persistActiveCallTerminals() {
+    try {
+      const now = Date.now();
+      const rows = [];
+      for (const [id, row] of this.activeCallTerminalCache.entries()) {
+        const expiresAtMs = Number(row?.expiresAtMs || 0);
+        if (expiresAtMs && now > expiresAtMs) {
+          this.activeCallTerminalCache.delete(id);
+          continue;
+        }
+        rows.push(row);
+      }
+      localStorage.setItem(this.activeCallTerminalPersistenceKey, JSON.stringify(rows.slice(-100)));
+    } catch {}
+  }
+
+  isTerminalActiveCallId(id) {
+    const key = String(id || "");
+    if (!key) return false;
+    const row = this.activeCallTerminalCache.get(key);
+    if (!row) return false;
+    const now = Date.now();
+    const expiresAtMs = Number(row.expiresAtMs || 0);
+    if (expiresAtMs && now > expiresAtMs) {
+      this.activeCallTerminalCache.delete(key);
+      this.persistActiveCallTerminals();
+      return false;
+    }
+    return true;
+  }
+
+  hardEvictActiveCall(taskIdOrId, reason = "hard-evict", details = {}) {
+    const id = String(taskIdOrId || "");
+    if (!id) return 0;
+    let removed = 0;
+    if (this.activeCallRenderCache?.delete(id)) removed += 1;
+
+    // Also remove any synthetic or duplicate rows bound to the same task/agent.
+    const agentId = String(details.agentId || "");
+    for (const [key, call] of Array.from(this.activeCallRenderCache.entries())) {
+      const sameTask = String(call.taskId || call.id || "") === id;
+      const sameAgent = agentId && String(call.agentId || "") === agentId && this.isTerminalCallState(call.eventState || details.state);
+      if (sameTask || sameAgent) {
+        this.activeCallRenderCache.delete(key);
+        removed += 1;
+      }
+    }
+
+    this.taskOwnershipMap?.delete(id);
+    this.persistTaskOwnership();
+    this.persistActiveCalls();
+    this.addDiagLog("active-call-hard-evicted", { id, reason, removed, ...details });
+    return removed;
+  }
+
+  pruneActiveCallCaches(reason = "prune") {
+    const now = Date.now();
+    let removed = 0;
+    for (const [id, call] of Array.from(this.activeCallRenderCache.entries())) {
+      const evictionAt = Number(call.pendingEvictionAtMs || call.expiresAtMs || 0);
+      const terminalState = this.isTerminalCallState(call.eventState || call.terminalState || "");
+      const lastSeen = Number(call.localLastSeenMs || call.lastSeenMs || 0);
+      const stale = lastSeen && now - lastSeen > this.activeCallPersistenceTtlMs;
+      const terminalKnown = this.isTerminalActiveCallId(id);
+      if (stale || terminalKnown || (evictionAt && now >= evictionAt) || (terminalState && lastSeen && now - lastSeen > 1500)) {
+        this.activeCallRenderCache.delete(id);
+        removed += 1;
+      }
+    }
+    if (removed) {
+      this.persistActiveCalls();
+      this.addDiagLog("active-call-cache-pruned", { reason, removed, remaining: this.activeCallRenderCache.size });
+    }
+    this.persistActiveCallTerminals();
+    return removed;
+  }
+
+  restorePersistentActiveCalls() {
+    this.restorePersistentActiveCallTerminals();
+    try {
+      const raw = localStorage.getItem(this.activeCallPersistenceKey);
+      const parsed = JSON.parse(raw || "[]");
+      const now = Date.now();
+      this.activeCallRenderCache = new Map();
+      if (Array.isArray(parsed)) {
+        parsed.forEach(call => {
+          const id = String(call?.id || call?.taskId || "");
+          if (!id) return;
+          const lastSeen = Number(call.localLastSeenMs || call.lastSeenMs || 0);
+          if (lastSeen && now - lastSeen > this.activeCallPersistenceTtlMs) return;
+          if (this.isTerminalActiveCallId(id)) return;
+          const evictionAt = Number(call.pendingEvictionAtMs || call.expiresAtMs || 0);
+          const terminalState = this.isTerminalCallState(call.eventState || call.terminalState || "");
+          if ((evictionAt && now >= evictionAt) || (terminalState && lastSeen && now - lastSeen > 1500)) return;
+          this.activeCallRenderCache.set(id, { ...call, restoredAtMs: now });
+        });
+      }
+      this.pruneActiveCallCaches("restore");
+      this.repairRestoredActiveCallOwnership();
+      this.addDiagLog("active-call-cache-restored", { rows: this.activeCallRenderCache.size });
+    } catch (err) {
+      this.activeCallRenderCache = new Map();
+      this.addDiagLog("active-call-cache-restore-failed", { message: err.message });
+    }
+  }
+
+  persistActiveCalls() {
+    try {
+      const rows = Array.from(this.activeCallRenderCache.values()).slice(-50);
+      localStorage.setItem(this.activeCallPersistenceKey, JSON.stringify(rows));
+    } catch {}
+  }
+
+  extractWxccEventBody(details = {}) {
+    return details.eventBody || details.body || details.data || details.payload || {};
+  }
+
+  normalizeWxccEventBody(body = {}) {
+    return {
+      type: String(body.type || body.eventType || body?.data?.type || ""),
+      data: body.data || body.event?.data || body.payload || body || {}
+    };
+  }
+
+
+  getAgentEventDisplayState(state, data = {}) {
+    const normalized = String(state || "").toLowerCase();
+    if (normalized === "available" || normalized === "wrapup-done") return "Available";
+    if (normalized === "ringing") return "Ringing";
+    if (normalized === "connected") return "Connected";
+    if (normalized === "wrapup") return "Wrapup";
+    if (normalized === "idle") {
+      // v45: idle events without a taskId are authoritative terminal agent-state events.
+      // They must clear stale Wrapup/Connected projections after WXCC Desktop recreates the widget.
+      // If WXCC provides a custom idle name, use it; otherwise render a safe neutral state until
+      // the next Search snapshot enriches it.
+      return String(
+        data.idleCodeName ||
+        data.idleCode ||
+        data.reasonName ||
+        data.reason ||
+        data.auxCodeName ||
+        "Idle"
+      );
+    }
+    return "";
+  }
+
+  restorePersistentAgentStates() {
+    try {
+      const raw = localStorage.getItem(this.agentStatePersistenceKey);
+      const parsed = JSON.parse(raw || "[]");
+      const now = Date.now();
+      this.agentStateEventCache = new Map();
+      if (Array.isArray(parsed)) {
+        parsed.forEach(row => {
+          const agentId = String(row?.agentId || "");
+          const receivedAtMs = Number(row?.receivedAtMs || 0);
+          if (!agentId || !receivedAtMs || now - receivedAtMs > this.agentStateEventTtlMs) return;
+          this.agentStateEventCache.set(agentId, row);
+        });
+      }
+      this.addDiagLog("agent-state-cache-restored", { rows: this.agentStateEventCache.size });
+    } catch (err) {
+      this.agentStateEventCache = new Map();
+      this.addDiagLog("agent-state-cache-restore-failed", { message: err.message });
+    }
+  }
+
+  persistAgentStates() {
+    try {
+      localStorage.setItem(this.agentStatePersistenceKey, JSON.stringify(Array.from(this.agentStateEventCache.values()).slice(-100)));
+    } catch {}
+  }
+
+  rememberAgentStateFromWxccEvent(details = {}) {
+    try {
+      const normalized = this.normalizeWxccEventBody(this.extractWxccEventBody(details));
+      const data = normalized.data || {};
+      const type = String(normalized.type || "");
+      if (type !== "agent:state_change") return;
+
+      const agentId = String(data.agentId || data.ownerId || data.userId || data.ciUserId || "");
+      const currentState = String(data.currentState || data.state || data.status || "").toLowerCase();
+      if (!agentId || !currentState) return;
+
+      const displayState = this.getAgentEventDisplayState(currentState, data);
+      if (!displayState) {
+        this.addDiagLog("agent-state-event-observed-not-authoritative", { agentId, currentState, taskId: data.taskId || "" });
+        return;
+      }
+
+      const now = Date.now();
+      const createdTime = Number(data.createdTime || 0);
+      const previous = this.agentStateEventCache.get(agentId);
+      const previousCreatedTime = Number(previous?.createdTime || 0);
+
+      // WXCC can deliver retries/out-of-order events. Never let an older event roll back a newer state.
+      if (previousCreatedTime && createdTime && createdTime < previousCreatedTime) {
+        this.addDiagLog("agent-state-event-older-ignored", { agentId, currentState, createdTime, previousCreatedTime });
+        return;
+      }
+
+      const row = {
+        agentId,
+        currentState,
+        displayState,
+        taskId: String(data.taskId || ""),
+        queueId: String(data.queueId || ""),
+        teamId: String(data.teamId || ""),
+        createdTime: createdTime || now,
+        receivedAtMs: now,
+        source: "wxcc-event-authority"
+      };
+
+      this.agentStateEventCache.set(agentId, row);
+      this.persistAgentStates();
+      this.addDiagLog("agent-state-event-authority-updated", { agentId, currentState, displayState, taskId: row.taskId });
+
+      if (row.taskId && agentId) {
+        this.rebindActiveCallOwnership(row.taskId, agentId, {
+          queueId: row.queueId,
+          queueName: data.queueName || data.firstQueueName || data.lastQueueName || "",
+          agentName: data.agentName || data.agentDisplayName || "",
+          caller: data.origin || data.from || data.ani || data.caller || "",
+          destination: data.destination || data.to || data.dnis || ""
+        });
+      }
+
+      if (this.lastWallboardData) {
+        this.processWallboardData(this.lastWallboardData);
+      }
+    } catch (err) {
+      this.addDiagLog("agent-state-event-authority-failed", { message: err.message });
+    }
+  }
+
+  applyAgentStateAuthority(snapshot) {
+    const now = Date.now();
+    const agents = Array.isArray(snapshot.agentList) ? snapshot.agentList : [];
+    let applied = 0;
+    let ignoredOlderSnapshot = 0;
+
+    for (const agent of agents) {
+      const agentId = this.resolveAgentId(agent);
+      if (!agentId) continue;
+      const override = this.agentStateEventCache.get(agentId);
+      if (!override) continue;
+
+      const ageMs = now - Number(override.receivedAtMs || 0);
+      if (!Number.isFinite(ageMs) || ageMs > this.agentStateEventTtlMs) {
+        this.agentStateEventCache.delete(agentId);
+        continue;
+      }
+
+      // v43: Events are authoritative for realtime states. Search snapshots are allowed
+      // to enrich name/team metadata, but never to roll back a fresh event state.
+      const sourceState = String(agent.state || "");
+      if (sourceState !== override.displayState) ignoredOlderSnapshot += 1;
+      agent.state = this.getDeterministicDisplayStateForAgent(agentId, agent, override);
+      agent.currentState = override.currentState;
+      agent.eventAuthority = {
+        applied: true,
+        sourceState,
+        eventState: override.currentState,
+        ageMs,
+        taskId: override.taskId || ""
+      };
+      applied += 1;
+    }
+
+    if (snapshot.agents && Array.isArray(snapshot.agentList)) {
+      snapshot.agents.loggedIn = snapshot.agentList.length;
+      snapshot.agents.available = snapshot.agentList.filter(agent => String(agent.state || "").toLowerCase() === "available").length;
+    }
+
+    if (applied || ignoredOlderSnapshot) {
+      snapshot.agentStateAuthorityApplied = applied;
+      snapshot.agentStateAuthorityIgnoredOlderSnapshot = ignoredOlderSnapshot;
+      this.addDiagLog("agent-state-authority-applied", { applied, ignoredOlderSnapshot });
+    }
+
+    this.persistAgentStates();
+    return snapshot;
+  }
+
+  rememberActiveCallFromWxccEvent(details = {}) {
+    try {
+      const normalized = this.normalizeWxccEventBody(this.extractWxccEventBody(details));
+      const data = normalized.data || {};
+      const state = String(data.currentState || data.state || data.status || "").toLowerCase();
+      const type = String(normalized.type || "");
+      const taskId = String(data.taskId || data.interactionId || data.contactId || data.contactSessionId || data.id || "");
+      const agentId = String(data.agentId || data.ownerId || data.userId || "");
+      if (!taskId && !agentId) return;
+
+      const now = Date.now();
+      const id = taskId || `agent-${agentId}`;
+      const isActiveEvent =
+        type === "task:connect" ||
+        (type === "agent:state_change" && ["ringing", "connected"].includes(state));
+
+      if (isActiveEvent) {
+        if (this.isTerminalActiveCallId(id)) {
+          this.addDiagLog("active-call-stale-active-event-ignored", { id, type, state, agentId });
+          return;
+        }
+        const previous = this.activeCallRenderCache.get(id) || {};
+        const startMs = Number(previous.localStartMs || data.connectedTime || data.createdTime || now);
+        const binding = this.taskOwnershipMap.get(taskId) || {};
+        const row = this.enrichActiveCallDeterministically({
+          ...previous,
+          id,
+          taskId: taskId || id,
+          status: "connected",
+          reconstructed: true,
+          reconstructedSource: type === "task:connect" ? "frontend-task-connect-event-cache" : "frontend-agent-state-event-cache",
+          caller: data.origin || data.from || data.ani || data.caller || previous.caller || binding.caller || "",
+          destination: data.destination || data.to || data.dnis || previous.destination || binding.destination || "",
+          queueId: data.queueId || previous.queueId || binding.queueId || "",
+          queue: data.queueName || data.lastQueueName || previous.queue || binding.queueName || "",
+          firstQueue: data.firstQueueName || previous.firstQueue || "",
+          entryPoint: data.entryPointName || previous.entryPoint || "",
+          agent: this.cleanDisplayValue(data.agentName) || this.cleanDisplayValue(data.agentDisplayName) || this.cleanDisplayValue(previous.agent) || this.cleanDisplayValue(binding.agentName) || this.getAgentNameById(agentId || binding.agentId) || "",
+          agentId: agentId || previous.agentId || binding.agentId || "",
+          createdTime: previous.createdTime || data.createdTime || now,
+          connectedStartTime: previous.connectedStartTime || data.connectedTime || data.createdTime || now,
+          handleBaseTimestamp: now,
+          handleSeconds: Math.max(0, Math.floor((now - startMs) / 1000)),
+          localStartMs: startMs,
+          localLastSeenMs: now,
+          pendingEvictionAtMs: 0
+        });
+        this.activeCallRenderCache.set(id, row);
+        if (row.agentId) this.rebindActiveCallOwnership(id, row.agentId, { agentName: row.agent, queueId: row.queueId, queueName: row.queue, caller: row.caller, destination: row.destination });
+        this.persistActiveCalls();
+        this.addDiagLog("frontend-active-call-event-connected", { id, agentId: row.agentId || agentId, cacheSize: this.activeCallRenderCache.size, type, state });
+        if (this.lastWallboardData) this.processWallboardData(this.lastWallboardData);
+        return;
+      }
+
+      if (type === "agent:state_change" && ["available", "idle", "wrapup", "wrapup-done", "ended", "terminated", "disconnected"].includes(state)) {
+        if (taskId && this.isTerminalCallState(state)) {
+          this.rememberTerminalActiveCall(taskId, agentId, state, "agent-state-terminal");
+          this.hardEvictActiveCall(taskId, "agent-state-terminal", { agentId, state });
+          this.addDiagLog("frontend-active-call-event-terminal", { id, agentId, state, cacheSize: this.activeCallRenderCache.size, hardEvicted: true });
+          if (this.lastWallboardData) this.processWallboardData(this.lastWallboardData);
+          return;
+        }
+
+        const mark = call => {
+          call.pendingEvictionAtMs = now + this.activeCallEvictionDelayMs;
+          call.expiresAtMs = call.pendingEvictionAtMs;
+          call.localLastSeenMs = now;
+          call.eventState = state;
+        };
+        if (this.activeCallRenderCache.has(id)) {
+          mark(this.activeCallRenderCache.get(id));
+        } else if (agentId) {
+          for (const call of this.activeCallRenderCache.values()) {
+            if (String(call.agentId || "") === agentId) mark(call);
+          }
+        }
+        this.pruneActiveCallCaches("terminal-event");
+        this.persistActiveCalls();
+        this.addDiagLog("frontend-active-call-event-terminal", { id, agentId, state, cacheSize: this.activeCallRenderCache.size });
+      }
+    } catch (err) {
+      this.addDiagLog("frontend-active-call-event-failed", { message: err.message });
+    }
+  }
+
+  mergeActiveCallsForTimer(calls) {
+    this.pruneActiveCallCaches("merge-start");
+    const now = Date.now();
+    const incoming = Array.isArray(calls) ? calls : [];
+    const next = new Map();
+
+    incoming.forEach(call => {
+      const id = String(call?.id || call?.taskId || "");
+      if (!id) return;
+      if (this.isTerminalActiveCallId(id)) {
+        this.addDiagLog("active-call-terminal-snapshot-ignored", { id });
+        return;
+      }
+
+      const previous = this.activeCallRenderCache.get(id);
+      const incomingSeconds = Number(call.handleSeconds || call.liveHandleSeconds || call.liveDurationSeconds || 0);
+
+      let localStartMs = previous?.localStartMs;
+      if (!localStartMs) {
+        localStartMs = now - Math.max(0, incomingSeconds) * 1000;
+      }
+
+      next.set(id, this.enrichActiveCallDeterministically({
+        ...previous,
+        ...call,
+        id,
+        agentId: call.agentId || previous?.agentId || "",
+        agent: this.cleanDisplayValue(call.agent) || this.cleanDisplayValue(previous?.agent) || "",
+        queue: this.cleanDisplayValue(this.getCallQueueName(call)) || this.cleanDisplayValue(previous?.queue) || "",
+        localStartMs,
+        localLastSeenMs: now,
+        pendingEvictionAtMs: 0
+      }));
+    });
+
+    // v41: delayed eviction + widget recreation persistence.
+    // If taskDetails temporarily returns activeCalls:0 while agent events still show a connected call,
+    // preserve the previous active row for a short grace period instead of blanking the wallboard.
+    for (const [id, previous] of this.activeCallRenderCache.entries()) {
+      if (next.has(id)) continue;
+      if (this.isTerminalActiveCallId(id) || this.isTerminalCallState(previous.eventState || previous.terminalState || "")) {
+        this.hardEvictActiveCall(id, "merge-terminal-previous", { state: previous.eventState || previous.terminalState || "" });
+        continue;
+      }
+      const evictionAt = Number(previous.pendingEvictionAtMs || 0);
+      const lastSeen = Number(previous.localLastSeenMs || 0);
+      const keepBecauseDelayedEviction = evictionAt && now < evictionAt;
+      const keepBecauseTransientEmpty = !incoming.length && lastSeen && now - lastSeen < this.activeCallEvictionDelayMs;
+      const keepBecauseReconstructed = previous.reconstructed === true && lastSeen && now - lastSeen < this.activeCallEvictionDelayMs;
+
+      if (keepBecauseDelayedEviction || keepBecauseTransientEmpty || keepBecauseReconstructed) {
+        next.set(id, this.enrichActiveCallDeterministically({
+          ...previous,
+          status: "connected",
+          reconstructed: previous.reconstructed === true || incoming.length === 0,
+          reconstructedSource: previous.reconstructedSource || "frontend-delayed-eviction",
+          localLastSeenMs: lastSeen || now
+        }));
+      }
+    }
+
+    this.activeCallRenderCache = next;
+    this.persistActiveCalls();
+    return Array.from(next.values()).sort((a, b) => Number(a.localStartMs || 0) - Number(b.localStartMs || 0));
+  }
+
+  rememberCallHistory(calls) {
+    const rows = Array.isArray(calls) ? calls : [];
+
+    if (rows.length > 0) {
+      const existing = new Map(this.callHistoryRenderCache.map(row => [String(row.id || row.taskId || ""), row]));
+
+      rows.forEach(row => {
+        const id = String(row.id || row.taskId || "");
+        if (!id) return;
+        existing.set(id, row);
+      });
+
+      this.callHistoryRenderCache = Array.from(existing.values())
+        .sort((a, b) => Number(b.createdTime || 0) - Number(a.createdTime || 0))
+        .slice(0, 100);
+      this.callHistoryCacheTs = Date.now();
+      return this.callHistoryRenderCache;
+    }
+
+    if (this.callHistoryRenderCache.length && Date.now() - this.callHistoryCacheTs < 300000) {
+      return this.callHistoryRenderCache;
+    }
+
+    return [];
+  }
+
+  getLiveDisplaySeconds(call) {
+    const status = String(call?.status || "").toLowerCase();
+
+    if (status === "connected" && Number(call?.localStartMs || 0) > 0) {
+      return Math.max(0, Math.floor((Date.now() - Number(call.localStartMs)) / 1000));
+    }
+
+    const baseSeconds = Number(call?.handleSeconds || call?.liveHandleSeconds || call?.liveDurationSeconds || 0);
+    const baseTimestamp = Number(call?.handleBaseTimestamp || 0);
+
+    if (status === "connected" && baseTimestamp > 0) {
+      return Math.max(0, baseSeconds + Math.floor((Date.now() - baseTimestamp) / 1000));
+    }
+
+    const start = Number(call?.connectedStartTime || call?.lastActivityTime || call?.createdTime || 0);
+    if (status === "connected" && start > 0) {
+      return Math.max(0, Math.floor((Date.now() - start) / 1000));
+    }
+
+    return baseSeconds;
+  }
+
+  updateActiveDurationCells() {
+    const cells = this.shadowRoot.querySelectorAll(".live-duration");
+    cells.forEach(cell => {
+      const callId = String(cell.getAttribute("data-call-id") || "");
+      const call = Array.from(this.activeCallRenderCache.values()).find(item => this.shortId(item.id) === callId);
+      if (!call) return;
+      cell.textContent = this.formatDuration(this.getLiveDisplaySeconds(call));
+    });
+  }
+
+  updateAgentDurationCells() {
+    const cells = this.shadowRoot.querySelectorAll(".agent-live-duration");
+    cells.forEach(cell => {
+      const startMs = Number(cell.getAttribute("data-agent-start-ms") || 0);
+      if (!startMs) return;
+      const seconds = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
+      cell.textContent = this.formatDuration(seconds);
+    });
+  }
+
+  updateLiveDurationCells() {
+    this.updateActiveDurationCells();
+    this.updateAgentDurationCells();
+  }
+
+  startLiveUiTimer(runtimeId = this.runtimeId) {
+    if (this.liveUiTimerHandle) {
+      clearInterval(this.liveUiTimerHandle);
+    }
+
+    this.liveUiTimerHandle = this.safeSetInterval(() => {
+      if (!this.guardRuntime(runtimeId)) return;
+      this.updateLiveDurationCells();
+    }, 1000, runtimeId);
+  }
+
+
+
+
+  restorePersistentDiagnostics() {
+    try {
+      const raw = localStorage.getItem(this.diagStorageKey);
+      const parsed = JSON.parse(raw || "[]");
+      if (Array.isArray(parsed) && parsed.length) {
+        this.diagLogEntries = parsed.slice(-(this.diagLogMax || 1200));
+      }
+    } catch {}
+    try {
+      const rawQueue = localStorage.getItem(this.diagQueueStorageKey);
+      const parsedQueue = JSON.parse(rawQueue || "[]");
+      if (Array.isArray(parsedQueue) && parsedQueue.length) {
+        this.diagRemoteQueue = parsedQueue.slice(-400);
+        setTimeout(() => this.flushDiagRemoteQueue(false), 800);
+      }
+    } catch {}
+  }
+
+  persistDiagLog() {
+    try {
+      localStorage.setItem(this.diagStorageKey, JSON.stringify((this.diagLogEntries || []).slice(-(this.diagLogMax || 1200))));
+    } catch {}
+    try {
+      localStorage.setItem(this.diagQueueStorageKey, JSON.stringify((this.diagRemoteQueue || []).slice(-400)));
+    } catch {}
+    try { window.__WXCC_WIDGET_DIAG_LOG__ = this.diagLogEntries || []; } catch {}
+  }
+
+  queueRemoteDiagLog(entry) {
+    try {
+      if (!this.diagRemoteQueue) this.diagRemoteQueue = [];
+      this.diagRemoteQueue.push(entry);
+      while (this.diagRemoteQueue.length > 400) this.diagRemoteQueue.shift();
+      try { localStorage.setItem(this.diagQueueStorageKey, JSON.stringify(this.diagRemoteQueue)); } catch {}
+      if (!this.diagRemoteFlushHandle) {
+        this.diagRemoteFlushHandle = setTimeout(() => {
+          this.diagRemoteFlushHandle = null;
+          this.flushDiagRemoteQueue(false);
+        }, 1200);
+      }
+    } catch {}
+  }
+
+  flushDiagRemoteQueue(useBeacon = false) {
+    try {
+      const entries = (this.diagRemoteQueue || []).slice(0, 80);
+      if (!entries.length) return;
+      const payload = JSON.stringify({
+        frontendBuildId: FRONTEND_BUILD_ID,
+        href: location.href,
+        userAgent: navigator.userAgent,
+        sessionTokenPresent: Boolean(this.sessionToken),
+        entries
+      });
+      const url = `${this.API_URL}/api/debug/client-log`;
+      if (useBeacon && navigator.sendBeacon) {
+        const ok = navigator.sendBeacon(url, new Blob([payload], { type: "application/json" }));
+        if (ok) {
+          this.diagRemoteQueue.splice(0, entries.length);
+          this.persistDiagLog();
+        }
+        return;
+      }
+      fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(this.sessionToken ? { Authorization: `Bearer ${this.sessionToken}` } : {}) },
+        body: payload,
+        keepalive: true
+      }).then(res => {
+        if (res.ok) {
+          this.diagRemoteQueue.splice(0, entries.length);
+          this.persistDiagLog();
+        }
+      }).catch(() => {});
+    } catch {}
+  }
+
+  startPersistentDiagHeartbeat() {
+    if (this.diagHeartbeatHandle) clearInterval(this.diagHeartbeatHandle);
+    const runtimeId = this.runtimeId;
+    this.diagHeartbeatHandle = this.safeSetInterval(() => {
+      this.addDiagLog("frontend-heartbeat", {
+        visible: document.visibilityState,
+        eventSourceReadyState: this.wallboardEventSource ? this.wallboardEventSource.readyState : null,
+        hasLastWallboard: Boolean(this.lastWallboardData),
+        href: location.href,
+        runtimeId
+      });
+    }, 15000, runtimeId);
+    try {
+      this.visibilityChangeHandler = () => {
+        this.addDiagLog("visibility-change", { visibilityState: document.visibilityState, runtimeId });
+        if (document.visibilityState === "hidden") this.flushDiagRemoteQueue(true);
+        if (document.visibilityState === "visible") {
+          this.addDiagLog("visibility-resume", { eventSourceReadyState: this.wallboardEventSource ? this.wallboardEventSource.readyState : null, runtimeId });
+          this.flushDiagRemoteQueue(false);
+          if (!this.wallboardEventSource && this.sessionToken && this.isCurrentRuntime(runtimeId)) {
+            this.startWallboardStream(runtimeId);
+          }
+        }
+      };
+      this.pageHideHandler = () => {
+        this.addDiagLog("pagehide", { persisted: true, runtimeId });
+        this.flushDiagRemoteQueue(true);
+        this.persistDiagLog();
+      };
+      this.beforeUnloadHandler = () => {
+        this.addDiagLog("beforeunload", { persisted: true, runtimeId });
+        this.flushDiagRemoteQueue(true);
+        this.persistDiagLog();
+      };
+      this.addManagedListener(document, "visibilitychange", this.visibilityChangeHandler, true);
+      this.addManagedListener(window, "pagehide", this.pageHideHandler, true);
+      this.addManagedListener(window, "beforeunload", this.beforeUnloadHandler, true);
+    } catch {}
+  }
+
+  serializeError(err) {
+    if (!err) return { message: "" };
+    if (typeof err === "string") return { message: err };
+    const result = {
+      name: err.name || "Error",
+      message: err.message || String(err),
+      stack: String(err.stack || "").slice(0, 2500)
+    };
+    if (err.filename) result.filename = err.filename;
+    if (err.lineno) result.lineno = err.lineno;
+    if (err.colno) result.colno = err.colno;
+    return result;
+  }
+
+  safeDiagDetails(details = {}) {
+    try {
+      return JSON.parse(JSON.stringify(details, (key, value) => {
+        if (typeof value === "function") return `[Function ${value.name || "anonymous"}]`;
+        if (value instanceof Error) return this.serializeError(value);
+        if (typeof value === "string" && value.length > 3000) return value.slice(0, 3000) + "…";
+        return value;
+      }));
+    } catch (err) {
+      return { serializationFailed: true, message: err?.message || String(err) };
+    }
+  }
+
+  installTechnicalDiagnostics() {
+    if (this.techDiagnosticsInstalled) return;
+    this.techDiagnosticsInstalled = true;
+
+    this.windowErrorHandler = event => {
+      this.addDiagLog("window-error", {
+        message: event?.message || "",
+        source: event?.filename || "",
+        line: event?.lineno || 0,
+        column: event?.colno || 0,
+        error: this.serializeError(event?.error)
+      });
+    };
+
+    this.windowRejectionHandler = event => {
+      const serialized = this.serializeError(event?.reason);
+      const msg = `${serialized.name || ""} ${serialized.message || ""}`;
+      if (/AbortError/i.test(msg) && /play\(\).*pause\(\)/i.test(msg)) {
+        this.addDiagLog("audio-play-abort-ignored", { reason: serialized });
+        try { event.preventDefault(); } catch {}
+        return;
+      }
+      this.addDiagLog("unhandled-rejection", {
+        reason: serialized,
+        promise: String(event?.promise || "")
+      });
+    };
+
+    window.addEventListener("error", this.windowErrorHandler, true);
+    window.addEventListener("unhandledrejection", this.windowRejectionHandler, true);
+
+    try {
+      if (!window.__WXCC_WIDGET_CONSOLE_ERROR_PATCHED__) {
+        window.__WXCC_WIDGET_CONSOLE_ERROR_PATCHED__ = true;
+        this.consoleErrorOriginal = console.error.bind(console);
+        const original = this.consoleErrorOriginal;
+        console.error = (...args) => {
+          try {
+            const widgets = document.querySelectorAll("supervisor-access-widget");
+            widgets.forEach(widget => {
+              if (widget?.addDiagLog) {
+                widget.addDiagLog("console-error", {
+                  args: args.map(arg => arg instanceof Error ? widget.serializeError(arg) : String(arg).slice(0, 1000))
+                });
+              }
+            });
+          } catch {}
+          original(...args);
+        };
+      }
+    } catch (err) {
+      this.addDiagLog("console-patch-failed", this.serializeError(err));
+    }
+  }
+
+  uninstallTechnicalDiagnostics() {
+    try {
+      if (this.windowErrorHandler) window.removeEventListener("error", this.windowErrorHandler, true);
+      if (this.windowRejectionHandler) window.removeEventListener("unhandledrejection", this.windowRejectionHandler, true);
+    } catch {}
+    this.windowErrorHandler = null;
+    this.windowRejectionHandler = null;
+  }
+
+
+  addDiagLog(type, details = {}) {
+    try {
+      if (!this.diagLogEntries) this.diagLogEntries = [];
+      const entry = { ts: Date.now(), iso: new Date().toISOString(), time: new Date().toLocaleTimeString(), type, ...this.safeDiagDetails(details) };
+      this.diagLogEntries.push(entry);
+      while (this.diagLogEntries.length > (this.diagLogMax || 1200)) this.diagLogEntries.shift();
+      this.persistDiagLog();
+      this.queueRemoteDiagLog(entry);
+      try { this.renderDiagLog(); } catch (renderErr) {
+        const fallbackEntry = { ts: Date.now(), iso: new Date().toISOString(), time: new Date().toLocaleTimeString(), type: "diag-render-failed", error: this.serializeError(renderErr) };
+        this.diagLogEntries.push(fallbackEntry);
+        this.persistDiagLog();
+      }
+      return entry;
+    } catch (err) {
+      try {
+        const fallback = { ts: Date.now(), iso: new Date().toISOString(), time: new Date().toLocaleTimeString(), type: "diag-log-hard-failed", error: String(err?.message || err || "") };
+        const raw = localStorage.getItem(this.diagStorageKey);
+        const arr = JSON.parse(raw || "[]");
+        if (Array.isArray(arr)) arr.push(fallback);
+        localStorage.setItem(this.diagStorageKey, JSON.stringify((Array.isArray(arr) ? arr : [fallback]).slice(-1200)));
+        return fallback;
+      } catch {}
+    }
+  }
+
+  getWallboardSummary(data = this.lastWallboardData) {
+    const agents = Array.isArray(data?.agents) ? data.agents : Array.isArray(data?.agentList) ? data.agentList : [];
+    const activeCalls = Array.isArray(data?.taskList) ? data.taskList : [];
+    const waitingCalls = Array.isArray(data?.waitingTaskList) ? data.waitingTaskList : [];
+    const history = Array.isArray(data?.callHistoryList) ? data.callHistoryList : [];
+    return {
+      backendBuildId: data?.backendBuildId || data?.buildId || "",
+      requestId: data?.requestId || "",
+      stale: data?.stale === true,
+      staleReason: data?.staleReason || "",
+      lastError: data?.lastError ? String(data.lastError).slice(0, 300) : "",
+      agents: agents.length,
+      connectedAgents: agents.filter(agent => String(agent.state || "").toLowerCase() === "connected").length,
+      activeCalls: activeCalls.length,
+      waitingCalls: waitingCalls.length,
+      history: history.length,
+      connectedHistory: history.filter(call => String(call.status || "").toLowerCase() === "connected").length,
+      firstAgentState: agents[0]?.state || "",
+      firstActiveStatus: activeCalls[0]?.status || "",
+      firstHistoryStatus: history[0]?.status || "",
+      reconstructedActiveCalls: activeCalls.filter(call => call?.reconstructed === true).length
+    };
+  }
+
+  formatDiagEntry(entry) {
+    const details = { ...entry };
+    delete details.ts; delete details.time; delete details.type;
+    let suffix = "";
+    try { suffix = Object.keys(details).length ? " " + JSON.stringify(details) : ""; } catch {}
+    return `[${entry.time}] ${entry.type}${suffix}`;
+  }
+
+  getDiagText() {
+    return (this.diagLogEntries || []).map(entry => this.formatDiagEntry(entry)).join("\n");
+  }
+
+  renderDiagLog() {
+    const textNode = this.shadowRoot?.getElementById("diagLogText");
+    const countNode = this.shadowRoot?.getElementById("diagLogCount");
+    const panel = this.shadowRoot?.getElementById("diagLogPanel");
+    if (countNode) countNode.textContent = String((this.diagLogEntries || []).length);
+    if (textNode) textNode.textContent = this.getDiagText();
+    if (panel) panel.scrollTop = panel.scrollHeight;
+  }
+
+  bindDiagLogEvents() {
+    const toggle = this.shadowRoot.getElementById("diagToggle");
+    const copy = this.shadowRoot.getElementById("diagCopy");
+    const clear = this.shadowRoot.getElementById("diagClear");
+    const panel = this.shadowRoot.getElementById("diagLogPanel");
+    if (toggle && panel && !toggle.dataset.bound) {
+      toggle.dataset.bound = "1";
+      toggle.addEventListener("click", () => {
+        this.diagLogVisible = !this.diagLogVisible;
+        panel.style.display = this.diagLogVisible ? "block" : "none";
+        toggle.textContent = this.diagLogVisible ? "Hide Diagnostics" : "Show Diagnostics";
+        this.renderDiagLog();
       });
     }
-    res.json({ ok: true, buildId: BUILD_ID, accepted: entries.length });
-  } catch (err) {
-    addWidgetDiagLog("client-log-ingest-error", { error: err?.message || String(err) });
-    res.status(200).json({ ok: false, buildId: BUILD_ID, error: "client-log-ingest-error" });
+    if (copy && !copy.dataset.bound) {
+      copy.dataset.bound = "1";
+      copy.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(this.getDiagText());
+          this.setWallboardStatus("Diagnostic log copied");
+        } catch {
+          this.setWallboardStatus("Copy failed. Select log manually.");
+        }
+      });
+    }
+    if (clear && !clear.dataset.bound) {
+      clear.dataset.bound = "1";
+      clear.addEventListener("click", () => {
+        this.diagLogEntries = [];
+        this.addDiagLog("frontend-log-cleared", {});
+      });
+    }
   }
-});
 
-app.get("/api/debug/widget-log", requireSession, requireWriteRole, async (req, res) => {
-  const limit = Math.max(1, Math.min(Number(req.query.limit || 150), WIDGET_DIAG_LOG_MAX));
-  res.json({ ok: true, buildId: BUILD_ID, now: Date.now(), entries: widgetDiagLog.slice(-limit) });
-});
+  startHistoryEndWatchdog(runtimeId = this.runtimeId) {
+    if (this.historyEndWatchdogHandle) {
+      clearInterval(this.historyEndWatchdogHandle);
+    }
 
-app.post("/api/debug/widget-log/clear", requireSession, requireWriteRole, async (req, res) => {
-  widgetDiagLog.length = 0;
-  addWidgetDiagLog("backend-log-cleared", {});
-  res.json({ ok: true, buildId: BUILD_ID });
-});
+    this.historyEndWatchdogHandle = this.safeSetInterval(() => {
+      if (!this.guardRuntime(runtimeId)) return;
+      this.checkHistoryEndMismatch(runtimeId).catch(err => this.addDiagLog("history-watchdog-exception", { error: this.serializeError(err), runtimeId }));
+    }, 1500, runtimeId);
+  }
+
+  async checkHistoryEndMismatch(runtimeId = this.runtimeId) {
+    if (!this.guardRuntime(runtimeId) || !this.sessionToken || !this.lastWallboardData) return;
+
+    const now = Date.now();
+
+    const activeCalls = Array.isArray(this.lastWallboardData.taskList)
+      ? this.lastWallboardData.taskList.filter(call => String(call.status || "").toLowerCase() === "connected")
+      : [];
+
+    const agents = Array.isArray(this.lastWallboardData.agents)
+      ? this.lastWallboardData.agents
+      : Array.isArray(this.lastWallboardData.agentList)
+        ? this.lastWallboardData.agentList
+        : [];
+
+    const connectedAgents = agents.filter(agent => String(agent.state || "").toLowerCase() === "connected");
+
+    const history = Array.isArray(this.lastWallboardData.callHistoryList)
+      ? this.lastWallboardData.callHistoryList
+      : [];
+
+    const hasConnectedHistory = history.some(call => String(call.status || "").toLowerCase() === "connected");
+
+    const mismatch = hasConnectedHistory && activeCalls.length === 0 && connectedAgents.length === 0;
+
+    if (mismatch) {
+      if (!this.historyEndMismatchSinceTs) {
+        this.historyEndMismatchSinceTs = now;
+      }
+    } else {
+      this.historyEndMismatchSinceTs = 0;
+      return;
+    }
+
+    const mismatchAge = now - this.historyEndMismatchSinceTs;
+    const refreshAge = now - this.historyEndMismatchLastRefreshTs;
+
+    if (mismatchAge > 2500 && refreshAge > 5000) {
+      this.historyEndMismatchLastRefreshTs = now;
+
+      if (typeof this.recordClientSseDebug === "function") {
+        this.recordClientSseDebug("history-end-mismatch-refresh", {
+          mismatchAge,
+          activeCalls: activeCalls.length,
+          connectedAgents: connectedAgents.length,
+          connectedHistory: true
+        });
+      }
+
+      this.addDiagLog("history-end-mismatch-refresh", { mismatchAge, activeCalls: activeCalls.length, connectedAgents: connectedAgents.length, hasConnectedHistory });
+      await this.loadWallboard("history-end-mismatch", runtimeId);
+    }
+  }
+
+  startRobustActiveCallTimer(runtimeId = this.runtimeId) {
+    if (this.activeCallTimerHandle) {
+      clearInterval(this.activeCallTimerHandle);
+    }
+
+    this.activeCallTimerHandle = this.safeSetInterval(() => {
+      if (!this.guardRuntime(runtimeId)) return;
+      try {
+      this.updateActiveDurationCells();
+
+      if (!this.lastWallboardData) return;
+
+      const rawActiveCalls = Array.isArray(this.lastWallboardData.taskList)
+        ? this.lastWallboardData.taskList.filter(t => String(t.status || "").toLowerCase() === "connected")
+        : [];
+      const visibleActiveCalls = this.mergeActiveCallsForTimer(this.filterCallsByAllowedQueues(rawActiveCalls));
+      this.renderActiveCalls(visibleActiveCalls);
+
+      const rawCallHistory = Array.isArray(this.lastWallboardData.callHistoryList)
+        ? this.lastWallboardData.callHistoryList
+        : [];
+      const visibleCallHistory = this.rememberCallHistory(this.filterCallsByAllowedQueues(rawCallHistory));
+      this.renderCallHistory(visibleCallHistory);
+      } catch (err) {
+        this.addDiagLog("active-timer-exception", { error: this.serializeError(err) });
+      }
+    }, 1000);
+  }
+
+  renderCallHistory(calls) {
+    const list = this.shadowRoot.getElementById("callHistoryList");
+    if (!list) return;
+
+    const maxRows = 75;
+    const rows = (Array.isArray(calls) ? calls : []).slice(0, maxRows);
+
+    list.innerHTML = `
+      <div class="call-row history call-header">
+        <div>Status</div><div>Queue</div><div>Caller</div><div>Agent</div><div>Wrapup Reason</div><div>Handle / Type</div><div>Termination Reason</div><div>Started</div><div>Duration</div><div>Task</div>
+      </div>
+    `;
+
+    if (!rows.length) {
+      const row = document.createElement("div");
+      row.className = "call-row history";
+      row.innerHTML = `<div>No calls in the last 24h</div><div></div><div></div><div></div><div></div><div></div><div></div><div></div><div></div><div></div>`;
+      list.appendChild(row);
+      return;
+    }
+
+    rows.forEach(call => {
+      const row = document.createElement("div");
+      row.className = "call-row history";
+      const liveSeconds = this.getLiveDisplaySeconds(call);
+      const durationMs = Number(call.totalDuration || call.connectedDuration || call.queueDuration || 0);
+      row.innerHTML = `
+        <div>${call.status || "-"}</div>
+        <div>${this.getCallQueueName(call) || "-"}</div>
+        <div>${call.caller || "-"}</div>
+        <div>${call.agent || "-"}</div>
+        <div>${this.getWrapupReason(call)}</div>
+        <div>${this.getHandleType(call)}</div>
+        <div>${this.getTerminationReason(call)}</div>
+        <div>${this.formatDateTime(call.createdTime)}</div>
+        <div>${this.formatDuration(liveSeconds || Math.round(durationMs / 1000))}</div>
+        <div>${this.shortId(call.id)}</div>
+      `;
+      list.appendChild(row);
+    });
+  }
+
+  renderActiveCalls(calls) {
+    calls = (Array.isArray(calls) ? calls : []).map(call => {
+      const enriched = this.enrichActiveCallDeterministically(call);
+      if (!this.cleanDisplayValue(enriched.agent) && enriched.agentId) {
+        enriched.agent = this.getVisibleAgentDisplayNameById(enriched.agentId) || this.getAgentNameById(enriched.agentId) || "";
+      }
+      return enriched;
+    });
+    const list = this.shadowRoot.getElementById("activeCallList");
+    list.innerHTML = `
+      <div class="call-row active call-header">
+        <div>Status</div><div>Queue</div><div>Caller</div><div>Agent</div><div>Handle</div><div>Task</div>
+      </div>
+    `;
+
+    if (!calls.length) {
+      const row = document.createElement("div");
+      row.className = "call-row active";
+      row.innerHTML = `<div>No active calls</div><div></div><div></div><div></div><div></div><div></div>`;
+      list.appendChild(row);
+      return;
+    }
+
+    calls.forEach(call => {
+      const row = document.createElement("div");
+      row.className = "call-row active";
+      const handleSeconds = this.getLiveDisplaySeconds(call);
+      const fallbackSeconds = Math.round(Number(call.connectedDuration || 0) / 1000);
+      row.innerHTML = `
+        <div>${call.status || "-"}</div>
+        <div>${this.getCallQueueName(call) || "-"}</div>
+        <div>${call.caller || "-"}</div>
+        <div>${call.agent || "-"}</div>
+        <div><span class="live-duration" data-call-id="${this.shortId(call.id)}">${this.formatDuration(handleSeconds || fallbackSeconds)}</span></div>
+        <div>${this.shortId(call.id)}</div>
+      `;
+      list.appendChild(row);
+    });
+  }
 
 
-app.listen(PORT, () => {
-  console.log(`Secure widget backend listening on ${PORT}`);
-});
+  stabilizeWallboardSnapshot(data) {
+    const snapshot = data && typeof data === "object" ? { ...data } : {};
+    const now = Date.now();
+
+    const incomingHistory = Array.isArray(snapshot.callHistoryList) ? snapshot.callHistoryList : [];
+    const incomingTasks = Array.isArray(snapshot.taskList) ? snapshot.taskList : [];
+    const incomingAgents = Array.isArray(snapshot.agentList) ? snapshot.agentList : [];
+
+    if (incomingHistory.length > 0) {
+      this.lastNonEmptyCallHistory = incomingHistory;
+      this.lastNonEmptyCallHistoryTs = now;
+    } else if (
+      this.lastNonEmptyCallHistory.length > 0 &&
+      now - this.lastNonEmptyCallHistoryTs < 120000 &&
+      incomingTasks.length === 0 &&
+      incomingAgents.length > 0
+    ) {
+      // WXCC sometimes sends a transient empty history snapshot directly after
+      // Connected -> Wrapup -> Post Call Survey -> ended. Keep the last known
+      // rows for a short time so the widget does not visually reset or crash.
+      snapshot.callHistoryList = this.lastNonEmptyCallHistory;
+      snapshot.historyPreservedByFrontend = true;
+      snapshot.historyPreservedReason = "transient-empty-history-after-call-end";
+      this.addDiagLog("history-preserved", {
+        preservedRows: this.lastNonEmptyCallHistory.length,
+        ageMs: now - this.lastNonEmptyCallHistoryTs
+      });
+    }
+
+    snapshot.taskList = incomingTasks;
+    snapshot.waitingTaskList = Array.isArray(snapshot.waitingTaskList) ? snapshot.waitingTaskList : [];
+    snapshot.agentList = incomingAgents;
+    snapshot.agents = snapshot.agents || {};
+    this.updateDeterministicDirectories(snapshot);
+    this.reconcileAgentStateAuthorityBeforeProjection(snapshot);
+    this.applyAgentStateAuthority(snapshot);
+    const projection = this.buildAuthoritativeAgents(snapshot);
+    snapshot.agentList = projection.rows;
+    snapshot.agents = { ...snapshot.agents, ...projection.agentsSummary };
+    snapshot.taskList = snapshot.taskList.map(call => this.enrichActiveCallDeterministically(call));
+    snapshot.waitingTaskList = snapshot.waitingTaskList.map(call => this.enrichActiveCallDeterministically(call));
+    snapshot.callHistoryList = (Array.isArray(snapshot.callHistoryList) ? snapshot.callHistoryList : []).map(call => this.enrichActiveCallDeterministically(call));
+    snapshot.deterministicStateAuthority = true;
+    this.lastNonEmptyWallboardTs = now;
+    return snapshot;
+  }
+
+  projectAgentsForRender(agents = []) {
+    const now = Date.now();
+    const projected = (Array.isArray(agents) ? agents : []).map(agent => {
+      const agentId = this.resolveAgentId(agent);
+      if (!agentId) return { ...agent };
+      const mapped = this.getAuthoritativeOverrideForAgent(agentId);
+      if (!mapped?.override) return { ...agent };
+      const override = mapped.override;
+      const ageMs = now - Number(override.receivedAtMs || 0);
+      if (!Number.isFinite(ageMs) || ageMs > this.agentStateEventTtlMs) return { ...agent };
+      const finalState = this.getDeterministicDisplayStateForAgent(agentId, agent, override);
+      return {
+        ...agent,
+        agentId,
+        id: agentId,
+        name: this.cleanDisplayValue(agent.name) || this.getAgentNameById(agentId) || agent.login || agentId,
+        state: finalState,
+        currentState: override.currentState,
+        taskId: override.taskId || agent.taskId || "",
+        eventAuthority: {
+          applied: true,
+          finalRender: true,
+          eventState: override.currentState,
+          finalState,
+          ageMs,
+          stateSource: mapped.stateSource,
+          eventAgentId: mapped.eventAgentId,
+          canonicalAgentId: mapped.canonicalAgentId
+        }
+      };
+    });
+    return projected;
+  }
+
+  getRenderedAgentSummary(agents = []) {
+    const rows = Array.isArray(agents) ? agents : [];
+    return {
+      loggedIn: rows.length,
+      available: rows.filter(agent => String(agent.state || "").toLowerCase() === "available").length,
+      connected: rows.filter(agent => String(agent.state || "").toLowerCase() === "connected").length
+    };
+  }
+
+  safeSetText(id, value) {
+    const el = this.shadowRoot?.getElementById(id);
+    if (el) el.textContent = value == null ? "" : String(value);
+  }
+
+  processWallboardData(data) {
+    try {
+      data = this.stabilizeWallboardSnapshot(data);
+      this.lastWallboardData = data;
+      this.addDiagLog("process-wallboard", { summary: this.getWallboardSummary(data) });
+
+    const detectedQueues = this.extractAllowedQueuesFromWallboardData(data);
+    this.allowedQueueNames = detectedQueues;
+
+    this.updateQueueFilterOptions();
+
+    const rawWaitingCalls = Array.isArray(data.waitingTaskList) ? data.waitingTaskList : [];
+
+    const rawActiveCalls = Array.isArray(data.taskList)
+      ? data.taskList.filter(t => String(t.status || "").toLowerCase() === "connected")
+      : [];
+
+    const rawCallHistory = Array.isArray(data.callHistoryList) ? data.callHistoryList : [];
+
+    const visibleWaitingCalls = this.filterCallsByAllowedQueues(rawWaitingCalls);
+    const visibleActiveCalls = this.mergeActiveCallsForTimer(this.filterCallsByAllowedQueues(rawActiveCalls));
+    const visibleCallHistory = this.rememberCallHistory(this.filterCallsByAllowedQueues(rawCallHistory));
+    const visibleQueueKpis = this.calculateQueueKpisFromVisibleCalls(
+      visibleWaitingCalls,
+      visibleActiveCalls,
+      data.queue || {}
+    );
+
+    const callsInQueue = visibleQueueKpis.callsInQueue;
+    const loggedInAgents = data.agents?.loggedIn ?? 0;
+    const availableAgents = data.agents?.available ?? 0;
+
+    this.safeSetText("kpiCallsInQueue", callsInQueue);
+    this.safeSetText("kpiActiveCalls", visibleQueueKpis.activeCalls);
+    this.applyAnalyticsKpisToUi(visibleQueueKpis);
+    this.safeSetText("kpiLoggedIn", loggedInAgents);
+    this.safeSetText("kpiAvailable", availableAgents);
+
+    if (typeof this.updateKpiState === "function") {
+      this.updateKpiState("kpiCardCallsInQueue", callsInQueue, "queue");
+      this.updateKpiState("kpiCardLoggedIn", loggedInAgents, "agents");
+      this.updateKpiState("kpiCardAvailable", availableAgents, "agents");
+    } else if (typeof this.applyWallboardThresholds === "function") {
+      this.applyWallboardThresholds({ callsInQueue, loggedInAgents, availableAgents });
+    }
+
+    const agentList = this.shadowRoot.getElementById("agentList");
+    agentList.innerHTML = `
+      <div class="table-row table-header">
+        <div>Name</div><div>Status</div><div>Team</div><div>Active Since</div>
+      </div>
+    `;
+
+    const agents = this.projectAgentsForRender(Array.isArray(data.agentList) ? data.agentList : []);
+    const renderedAgentSummary = this.getRenderedAgentSummary(agents);
+    this.safeSetText("kpiLoggedIn", renderedAgentSummary.loggedIn);
+    this.safeSetText("kpiAvailable", renderedAgentSummary.available);
+    this.addDiagLog("agent-render-final-projection", {
+      rows: agents.length,
+      first: agents[0] ? {
+        agentId: agents[0].agentId || agents[0].id || "",
+        name: agents[0].name || agents[0].login || "",
+        state: agents[0].state || "",
+        eventAuthority: agents[0].eventAuthority || null,
+        stateSource: agents[0].eventAuthority?.stateSource || "snapshot"
+      } : null
+    });
+
+    if (!agents.length) {
+      const row = document.createElement("div");
+      row.className = "table-row";
+      row.innerHTML = `<div>No active agents</div><div></div><div></div><div></div>`;
+      agentList.appendChild(row);
+    } else {
+      agents.forEach(agent => {
+        const row = document.createElement("div");
+        row.className =
+          String(agent.state || "").toLowerCase() === "available"
+            ? "table-row agent-available"
+            : "table-row agent-unavailable";
+        row.innerHTML = `
+          <div>${agent.name || agent.login || "-"}</div>
+          <div>${agent.state || "-"}</div>
+          <div>${agent.team || "-"}</div>
+          <div><span class="agent-live-duration" data-agent-id="${this.resolveAgentId(agent)}" data-agent-start-ms="${Number(agent.lastActivityTime || agent.startTime || 0)}">${this.formatDuration(this.getAgentDuration(agent))}</span></div>
+        `;
+        agentList.appendChild(row);
+      });
+    }
+
+    this.renderWaitingCalls(visibleWaitingCalls);
+    this.renderCallHistory(visibleCallHistory);
+    this.renderActiveCalls(visibleActiveCalls);
+
+    const visibleQueues = this.getVisibleQueueNames();
+    const queueFilterInfo = visibleQueues.length
+      ? ` • Queues: ${visibleQueues.join(", ")}`
+      : " • No queue assignment detected";
+
+    this.setWallboardStatus(`Live • Updated ${new Date().toLocaleTimeString()}${queueFilterInfo}`);
+    } catch (err) {
+      this.addDiagLog("process-wallboard-failed", {
+        message: err?.message || String(err),
+        stack: String(err?.stack || "").slice(0, 800),
+        summary: this.getWallboardSummary(data)
+      });
+      this.setWallboardStatus(`Dashboard render recovered after frontend error: ${err?.message || err}`);
+    }
+  }
+
+
+
+  getAnalyticsQueueParam() {
+    const queues = this.getVisibleQueueNames();
+    return Array.isArray(queues) ? queues.filter(Boolean).join(",") : "";
+  }
+
+  getAnalyticsKpiCacheKey() {
+    return `${this.analyticsKpiRange || "60m"}|${this.getAnalyticsQueueParam()}`;
+  }
+
+  startAnalyticsKpiPolling(runtimeId = this.runtimeId) {
+    if (!this.guardRuntime(runtimeId)) return;
+    const select = this.$kpiDurationSelect();
+    if (select) select.value = this.analyticsKpiRange || "60m";
+    if (this.analyticsKpiPollHandle) return;
+
+    this.addDiagLog("analytics-kpi-poll-start", {
+      intervalMs: this.analyticsKpiIntervalMs,
+      range: this.analyticsKpiRange || "60m",
+      queues: this.getAnalyticsQueueParam(),
+      isolated: true,
+      runtimeId
+    });
+
+    this.loadAnalyticsMetrics("startup", runtimeId).catch(() => {});
+    this.analyticsKpiPollHandle = this.safeSetInterval(() => {
+      this.loadAnalyticsMetrics("interval", runtimeId).catch(() => {});
+    }, this.analyticsKpiIntervalMs || 30000, runtimeId);
+  }
+
+  async analyticsFetchNoRetry(path, runtimeId = this.runtimeId) {
+    if (!this.guardRuntime(runtimeId)) return null;
+    if (!this.sessionToken) throw new Error("No session token for analytics request");
+
+    const controller = new AbortController();
+    const timeoutHandle = setTimeout(() => {
+      try { controller.abort(); } catch {}
+    }, this.analyticsKpiTimeoutMs || 8000);
+
+    const startedAt = Date.now();
+    try {
+      const url = `${this.API_URL}${path}`;
+      this.addDiagLog("analytics-fetch-request", {
+        path,
+        method: "GET",
+        timeoutMs: this.analyticsKpiTimeoutMs || 8000,
+        isolated: true,
+        noRetry: true,
+        noRebootstrap: true
+      });
+      const res = await fetch(url, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${this.sessionToken}`, Accept: "application/json" },
+        signal: controller.signal,
+        cache: "no-store"
+      });
+      this.addDiagLog("analytics-fetch-response", {
+        path,
+        status: res.status,
+        ok: res.ok,
+        durationMs: Date.now() - startedAt,
+        isolated: true
+      });
+      return res;
+    } finally {
+      clearTimeout(timeoutHandle);
+    }
+  }
+
+  async loadAnalyticsMetrics(reason = "manual", runtimeId = this.runtimeId) {
+    if (!this.guardRuntime(runtimeId)) return;
+    if (this.analyticsKpiLoading) {
+      this.addDiagLog("analytics-kpi-skip-inflight", { reason, runtimeId });
+      return;
+    }
+
+    this.analyticsKpiLoading = true;
+    const range = this.analyticsKpiRange || "60m";
+    const queues = this.getAnalyticsQueueParam();
+    const cacheKey = `${range}|${queues}`;
+    const path = `/api/analytics/queue-metrics?range=${encodeURIComponent(range)}${queues ? `&queues=${encodeURIComponent(queues)}` : ""}`;
+
+    try {
+      const res = await this.analyticsFetchNoRetry(path, runtimeId);
+      if (!res || !this.guardRuntime(runtimeId)) return;
+
+      let data = {};
+      try { data = await this.readJsonResponse(res); } catch (jsonErr) { data = { ok: false, error: jsonErr.message }; }
+
+      if (!res.ok || data?.ok === false || !data?.metrics) {
+        this.analyticsKpiData = null;
+        this.analyticsKpiError = data?.error || data?.notes?.[0] || `HTTP ${res.status}`;
+        this.addDiagLog("analytics-kpi-unavailable", {
+          reason,
+          status: res.status,
+          range,
+          queues,
+          source: data?.source || "",
+          reportId: data?.reportId || "",
+          attempts: Array.isArray(data?.attempts) ? data.attempts.slice(0, 8) : undefined,
+          isolated: true
+        });
+        this.applyAnalyticsKpisToUi();
+        return;
+      }
+
+      this.analyticsKpiData = {
+        cacheKey,
+        range,
+        queues,
+        generatedAt: data.generatedAt || new Date().toISOString(),
+        metrics: data.metrics,
+        reportFields: data.reportFields || null,
+        source: data.source || "wxcc-analyzer-queue-all-fields-report",
+        reportId: data.reportId || ""
+      };
+      this.analyticsKpiError = "";
+      this.addDiagLog("analytics-kpi-applied", {
+        reason,
+        range,
+        queues,
+        source: this.analyticsKpiData.source,
+        reportId: this.analyticsKpiData.reportId,
+        metrics: this.analyticsKpiData.metrics,
+        reportFields: this.analyticsKpiData.reportFields,
+        isolated: true
+      });
+      this.applyAnalyticsKpisToUi();
+    } catch (err) {
+      if (!this.guardRuntime(runtimeId)) return;
+      this.analyticsKpiData = null;
+      this.analyticsKpiError = err?.name === "AbortError" ? "Analytics request timed out" : (err?.message || String(err));
+      this.addDiagLog("analytics-kpi-error-isolated", {
+        reason,
+        range,
+        queues,
+        error: this.serializeError(err),
+        isolated: true,
+        noRebootstrap: true,
+        noPollFallback: true
+      });
+      this.applyAnalyticsKpisToUi();
+    } finally {
+      this.analyticsKpiLoading = false;
+    }
+  }
+
+  applyAnalyticsKpisToUi(fallbackLiveKpis = null) {
+    const currentKey = this.getAnalyticsKpiCacheKey();
+    const data = this.analyticsKpiData;
+    if (data && data.cacheKey === currentKey && data.metrics) {
+      this.safeSetText("kpiLongestWaiting", this.formatDuration(Number(data.metrics.longestWaitingSeconds || 0)));
+      this.safeSetText("kpiAvgWait", this.formatDuration(Number(data.metrics.avgWaitSeconds || 0)));
+      this.safeSetText("kpiAvgHandle", this.formatDuration(Number(data.metrics.avgHandleSeconds || 0)));
+      return;
+    }
+
+    // v58: these 3 KPI cards reflect only the official Analyzer Queue All Fields Report.
+    // No TaskDetails/live reconstruction fallback here, to avoid misleading KPI values.
+    this.safeSetText("kpiLongestWaiting", "—");
+    this.safeSetText("kpiAvgWait", "—");
+    this.safeSetText("kpiAvgHandle", "—");
+  }
+
+  async loadWallboard(reason = "manual", runtimeId = this.runtimeId) {
+    if (!this.guardRuntime(runtimeId)) return;
+    this.addDiagLog("fetch-start", { reason, runtimeId });
+
+    try {
+      const res = await this.authorizedFetch(`/api/wallboard`);
+      const data = await this.readJsonResponse(res);
+      if (!this.guardRuntime(runtimeId)) return;
+
+      if (!res.ok || data.ok === false) {
+        this.addDiagLog("fetch-http-error", { reason, status: res.status, error: data?.error || "" });
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+
+      this.addDiagLog("fetch-success", {
+        reason,
+        status: res.status,
+        summary: this.getWallboardSummary(data)
+      });
+
+      if (!this.guardRuntime(runtimeId)) return;
+      this.processWallboardData(data);
+
+      if (data.stale === true) {
+        this.setWallboardStatus(`Dashboard recovered with cached data ${new Date().toLocaleTimeString()}`);
+      }
+    } catch (err) {
+      this.addDiagLog("fetch-error", { reason, message: err.message });
+      this.setWallboardStatus(`Dashboard failed: ${err.message}`);
+    }
+  }
+
+  startWallboardPollFallback(reason = "sse-disconnected", runtimeId = this.runtimeId) {
+    if (this.wallboardPollFallbackHandle) return;
+
+    this.addDiagLog("poll-fallback-start", { reason, runtimeId });
+    this.wallboardPollFallbackHandle = this.safeSetInterval(() => {
+      if (!this.sessionToken || !this.guardRuntime(runtimeId)) return;
+      this.loadWallboard("poll-fallback", runtimeId).catch(err => {
+        this.addDiagLog("poll-fallback-error", { message: err.message, runtimeId });
+      });
+    }, this.WALLBOARD_POLL_INTERVAL_MS || 5000, runtimeId);
+  }
+
+  stopWallboardPollFallback(reason = "sse-connected") {
+    if (!this.wallboardPollFallbackHandle) return;
+    clearInterval(this.wallboardPollFallbackHandle);
+    this.wallboardPollFallbackHandle = null;
+    this.addDiagLog("poll-fallback-stop", { reason });
+  }
+
+  scheduleWallboardReconnect(reason = "sse-error", runtimeId = this.runtimeId) {
+    if (this.wallboardReconnectHandle || !this.sessionToken || !this.guardRuntime(runtimeId)) return;
+
+    this.wallboardReconnectAttempt = (this.wallboardReconnectAttempt || 0) + 1;
+    const delay = Math.min(30000, 2000 * this.wallboardReconnectAttempt);
+
+    this.addDiagLog("sse-reconnect-scheduled", {
+      reason,
+      attempt: this.wallboardReconnectAttempt,
+      delay,
+      runtimeId
+    });
+
+    this.wallboardReconnectHandle = this.safeSetTimeout(() => {
+      this.wallboardReconnectHandle = null;
+      this.startWallboardStream(runtimeId);
+    }, delay, runtimeId);
+  }
+
+  startWallboardStream(runtimeId = this.runtimeId) {
+    if (!this.guardRuntime(runtimeId)) return;
+    if (this.wallboardEventSource) {
+      try { this.wallboardEventSource.close(); } catch {}
+      this.wallboardEventSource = null;
+    }
+
+    if (this.wallboardReconnectHandle) {
+      clearTimeout(this.wallboardReconnectHandle);
+      this.wallboardReconnectHandle = null;
+    }
+
+    if (!this.sessionToken) {
+      this.addDiagLog("sse-start-failed", { reason: "missing-session-token" });
+      this.setWallboardStatus("Live dashboard failed: missing session token");
+      this.startWallboardPollFallback("missing-session-token", runtimeId);
+      return;
+    }
+
+    const url = `${this.API_URL}/api/wallboard/stream?token=${encodeURIComponent(this.sessionToken)}`;
+    this.addDiagLog("sse-open", { url: `${this.API_URL}/api/wallboard/stream?token=***` });
+
+    let source;
+    try {
+      source = new EventSource(url);
+    } catch (err) {
+      this.addDiagLog("sse-constructor-exception", { error: this.serializeError(err) });
+      this.startWallboardPollFallback("sse-constructor-exception", runtimeId);
+      this.scheduleWallboardReconnect("sse-constructor-exception", runtimeId);
+      return;
+    }
+    this.wallboardEventSource = source;
+
+    source.addEventListener("open", () => {
+      if (!this.guardRuntime(runtimeId) || this.wallboardEventSource !== source) return;
+      this.wallboardReconnectAttempt = 0;
+      this.addDiagLog("sse-opened", { readyState: source.readyState });
+    });
+
+    source.addEventListener("ready", event => {
+      if (!this.guardRuntime(runtimeId) || this.wallboardEventSource !== source) return;
+      let details = {};
+      try { details = JSON.parse(event.data || "{}"); } catch {}
+      this.wallboardReconnectAttempt = 0;
+      this.stopWallboardPollFallback("sse-ready");
+      this.addDiagLog("sse-ready", details);
+      this.setWallboardStatus("Live dashboard connected");
+    });
+
+    source.addEventListener("wallboard", event => {
+      if (!this.guardRuntime(runtimeId) || this.wallboardEventSource !== source) return;
+      try {
+        const data = JSON.parse(event.data);
+        this.addDiagLog("sse-wallboard", { summary: this.getWallboardSummary(data) });
+        if (!this.guardRuntime(runtimeId)) return;
+      this.processWallboardData(data);
+      } catch (err) {
+        this.addDiagLog("sse-wallboard-parse-error", { message: err.message });
+        this.setWallboardStatus(`Live dashboard parse failed: ${err.message}`);
+      }
+    });
+
+    source.addEventListener("wallboard-error", event => {
+      if (!this.guardRuntime(runtimeId) || this.wallboardEventSource !== source) return;
+      let payload = {};
+      try { payload = JSON.parse(event.data || "{}"); } catch {}
+      this.addDiagLog("sse-wallboard-error", {
+        reason: payload.reason || "",
+        error: String(payload.error || "").slice(0, 500)
+      });
+      this.setWallboardStatus("Live event warning. Keeping dashboard alive and refreshing...");
+      this.loadWallboard("sse-wallboard-error", runtimeId).catch(err => {
+        this.addDiagLog("sse-wallboard-error-refresh-failed", { message: err.message });
+      });
+    });
+
+    source.addEventListener("wxcc-event", event => {
+      if (!this.guardRuntime(runtimeId) || this.wallboardEventSource !== source) return;
+      let details = {};
+      try { details = JSON.parse(event.data || "{}"); } catch {}
+      this.addDiagLog("sse-wxcc-event", details);
+      this.rememberRelationalStateFromWxccEvent(details);
+      this.rememberAgentStateFromWxccEvent(details);
+      this.rememberActiveCallFromWxccEvent(details);
+      this.setWallboardStatus("WXCC event received. Refreshing...");
+    });
+
+    source.addEventListener("event-refresh", event => {
+      if (!this.guardRuntime(runtimeId) || this.wallboardEventSource !== source) return;
+      let details = {};
+      try { details = JSON.parse(event.data || "{}"); } catch {}
+      this.addDiagLog("sse-event-refresh", details);
+      this.setWallboardStatus(`Event refresh completed ${new Date().toLocaleTimeString()}`);
+    });
+
+    source.addEventListener("error", () => {
+      if (!this.guardRuntime(runtimeId) || this.wallboardEventSource !== source) return;
+      const readyState = source.readyState;
+      this.addDiagLog("sse-native-error", { readyState, attempt: this.wallboardReconnectAttempt || 0 });
+
+      if (readyState === EventSource.CLOSED) {
+        if (this.wallboardEventSource === source) {
+          this.wallboardEventSource = null;
+        }
+        this.setWallboardStatus("Live dashboard disconnected. Reconnecting with polling fallback...");
+        this.startWallboardPollFallback("sse-native-closed", runtimeId);
+        this.scheduleWallboardReconnect("sse-native-closed", runtimeId);
+        return;
+      }
+
+      // CONNECTING is often temporary. Keep EventSource alive and use HTTP polling as safety net.
+      this.setWallboardStatus("Live dashboard reconnecting. Polling fallback active...");
+      this.startWallboardPollFallback("sse-native-connecting", runtimeId);
+    });
+  }
+
+  async saveState() {
+    if (!["supervisor", "admin"].includes(this.currentRole)) {
+      this.setStatus("No write permission");
+      return;
+    }
+
+    const flowOverrideSettings = [
+      { name: "Priority_Queue", type: "INTEGER", value: String(Number(this.$priorityQueue().value)) },
+      { name: "EmergencyCase", type: "BOOLEAN", value: this.$toggle().checked ? "true" : "false" },
+      { name: "HolidayPrompt", type: "STRING", value: this.$holidayPrompt().value },
+      { name: "Global_VoiceName", type: "STRING", value: this.$globalVoiceName().value },
+      { name: "EmergencyPrompt", type: "STRING", value: this.$emergencyPrompt().value },
+      { name: "Global_Language", type: "STRING", value: this.$globalLanguage().value },
+      { name: "Moh_Sales_Queue", type: "STRING", value: this.$mohSalesQueue().value }
+    ];
+
+    try {
+      this.isUpdating = true;
+      this.$saveBtn().disabled = true;
+      this.setStatus("Saving...");
+
+      const res = await this.authorizedFetch(`/api/entrypoint/${this.ENTRY_POINT_ID}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ flowOverrideSettings })
+      });
+
+      const data = await this.readJsonResponse(res);
+      this.addDiagLog("bootstrap-response", { status: res.status, durationMs: Math.round(performance.now() - bootstrapStart), role: data?.role || "", hasToken: Boolean(data?.sessionToken), error: data?.error || "" });
+
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+      this.hasUnsavedChanges = false;
+      await this.loadEntryPoint(true);
+      this.setStatus("Saved successfully ✔");
+    } catch (err) {
+      this.setStatus(`Update failed ❌ ${err.message || ""}`.trim());
+    } finally {
+      this.isUpdating = false;
+      this.applyRoleState();
+    }
+  }
+
+  startPolling() {
+    // Disabled: entry point auto-polling is intentionally off.
+    // The entry point is loaded once during init and again after Save.
+  }
+
+  startWallboardPolling() {
+    // Disabled: wallboard updates are delivered through Server-Sent Events.
+  }
+}
+
+if (!customElements.get("supervisor-access-widget-v2")) {
+  customElements.define("supervisor-access-widget-v2", SupervisorAccessWidget);
+}

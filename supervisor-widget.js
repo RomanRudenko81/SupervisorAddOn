@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-v55-safe-queue-all-fields-kpi-probe-2026-05-21";
+const FRONTEND_BUILD_ID = "wxcc-widget-v56-queue-all-fields-report-only-2026-05-21";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -3924,9 +3924,15 @@ Call History</div>
 
     this.safeSetText("kpiCallsInQueue", callsInQueue);
     this.safeSetText("kpiActiveCalls", visibleQueueKpis.activeCalls);
-    this.safeSetText("kpiLongestWaiting", this.formatDuration(analyticsQueueKpis.longestWaitingSeconds));
-    this.safeSetText("kpiAvgWait", this.formatDuration(analyticsQueueKpis.avgWaitSeconds));
-    this.safeSetText("kpiAvgHandle", this.formatDuration(analyticsQueueKpis.avgHandleSeconds));
+    if (analyticsQueueKpis.__analyticsUnavailable) {
+      this.safeSetText("kpiLongestWaiting", "—");
+      this.safeSetText("kpiAvgWait", "—");
+      this.safeSetText("kpiAvgHandle", "—");
+    } else {
+      this.safeSetText("kpiLongestWaiting", this.formatDuration(analyticsQueueKpis.longestWaitingSeconds));
+      this.safeSetText("kpiAvgWait", this.formatDuration(analyticsQueueKpis.avgWaitSeconds));
+      this.safeSetText("kpiAvgHandle", this.formatDuration(analyticsQueueKpis.avgHandleSeconds));
+    }
     this.safeSetText("kpiLoggedIn", loggedInAgents);
     this.safeSetText("kpiAvailable", availableAgents);
 
@@ -4008,8 +4014,24 @@ Call History</div>
     const metrics = this.analyticsMetricsCache;
     const ageMs = metrics?.fetchedAtMs ? Date.now() - Number(metrics.fetchedAtMs) : Number.POSITIVE_INFINITY;
 
-    if (!metrics || metrics.ok === false || !Number.isFinite(ageMs) || ageMs > 120000) {
+    if (!metrics || !Number.isFinite(ageMs)) {
       return fallback;
+    }
+
+    if (metrics.ok === false) {
+      this.addDiagLog("analytics-kpi-unavailable", {
+        source: metrics.source || "wxcc-analyzer-queue-all-fields-report",
+        error: metrics.error || "Analyzer report unavailable",
+        status: metrics.status || "",
+        range: this.kpiDurationRange || "60m",
+        attempts: metrics.attempts || metrics.data?.attempts || []
+      });
+      return { ...fallback, __analyticsUnavailable: true };
+    }
+
+    if (ageMs > 120000) {
+      this.addDiagLog("analytics-kpi-stale", { ageMs, source: metrics.source || "" });
+      return { ...fallback, __analyticsUnavailable: true };
     }
 
     const values = metrics.metrics || {};
@@ -4068,8 +4090,17 @@ Call History</div>
     if (!this.guardRuntime(runtimeId)) return;
 
     if (!res.ok || data.ok === false) {
-      this.analyticsMetricsCache = { ok: false, fetchedAtMs: Date.now(), error: data?.error || `HTTP ${res.status}` };
+      this.analyticsMetricsCache = {
+        ok: false,
+        fetchedAtMs: Date.now(),
+        error: data?.error || `HTTP ${res.status}`,
+        status: res.status,
+        source: data?.source || "wxcc-analyzer-queue-all-fields-report",
+        attempts: data?.attempts || [],
+        data
+      };
       this.addDiagLog("analytics-probe-failed", { reason, status: res.status, error: this.analyticsMetricsCache.error, data });
+      if (this.lastWallboardData) this.processWallboardData(this.lastWallboardData);
       return;
     }
 

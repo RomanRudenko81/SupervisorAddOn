@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-v57-isolated-analytics-fetch-2026-05-22";
+const FRONTEND_BUILD_ID = "wxcc-widget-v58-stable-sse-isolated-kpis-2026-05-22";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -63,19 +63,21 @@ class SupervisorAccessWidget extends HTMLElement {
     this.themeMode = localStorage.getItem("supervisorWidgetTheme") || "dark";
     this.allowedQueueNames = [];
     this.selectedQueueFilters = this.readSelectedQueueFilters();
-    this.kpiDurationStorageKey = "wxccSupervisorWidgetKpiDurationV55";
-    this.kpiDurationRange = this.readKpiDurationRange();
-    this.analyticsMetricsPollHandle = null;
-    this.analyticsMetricsCache = null;
-    this.analyticsMetricsIntervalMs = 60000;
-    this.analyticsMetricsLoading = false;
-    this.analyticsMetricsTimeoutMs = 8000;
     this.currentIdentity = null;
     this.currentUserById = new Map();
     this.configCollapsedSessionKey = "wxccSupervisorWidgetConfigCollapsedV52";
     this.callHistoryCollapsedSessionKey = "wxccSupervisorWidgetCallHistoryCollapsedV52";
     this.agentIdAliasMap = new Map();
     this.agentIdAliasTtlMs = 10 * 60 * 1000;
+    // v58: KPI/Analyzer polling is fully isolated from SSE/wallboard transport.
+    this.analyticsKpiPollHandle = null;
+    this.analyticsKpiLoading = false;
+    this.analyticsKpiIntervalMs = 30000;
+    this.analyticsKpiTimeoutMs = 8000;
+    this.analyticsKpiRangeStorageKey = "wxccSupervisorWidgetKpiRangeV58";
+    this.analyticsKpiRange = this.readAnalyticsKpiRange();
+    this.analyticsKpiData = null;
+    this.analyticsKpiError = "";
 
     // v40 hard lifecycle isolation: every mount gets a unique runtime.
     // Async callbacks, timers and SSE events from older WXCC Desktop lifecycles must not update the UI.
@@ -114,7 +116,6 @@ class SupervisorAccessWidget extends HTMLElement {
     this.applySessionCollapseState();
     this.populateStaticOptions();
     this.bindEvents();
-    this.updateKpiDurationFilterControl();
     this.init(runtimeId);
     this.startRobustActiveCallTimer(runtimeId);
     this.startLiveUiTimer(runtimeId);
@@ -180,7 +181,7 @@ class SupervisorAccessWidget extends HTMLElement {
     clearIntervalSafe(this.liveUiTimerHandle); this.liveUiTimerHandle = null;
     clearIntervalSafe(this.historyEndWatchdogHandle); this.historyEndWatchdogHandle = null;
     clearIntervalSafe(this.diagHeartbeatHandle); this.diagHeartbeatHandle = null;
-    clearIntervalSafe(this.analyticsMetricsPollHandle); this.analyticsMetricsPollHandle = null;
+    clearIntervalSafe(this.analyticsKpiPollHandle); this.analyticsKpiPollHandle = null;
 
     clearTimeoutSafe(this.wallboardReconnectHandle); this.wallboardReconnectHandle = null;
     clearTimeoutSafe(this.entryPointRetryTimer); this.entryPointRetryTimer = null;
@@ -198,6 +199,19 @@ class SupervisorAccessWidget extends HTMLElement {
     this.persistDiagLog();
     this.uninstallTechnicalDiagnostics();
     this.addDiagLog("lifecycle-cleanup-complete", { reason, runtimeId });
+  }
+
+  readAnalyticsKpiRange() {
+    try {
+      const value = localStorage.getItem("wxccSupervisorWidgetKpiRangeV58") || "60m";
+      return ["today", "60m", "30m"].includes(value) ? value : "60m";
+    } catch {
+      return "60m";
+    }
+  }
+
+  saveAnalyticsKpiRange() {
+    try { localStorage.setItem(this.analyticsKpiRangeStorageKey, this.analyticsKpiRange || "60m"); } catch {}
   }
 
   readSelectedQueueFilters() {
@@ -219,29 +233,6 @@ class SupervisorAccessWidget extends HTMLElement {
     } catch {
       // Ignore storage issues inside embedded desktop.
     }
-  }
-
-
-  readKpiDurationRange() {
-    try {
-      const value = sessionStorage.getItem(this.kpiDurationStorageKey || "wxccSupervisorWidgetKpiDurationV55");
-      return ["today", "60m", "30m"].includes(value) ? value : "60m";
-    } catch {
-      return "60m";
-    }
-  }
-
-  saveKpiDurationRange() {
-    try {
-      sessionStorage.setItem(this.kpiDurationStorageKey || "wxccSupervisorWidgetKpiDurationV55", this.kpiDurationRange || "60m");
-    } catch {
-      // Ignore storage issues inside embedded desktop.
-    }
-  }
-
-  updateKpiDurationFilterControl() {
-    const select = this.shadowRoot?.getElementById("kpiDurationFilter");
-    if (select) select.value = this.kpiDurationRange || "60m";
   }
 
   render() {
@@ -501,39 +492,6 @@ class SupervisorAccessWidget extends HTMLElement {
           gap: 10px;
         }
 
-        .kpi-filter-controls {
-          display: flex;
-          align-items: center;
-          justify-content: flex-end;
-          gap: 6px;
-          min-width: 0;
-          flex: 0 0 auto;
-        }
-
-        .kpi-duration-select {
-          width: auto;
-          min-width: 78px;
-          max-width: 92px;
-          min-height: 24px;
-          padding: 3px 8px;
-          border-radius: 999px;
-          border: 1px solid var(--cardBorder);
-          background: rgba(255,255,255,0.10);
-          color: var(--text) !important;
-          font-size: 11px;
-          line-height: 1;
-          cursor: pointer;
-        }
-
-        :host(.theme-light) .kpi-duration-select {
-          background: rgba(0,0,0,0.06);
-        }
-
-        :host(.theme-dark) .kpi-duration-select option {
-          background: #1f2937;
-          color: #ffffff;
-        }
-
         .queue-filter-inline {
           position: relative;
           display: none;
@@ -542,6 +500,30 @@ class SupervisorAccessWidget extends HTMLElement {
 
         .queue-filter-inline.visible {
           display: block;
+        }
+
+        .kpi-filter-row {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          flex: 0 0 auto;
+        }
+
+        .kpi-duration-select {
+          width: auto !important;
+          min-height: 24px;
+          max-width: 78px;
+          padding: 4px 8px !important;
+          border-radius: 999px !important;
+          border: 1px solid var(--cardBorder) !important;
+          background: rgba(255,255,255,0.10) !important;
+          color: var(--text) !important;
+          font-size: 11px !important;
+          line-height: 1 !important;
+        }
+
+        :host(.theme-light) .kpi-duration-select {
+          background: rgba(0,0,0,0.06) !important;
         }
 
         .queue-filter-button {
@@ -1036,6 +1018,30 @@ class SupervisorAccessWidget extends HTMLElement {
           display: block;
         }
 
+        .kpi-filter-row {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          flex: 0 0 auto;
+        }
+
+        .kpi-duration-select {
+          width: auto !important;
+          min-height: 24px;
+          max-width: 78px;
+          padding: 4px 8px !important;
+          border-radius: 999px !important;
+          border: 1px solid var(--cardBorder) !important;
+          background: rgba(255,255,255,0.10) !important;
+          color: var(--text) !important;
+          font-size: 11px !important;
+          line-height: 1 !important;
+        }
+
+        :host(.theme-light) .kpi-duration-select {
+          background: rgba(0,0,0,0.06) !important;
+        }
+
         .queue-filter-button {
           display: inline-flex;
           align-items: center;
@@ -1235,12 +1241,12 @@ class SupervisorAccessWidget extends HTMLElement {
               <div class="kpi calls-in-queue-card" id="kpiCardCallsInQueue">
                 <div class="kpi-topline">
                   <div class="kpi-label">Calls in Queue</div>
-                  <div class="kpi-filter-controls">
+                  <div class="kpi-filter-row">
                     <div class="queue-filter-inline" id="queueFilterWrapper">
                       <button class="queue-filter-button" id="queueFilterButton" type="button">Queues ▾</button>
                       <div class="queue-filter-menu" id="queueFilterMenu"></div>
                     </div>
-                    <select class="kpi-duration-select" id="kpiDurationFilter" title="KPI Zeitraum">
+                    <select class="kpi-duration-select" id="kpiDurationSelect" title="KPI Zeitraum">
                       <option value="today">Heute</option>
                       <option value="60m">60 min</option>
                       <option value="30m">30 min</option>
@@ -1376,20 +1382,6 @@ Call History</div>
   }
 
   applySessionCollapseState() {
-    const kpiDurationFilter = this.shadowRoot.getElementById("kpiDurationFilter");
-    if (kpiDurationFilter) {
-      kpiDurationFilter.value = this.kpiDurationRange || "60m";
-      kpiDurationFilter.addEventListener("change", () => {
-        this.kpiDurationRange = kpiDurationFilter.value || "60m";
-        this.saveKpiDurationRange();
-        this.analyticsMetricsCache = null;
-        this.addDiagLog("analytics-duration-filter-changed", { range: this.kpiDurationRange });
-        this.loadAnalyticsMetrics("duration-change").catch(err => {
-          this.addDiagLog("analytics-probe-duration-change-failed", { message: err?.message || String(err) });
-        });
-      });
-    }
-
     const configToggle = this.shadowRoot.getElementById("configToggle");
     const configContent = this.shadowRoot.getElementById("configContent");
     const callHistoryToggle = this.shadowRoot.getElementById("callHistoryToggle");
@@ -1436,6 +1428,18 @@ Call History</div>
 
     const queueFilterButton = this.$queueFilterButton();
     const queueFilterWrapper = this.shadowRoot.getElementById("queueFilterWrapper");
+
+    const kpiDurationSelect = this.shadowRoot.getElementById("kpiDurationSelect");
+    if (kpiDurationSelect) {
+      kpiDurationSelect.value = this.analyticsKpiRange || "60m";
+      kpiDurationSelect.addEventListener("change", () => {
+        this.analyticsKpiRange = kpiDurationSelect.value || "60m";
+        this.saveAnalyticsKpiRange();
+        this.analyticsKpiData = null;
+        this.applyAnalyticsKpisToUi();
+        this.loadAnalyticsMetrics("duration-change", this.runtimeId).catch(() => {});
+      });
+    }
 
     if (queueFilterButton && queueFilterWrapper) {
       queueFilterButton.addEventListener("click", event => {
@@ -1502,7 +1506,7 @@ Call History</div>
       }
 
       this.startWallboardStream(runtimeId);
-      this.startAnalyticsMetricsPolling(runtimeId);
+      this.startAnalyticsKpiPolling(runtimeId);
     } catch (err) {
       this.addDiagLog("init-failed", { error: this.serializeError(err) });
       this.setStatus(`Load failed: ${err.message}`);
@@ -1524,6 +1528,7 @@ Call History</div>
   $status() { return this.shadowRoot.getElementById("status"); }
   $queueFilterButton() { return this.shadowRoot.getElementById("queueFilterButton"); }
   $queueFilterMenu() { return this.shadowRoot.getElementById("queueFilterMenu"); }
+  $kpiDurationSelect() { return this.shadowRoot.getElementById("kpiDurationSelect"); }
 
   setStatus(msg) {
     this.$status().textContent = msg || "";
@@ -1671,64 +1676,6 @@ Call History</div>
     }
 
     return res;
-  }
-
-  async analyticsFetch(path, options = {}) {
-    const method = options.method || "GET";
-
-    if (!this.sessionToken) {
-      this.addDiagLog("analytics-fetch-skipped", { path, method, reason: "no-session-token" });
-      return { ok: false, status: 0, analyticsSkipped: true, json: async () => ({ ok: false, error: "No session token" }) };
-    }
-
-    const controller = new AbortController();
-    const timeoutMs = Number(this.analyticsMetricsTimeoutMs || 8000);
-    const start = performance.now();
-    const timeout = setTimeout(() => {
-      try { controller.abort(); } catch {}
-    }, timeoutMs);
-
-    this.addDiagLog("analytics-fetch-request", { path, method, timeoutMs, hasSessionToken: Boolean(this.sessionToken) });
-
-    try {
-      const res = await fetch(`${this.API_URL}${path}`, {
-        ...options,
-        signal: controller.signal,
-        headers: {
-          ...(options.headers || {}),
-          Authorization: `Bearer ${this.sessionToken}`
-        }
-      });
-
-      this.addDiagLog("analytics-fetch-response", {
-        path,
-        method,
-        status: res.status,
-        ok: res.ok,
-        durationMs: Math.round(performance.now() - start),
-        isolated: true,
-        rebootstrap: false
-      });
-
-      if (res.status === 401) {
-        this.addDiagLog("analytics-fetch-401-ignored", { path, method, reason: "analytics-is-optional-no-rebootstrap" });
-      }
-
-      return res;
-    } catch (err) {
-      this.addDiagLog("analytics-fetch-exception", {
-        path,
-        method,
-        durationMs: Math.round(performance.now() - start),
-        timeoutMs,
-        isolated: true,
-        rebootstrap: false,
-        error: this.serializeError(err)
-      });
-      throw err;
-    } finally {
-      clearTimeout(timeout);
-    }
   }
 
   async loadEntryPoint(force = false) {
@@ -2009,6 +1956,9 @@ Call History</div>
         } else {
           await this.loadWallboard();
         }
+        this.analyticsKpiData = null;
+        this.applyAnalyticsKpisToUi();
+        this.loadAnalyticsMetrics("queue-filter-change", this.runtimeId).catch(() => {});
       });
 
       const text = document.createElement("span");
@@ -3460,7 +3410,6 @@ Call History</div>
           this.flushDiagRemoteQueue(false);
           if (!this.wallboardEventSource && this.sessionToken && this.isCurrentRuntime(runtimeId)) {
             this.startWallboardStream(runtimeId);
-      this.startAnalyticsMetricsPolling(runtimeId);
           }
         }
       };
@@ -3977,22 +3926,13 @@ Call History</div>
       data.queue || {}
     );
 
-    const analyticsQueueKpis = this.getAnalyticsKpiOverride(visibleQueueKpis);
     const callsInQueue = visibleQueueKpis.callsInQueue;
     const loggedInAgents = data.agents?.loggedIn ?? 0;
     const availableAgents = data.agents?.available ?? 0;
 
     this.safeSetText("kpiCallsInQueue", callsInQueue);
     this.safeSetText("kpiActiveCalls", visibleQueueKpis.activeCalls);
-    if (analyticsQueueKpis.__analyticsUnavailable) {
-      this.safeSetText("kpiLongestWaiting", "—");
-      this.safeSetText("kpiAvgWait", "—");
-      this.safeSetText("kpiAvgHandle", "—");
-    } else {
-      this.safeSetText("kpiLongestWaiting", this.formatDuration(analyticsQueueKpis.longestWaitingSeconds));
-      this.safeSetText("kpiAvgWait", this.formatDuration(analyticsQueueKpis.avgWaitSeconds));
-      this.safeSetText("kpiAvgHandle", this.formatDuration(analyticsQueueKpis.avgHandleSeconds));
-    }
+    this.applyAnalyticsKpisToUi(visibleQueueKpis);
     this.safeSetText("kpiLoggedIn", loggedInAgents);
     this.safeSetText("kpiAvailable", availableAgents);
 
@@ -4069,152 +4009,168 @@ Call History</div>
   }
 
 
-  getAnalyticsKpiOverride(fallbackKpis = {}) {
-    const fallback = fallbackKpis || {};
-    const metrics = this.analyticsMetricsCache;
-    const ageMs = metrics?.fetchedAtMs ? Date.now() - Number(metrics.fetchedAtMs) : Number.POSITIVE_INFINITY;
 
-    if (!metrics || !Number.isFinite(ageMs)) {
-      return fallback;
-    }
-
-    if (metrics.ok === false) {
-      this.addDiagLog("analytics-kpi-unavailable", {
-        source: metrics.source || "wxcc-analyzer-queue-all-fields-report",
-        error: metrics.error || "Analyzer report unavailable",
-        status: metrics.status || "",
-        range: this.kpiDurationRange || "60m",
-        attempts: metrics.attempts || metrics.data?.attempts || []
-      });
-      return { ...fallback, __analyticsUnavailable: true };
-    }
-
-    if (ageMs > 120000) {
-      this.addDiagLog("analytics-kpi-stale", { ageMs, source: metrics.source || "" });
-      return { ...fallback, __analyticsUnavailable: true };
-    }
-
-    const values = metrics.metrics || {};
-    const merged = {
-      ...fallback,
-      longestWaitingSeconds: Number.isFinite(Number(values.longestWaitingSeconds)) ? Number(values.longestWaitingSeconds) : Number(fallback.longestWaitingSeconds || 0),
-      avgWaitSeconds: Number.isFinite(Number(values.avgWaitSeconds)) ? Number(values.avgWaitSeconds) : Number(fallback.avgWaitSeconds || 0),
-      avgHandleSeconds: Number.isFinite(Number(values.avgHandleSeconds)) ? Number(values.avgHandleSeconds) : Number(fallback.avgHandleSeconds || 0)
-    };
-
-    this.addDiagLog("analytics-kpi-applied", {
-      source: metrics.source || "",
-      range: metrics.range || "",
-      queueCount: Array.isArray(metrics.queues) ? metrics.queues.length : 0,
-      sample: metrics.sample || {},
-      durationFilter: metrics.durationFilter || {},
-      reportFields: metrics.reportFields || {},
-      metrics: merged
-    });
-
-    return merged;
+  getAnalyticsQueueParam() {
+    const queues = this.getVisibleQueueNames();
+    return Array.isArray(queues) ? queues.filter(Boolean).join(",") : "";
   }
 
-  startAnalyticsMetricsPolling(runtimeId = this.runtimeId) {
-    if (this.analyticsMetricsPollHandle) return;
+  getAnalyticsKpiCacheKey() {
+    return `${this.analyticsKpiRange || "60m"}|${this.getAnalyticsQueueParam()}`;
+  }
 
-    this.safeSetTimeout(() => {
-      if (!this.sessionToken || !this.guardRuntime(runtimeId)) return;
-      this.loadAnalyticsMetrics("startup-delayed", runtimeId).catch(err => {
-        this.addDiagLog("analytics-probe-startup-failed", { message: err?.message || String(err), isolated: true });
-      });
-    }, 10000, runtimeId);
+  startAnalyticsKpiPolling(runtimeId = this.runtimeId) {
+    if (!this.guardRuntime(runtimeId)) return;
+    const select = this.$kpiDurationSelect();
+    if (select) select.value = this.analyticsKpiRange || "60m";
+    if (this.analyticsKpiPollHandle) return;
 
-    this.analyticsMetricsPollHandle = this.safeSetInterval(() => {
-      if (!this.sessionToken || !this.guardRuntime(runtimeId)) return;
-      this.loadAnalyticsMetrics("interval", runtimeId).catch(err => {
-        this.addDiagLog("analytics-probe-interval-failed", { message: err?.message || String(err), isolated: true });
+    this.addDiagLog("analytics-kpi-poll-start", {
+      intervalMs: this.analyticsKpiIntervalMs,
+      range: this.analyticsKpiRange || "60m",
+      queues: this.getAnalyticsQueueParam(),
+      isolated: true,
+      runtimeId
+    });
+
+    this.loadAnalyticsMetrics("startup", runtimeId).catch(() => {});
+    this.analyticsKpiPollHandle = this.safeSetInterval(() => {
+      this.loadAnalyticsMetrics("interval", runtimeId).catch(() => {});
+    }, this.analyticsKpiIntervalMs || 30000, runtimeId);
+  }
+
+  async analyticsFetchNoRetry(path, runtimeId = this.runtimeId) {
+    if (!this.guardRuntime(runtimeId)) return null;
+    if (!this.sessionToken) throw new Error("No session token for analytics request");
+
+    const controller = new AbortController();
+    const timeoutHandle = setTimeout(() => {
+      try { controller.abort(); } catch {}
+    }, this.analyticsKpiTimeoutMs || 8000);
+
+    const startedAt = Date.now();
+    try {
+      const url = `${this.API_URL}${path}`;
+      this.addDiagLog("analytics-fetch-request", {
+        path,
+        method: "GET",
+        timeoutMs: this.analyticsKpiTimeoutMs || 8000,
+        isolated: true,
+        noRetry: true,
+        noRebootstrap: true
       });
-    }, this.analyticsMetricsIntervalMs, runtimeId);
+      const res = await fetch(url, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${this.sessionToken}`, Accept: "application/json" },
+        signal: controller.signal,
+        cache: "no-store"
+      });
+      this.addDiagLog("analytics-fetch-response", {
+        path,
+        status: res.status,
+        ok: res.ok,
+        durationMs: Date.now() - startedAt,
+        isolated: true
+      });
+      return res;
+    } finally {
+      clearTimeout(timeoutHandle);
+    }
   }
 
   async loadAnalyticsMetrics(reason = "manual", runtimeId = this.runtimeId) {
-    if (!this.guardRuntime(runtimeId) || !this.sessionToken) return;
-
-    if (this.analyticsMetricsLoading) {
-      this.addDiagLog("analytics-probe-skipped", { reason, skippedReason: "already-loading" });
-      return;
-    }
-
-    this.analyticsMetricsLoading = true;
-
-    const visibleQueues = this.getVisibleQueueNames();
-    const params = new URLSearchParams({ range: this.kpiDurationRange || "60m" });
-    if (visibleQueues.length) params.set("queues", visibleQueues.join(","));
-
-    const path = `/api/analytics/queue-metrics?${params.toString()}`;
-    let res;
-    let data;
-    try {
-      res = await this.analyticsFetch(path);
-      data = await this.readJsonResponse(res);
-    } catch (err) {
-      this.analyticsMetricsCache = {
-        ok: false,
-        fetchedAtMs: Date.now(),
-        error: err?.message || String(err),
-        source: "wxcc-analyzer-queue-all-fields-report",
-        isolated: true
-      };
-      this.addDiagLog("analytics-probe-error", {
-        reason,
-        error: this.analyticsMetricsCache.error,
-        isolated: true,
-        noRebootstrap: true,
-        wallboardUnaffected: true
-      });
-      if (this.lastWallboardData) this.processWallboardData(this.lastWallboardData);
-      return;
-    } finally {
-      this.analyticsMetricsLoading = false;
-    }
-
     if (!this.guardRuntime(runtimeId)) return;
-
-    if (!res.ok || data.ok === false) {
-      this.analyticsMetricsCache = {
-        ok: false,
-        fetchedAtMs: Date.now(),
-        error: data?.error || `HTTP ${res.status}`,
-        status: res.status,
-        source: data?.source || "wxcc-analyzer-queue-all-fields-report",
-        attempts: data?.attempts || [],
-        isolated: true,
-        data
-      };
-      this.addDiagLog("analytics-probe-failed", {
-        reason,
-        status: res.status,
-        error: this.analyticsMetricsCache.error,
-        isolated: true,
-        noRebootstrap: true,
-        data
-      });
-      if (this.lastWallboardData) this.processWallboardData(this.lastWallboardData);
+    if (this.analyticsKpiLoading) {
+      this.addDiagLog("analytics-kpi-skip-inflight", { reason, runtimeId });
       return;
     }
 
-    this.analyticsMetricsCache = { ...data, fetchedAtMs: Date.now(), isolated: true };
-    this.addDiagLog("analytics-probe-success", {
-      reason,
-      range: data.range || "",
-      queues: data.queues || [],
-      source: data.source || "",
-      durationFilter: data.durationFilter || {},
-      reportFields: data.reportFields || {},
-      metrics: data.metrics || {},
-      sample: data.sample || {},
-      isolated: true
-    });
+    this.analyticsKpiLoading = true;
+    const range = this.analyticsKpiRange || "60m";
+    const queues = this.getAnalyticsQueueParam();
+    const cacheKey = `${range}|${queues}`;
+    const path = `/api/analytics/queue-metrics?range=${encodeURIComponent(range)}${queues ? `&queues=${encodeURIComponent(queues)}` : ""}`;
 
-    if (this.lastWallboardData) {
-      this.processWallboardData(this.lastWallboardData);
+    try {
+      const res = await this.analyticsFetchNoRetry(path, runtimeId);
+      if (!res || !this.guardRuntime(runtimeId)) return;
+
+      let data = {};
+      try { data = await this.readJsonResponse(res); } catch (jsonErr) { data = { ok: false, error: jsonErr.message }; }
+
+      if (!res.ok || data?.ok === false || !data?.metrics) {
+        this.analyticsKpiData = null;
+        this.analyticsKpiError = data?.error || data?.notes?.[0] || `HTTP ${res.status}`;
+        this.addDiagLog("analytics-kpi-unavailable", {
+          reason,
+          status: res.status,
+          range,
+          queues,
+          source: data?.source || "",
+          reportId: data?.reportId || "",
+          attempts: Array.isArray(data?.attempts) ? data.attempts.slice(0, 8) : undefined,
+          isolated: true
+        });
+        this.applyAnalyticsKpisToUi();
+        return;
+      }
+
+      this.analyticsKpiData = {
+        cacheKey,
+        range,
+        queues,
+        generatedAt: data.generatedAt || new Date().toISOString(),
+        metrics: data.metrics,
+        reportFields: data.reportFields || null,
+        source: data.source || "wxcc-analyzer-queue-all-fields-report",
+        reportId: data.reportId || ""
+      };
+      this.analyticsKpiError = "";
+      this.addDiagLog("analytics-kpi-applied", {
+        reason,
+        range,
+        queues,
+        source: this.analyticsKpiData.source,
+        reportId: this.analyticsKpiData.reportId,
+        metrics: this.analyticsKpiData.metrics,
+        reportFields: this.analyticsKpiData.reportFields,
+        isolated: true
+      });
+      this.applyAnalyticsKpisToUi();
+    } catch (err) {
+      if (!this.guardRuntime(runtimeId)) return;
+      this.analyticsKpiData = null;
+      this.analyticsKpiError = err?.name === "AbortError" ? "Analytics request timed out" : (err?.message || String(err));
+      this.addDiagLog("analytics-kpi-error-isolated", {
+        reason,
+        range,
+        queues,
+        error: this.serializeError(err),
+        isolated: true,
+        noRebootstrap: true,
+        noPollFallback: true
+      });
+      this.applyAnalyticsKpisToUi();
+    } finally {
+      this.analyticsKpiLoading = false;
     }
+  }
+
+  applyAnalyticsKpisToUi(fallbackLiveKpis = null) {
+    const currentKey = this.getAnalyticsKpiCacheKey();
+    const data = this.analyticsKpiData;
+    if (data && data.cacheKey === currentKey && data.metrics) {
+      this.safeSetText("kpiLongestWaiting", this.formatDuration(Number(data.metrics.longestWaitingSeconds || 0)));
+      this.safeSetText("kpiAvgWait", this.formatDuration(Number(data.metrics.avgWaitSeconds || 0)));
+      this.safeSetText("kpiAvgHandle", this.formatDuration(Number(data.metrics.avgHandleSeconds || 0)));
+      return;
+    }
+
+    // v58: these 3 KPI cards reflect only the official Analyzer Queue All Fields Report.
+    // No TaskDetails/live reconstruction fallback here, to avoid misleading KPI values.
+    this.safeSetText("kpiLongestWaiting", "—");
+    this.safeSetText("kpiAvgWait", "—");
+    this.safeSetText("kpiAvgHandle", "—");
   }
 
   async loadWallboard(reason = "manual", runtimeId = this.runtimeId) {
@@ -4284,7 +4240,6 @@ Call History</div>
     this.wallboardReconnectHandle = this.safeSetTimeout(() => {
       this.wallboardReconnectHandle = null;
       this.startWallboardStream(runtimeId);
-      this.startAnalyticsMetricsPolling(runtimeId);
     }, delay, runtimeId);
   }
 

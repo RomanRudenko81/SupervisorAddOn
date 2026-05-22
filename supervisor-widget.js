@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-v56-queue-all-fields-report-only-2026-05-21";
+const FRONTEND_BUILD_ID = "wxcc-widget-v57-isolated-analytics-fetch-2026-05-22";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -67,7 +67,9 @@ class SupervisorAccessWidget extends HTMLElement {
     this.kpiDurationRange = this.readKpiDurationRange();
     this.analyticsMetricsPollHandle = null;
     this.analyticsMetricsCache = null;
-    this.analyticsMetricsIntervalMs = 30000;
+    this.analyticsMetricsIntervalMs = 60000;
+    this.analyticsMetricsLoading = false;
+    this.analyticsMetricsTimeoutMs = 8000;
     this.currentIdentity = null;
     this.currentUserById = new Map();
     this.configCollapsedSessionKey = "wxccSupervisorWidgetConfigCollapsedV52";
@@ -1669,6 +1671,64 @@ Call History</div>
     }
 
     return res;
+  }
+
+  async analyticsFetch(path, options = {}) {
+    const method = options.method || "GET";
+
+    if (!this.sessionToken) {
+      this.addDiagLog("analytics-fetch-skipped", { path, method, reason: "no-session-token" });
+      return { ok: false, status: 0, analyticsSkipped: true, json: async () => ({ ok: false, error: "No session token" }) };
+    }
+
+    const controller = new AbortController();
+    const timeoutMs = Number(this.analyticsMetricsTimeoutMs || 8000);
+    const start = performance.now();
+    const timeout = setTimeout(() => {
+      try { controller.abort(); } catch {}
+    }, timeoutMs);
+
+    this.addDiagLog("analytics-fetch-request", { path, method, timeoutMs, hasSessionToken: Boolean(this.sessionToken) });
+
+    try {
+      const res = await fetch(`${this.API_URL}${path}`, {
+        ...options,
+        signal: controller.signal,
+        headers: {
+          ...(options.headers || {}),
+          Authorization: `Bearer ${this.sessionToken}`
+        }
+      });
+
+      this.addDiagLog("analytics-fetch-response", {
+        path,
+        method,
+        status: res.status,
+        ok: res.ok,
+        durationMs: Math.round(performance.now() - start),
+        isolated: true,
+        rebootstrap: false
+      });
+
+      if (res.status === 401) {
+        this.addDiagLog("analytics-fetch-401-ignored", { path, method, reason: "analytics-is-optional-no-rebootstrap" });
+      }
+
+      return res;
+    } catch (err) {
+      this.addDiagLog("analytics-fetch-exception", {
+        path,
+        method,
+        durationMs: Math.round(performance.now() - start),
+        timeoutMs,
+        isolated: true,
+        rebootstrap: false,
+        error: this.serializeError(err)
+      });
+      throw err;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   async loadEntryPoint(force = false) {
@@ -4057,19 +4117,31 @@ Call History</div>
 
   startAnalyticsMetricsPolling(runtimeId = this.runtimeId) {
     if (this.analyticsMetricsPollHandle) return;
-    this.loadAnalyticsMetrics("startup", runtimeId).catch(err => {
-      this.addDiagLog("analytics-probe-startup-failed", { message: err?.message || String(err) });
-    });
+
+    this.safeSetTimeout(() => {
+      if (!this.sessionToken || !this.guardRuntime(runtimeId)) return;
+      this.loadAnalyticsMetrics("startup-delayed", runtimeId).catch(err => {
+        this.addDiagLog("analytics-probe-startup-failed", { message: err?.message || String(err), isolated: true });
+      });
+    }, 10000, runtimeId);
+
     this.analyticsMetricsPollHandle = this.safeSetInterval(() => {
       if (!this.sessionToken || !this.guardRuntime(runtimeId)) return;
       this.loadAnalyticsMetrics("interval", runtimeId).catch(err => {
-        this.addDiagLog("analytics-probe-interval-failed", { message: err?.message || String(err) });
+        this.addDiagLog("analytics-probe-interval-failed", { message: err?.message || String(err), isolated: true });
       });
     }, this.analyticsMetricsIntervalMs, runtimeId);
   }
 
   async loadAnalyticsMetrics(reason = "manual", runtimeId = this.runtimeId) {
     if (!this.guardRuntime(runtimeId) || !this.sessionToken) return;
+
+    if (this.analyticsMetricsLoading) {
+      this.addDiagLog("analytics-probe-skipped", { reason, skippedReason: "already-loading" });
+      return;
+    }
+
+    this.analyticsMetricsLoading = true;
 
     const visibleQueues = this.getVisibleQueueNames();
     const params = new URLSearchParams({ range: this.kpiDurationRange || "60m" });
@@ -4079,12 +4151,27 @@ Call History</div>
     let res;
     let data;
     try {
-      res = await this.authorizedFetch(path);
+      res = await this.analyticsFetch(path);
       data = await this.readJsonResponse(res);
     } catch (err) {
-      this.analyticsMetricsCache = { ok: false, fetchedAtMs: Date.now(), error: err?.message || String(err) };
-      this.addDiagLog("analytics-probe-error", { reason, error: this.analyticsMetricsCache.error });
+      this.analyticsMetricsCache = {
+        ok: false,
+        fetchedAtMs: Date.now(),
+        error: err?.message || String(err),
+        source: "wxcc-analyzer-queue-all-fields-report",
+        isolated: true
+      };
+      this.addDiagLog("analytics-probe-error", {
+        reason,
+        error: this.analyticsMetricsCache.error,
+        isolated: true,
+        noRebootstrap: true,
+        wallboardUnaffected: true
+      });
+      if (this.lastWallboardData) this.processWallboardData(this.lastWallboardData);
       return;
+    } finally {
+      this.analyticsMetricsLoading = false;
     }
 
     if (!this.guardRuntime(runtimeId)) return;
@@ -4097,14 +4184,22 @@ Call History</div>
         status: res.status,
         source: data?.source || "wxcc-analyzer-queue-all-fields-report",
         attempts: data?.attempts || [],
+        isolated: true,
         data
       };
-      this.addDiagLog("analytics-probe-failed", { reason, status: res.status, error: this.analyticsMetricsCache.error, data });
+      this.addDiagLog("analytics-probe-failed", {
+        reason,
+        status: res.status,
+        error: this.analyticsMetricsCache.error,
+        isolated: true,
+        noRebootstrap: true,
+        data
+      });
       if (this.lastWallboardData) this.processWallboardData(this.lastWallboardData);
       return;
     }
 
-    this.analyticsMetricsCache = { ...data, fetchedAtMs: Date.now() };
+    this.analyticsMetricsCache = { ...data, fetchedAtMs: Date.now(), isolated: true };
     this.addDiagLog("analytics-probe-success", {
       reason,
       range: data.range || "",
@@ -4113,7 +4208,8 @@ Call History</div>
       durationFilter: data.durationFilter || {},
       reportFields: data.reportFields || {},
       metrics: data.metrics || {},
-      sample: data.sample || {}
+      sample: data.sample || {},
+      isolated: true
     });
 
     if (this.lastWallboardData) {

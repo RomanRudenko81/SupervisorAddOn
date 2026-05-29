@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-v61-graphql-kpi-route-only-2026-05-29";
+const FRONTEND_BUILD_ID = "wxcc-widget-v62-connected-duration-kpi-colors-2026-05-29";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -4197,6 +4197,31 @@ Call History</div>
     }
   }
 
+  applyAnalyticsKpiThresholds(metrics = null) {
+    if (!metrics) {
+      this.setKpiClass("kpiLongestWaiting", "");
+      this.setKpiClass("kpiAvgWait", "");
+      this.setKpiClass("kpiAvgHandle", "");
+      return;
+    }
+
+    const longestWaiting = this.toNumber(metrics.longestWaitingSeconds, 0);
+    const avgWait = this.toNumber(metrics.avgWaitSeconds, 0);
+
+    // v62: same KPI card color classes as Calls in Queue.
+    // Longest Waiting: 0-20s green, >20s red/critical.
+    this.setKpiClass("kpiLongestWaiting", longestWaiting <= 20 ? "kpi-green" : "kpi-critical");
+
+    // Avg Wait: 0-20s green, 21-30s orange, >=31s red/critical.
+    this.setKpiClass(
+      "kpiAvgWait",
+      avgWait <= 20 ? "kpi-green" : avgWait <= 30 ? "kpi-orange" : "kpi-critical"
+    );
+
+    // Avg Handle has no requested threshold yet; keep neutral.
+    this.setKpiClass("kpiAvgHandle", "");
+  }
+
   applyAnalyticsKpisToUi(fallbackLiveKpis = null) {
     const currentKey = this.getAnalyticsKpiCacheKey();
     const data = this.analyticsKpiData;
@@ -4204,14 +4229,16 @@ Call History</div>
       this.safeSetText("kpiLongestWaiting", this.formatDuration(Number(data.metrics.longestWaitingSeconds || 0)));
       this.safeSetText("kpiAvgWait", this.formatDuration(Number(data.metrics.avgWaitSeconds || 0)));
       this.safeSetText("kpiAvgHandle", this.formatDuration(Number(data.metrics.avgHandleSeconds || 0)));
+      this.applyAnalyticsKpiThresholds(data.metrics);
       return;
     }
 
-    // v59: these 3 KPI cards reflect only isolated WXCC Search task aggregation KPIs.
+    // v59+: these 3 KPI cards reflect only isolated WXCC Search task aggregation KPIs.
     // No live reconstruction fallback here, to avoid misleading KPI values.
     this.safeSetText("kpiLongestWaiting", "—");
     this.safeSetText("kpiAvgWait", "—");
     this.safeSetText("kpiAvgHandle", "—");
+    this.applyAnalyticsKpiThresholds(null);
   }
 
   async loadWallboard(reason = "manual", runtimeId = this.runtimeId) {

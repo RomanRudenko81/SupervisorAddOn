@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-v60-visible-build-version-2026-05-29";
+const FRONTEND_BUILD_ID = "wxcc-widget-v61-graphql-kpi-route-only-2026-05-29";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -1171,7 +1171,7 @@ class SupervisorAccessWidget extends HTMLElement {
               <div class="badge-row">
                 <button class="theme-btn" id="themeToggleBtn" type="button">Theme: Dark</button>
                 <div class="badge" id="roleBadge">...</div>
-                <div class="badge" id="buildBadge">FE: v60 | BE: checking...</div>
+                <div class="badge" id="buildBadge">FE: v61 | BE: checking...</div>
               </div>
             </div>
           </div>

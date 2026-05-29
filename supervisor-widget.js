@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-v58-stable-sse-isolated-kpis-2026-05-22";
+const FRONTEND_BUILD_ID = "wxcc-widget-v59-graphql-task-aggregation-kpis-2026-05-22";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -4122,7 +4122,7 @@ Call History</div>
         generatedAt: data.generatedAt || new Date().toISOString(),
         metrics: data.metrics,
         reportFields: data.reportFields || null,
-        source: data.source || "wxcc-analyzer-queue-all-fields-report",
+        source: data.source || "wxcc-search-task-aggregation",
         reportId: data.reportId || ""
       };
       this.analyticsKpiError = "";
@@ -4166,8 +4166,8 @@ Call History</div>
       return;
     }
 
-    // v58: these 3 KPI cards reflect only the official Analyzer Queue All Fields Report.
-    // No TaskDetails/live reconstruction fallback here, to avoid misleading KPI values.
+    // v59: these 3 KPI cards reflect only isolated WXCC Search task aggregation KPIs.
+    // No live reconstruction fallback here, to avoid misleading KPI values.
     this.safeSetText("kpiLongestWaiting", "—");
     this.safeSetText("kpiAvgWait", "—");
     this.safeSetText("kpiAvgHandle", "—");

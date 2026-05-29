@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-v59-graphql-task-aggregation-kpis-2026-05-22";
+const FRONTEND_BUILD_ID = "wxcc-widget-v60-visible-build-version-2026-05-29";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -112,6 +112,7 @@ class SupervisorAccessWidget extends HTMLElement {
       runtimeId
     }), 0, runtimeId);
     this.render();
+    this.updateBuildBadge("");
     this.applyTheme();
     this.applySessionCollapseState();
     this.populateStaticOptions();
@@ -1170,6 +1171,7 @@ class SupervisorAccessWidget extends HTMLElement {
               <div class="badge-row">
                 <button class="theme-btn" id="themeToggleBtn" type="button">Theme: Dark</button>
                 <div class="badge" id="roleBadge">...</div>
+                <div class="badge" id="buildBadge">FE: v60 | BE: checking...</div>
               </div>
             </div>
           </div>
@@ -1487,6 +1489,7 @@ Call History</div>
       if (!this.guardRuntime(runtimeId)) return;
       await this.bootstrapSession();
       if (!this.guardRuntime(runtimeId)) return;
+      this.loadBackendBuildInfo("init", runtimeId).catch(() => {});
 
       // v38 lifecycle resilience:
       // The WXCC desktop can temporarily switch/park this iframe when the active user
@@ -1515,6 +1518,7 @@ Call History</div>
 
   $userInfo() { return this.shadowRoot.getElementById("userInfo"); }
   $roleBadge() { return this.shadowRoot.getElementById("roleBadge"); }
+  $buildBadge() { return this.shadowRoot.getElementById("buildBadge"); }
   $themeToggleBtn() { return this.shadowRoot.getElementById("themeToggleBtn"); }
   $toggle() { return this.shadowRoot.getElementById("emergencyToggle"); }
   $priorityQueue() { return this.shadowRoot.getElementById("priorityQueue"); }
@@ -1529,6 +1533,43 @@ Call History</div>
   $queueFilterButton() { return this.shadowRoot.getElementById("queueFilterButton"); }
   $queueFilterMenu() { return this.shadowRoot.getElementById("queueFilterMenu"); }
   $kpiDurationSelect() { return this.shadowRoot.getElementById("kpiDurationSelect"); }
+
+  getShortBuildId(buildId = "") {
+    const value = String(buildId || "").trim();
+    const match = value.match(/wxcc-widget-(v\d+)/i);
+    return match ? match[1] : (value || "unknown");
+  }
+
+  updateBuildBadge(backendBuildId = "") {
+    const el = this.$buildBadge();
+    if (!el) return;
+    const fe = this.getShortBuildId(FRONTEND_BUILD_ID);
+    const be = backendBuildId ? this.getShortBuildId(backendBuildId) : "checking...";
+    el.textContent = `FE: ${fe} | BE: ${be}`;
+    el.title = `Frontend: ${FRONTEND_BUILD_ID}\nBackend: ${backendBuildId || "not loaded yet"}`;
+  }
+
+  async loadBackendBuildInfo(reason = "manual", runtimeId = this.runtimeId) {
+    if (!this.guardRuntime(runtimeId)) return;
+    const startedAt = Date.now();
+    try {
+      const res = await fetch(`${this.API_URL}/health`, { method: "GET", headers: { Accept: "application/json" }, cache: "no-store" });
+      const data = await this.readJsonResponse(res);
+      const backendBuildId = data?.buildId || data?.version || "";
+      this.updateBuildBadge(backendBuildId);
+      this.addDiagLog("build-version-check", {
+        reason,
+        status: res.status,
+        ok: res.ok,
+        frontendBuildId: FRONTEND_BUILD_ID,
+        backendBuildId,
+        durationMs: Date.now() - startedAt
+      });
+    } catch (err) {
+      this.updateBuildBadge("");
+      this.addDiagLog("build-version-check-failed", { reason, frontendBuildId: FRONTEND_BUILD_ID, error: this.serializeError(err) });
+    }
+  }
 
   setStatus(msg) {
     this.$status().textContent = msg || "";
@@ -4187,6 +4228,7 @@ Call History</div>
         throw new Error(data.error || `HTTP ${res.status}`);
       }
 
+      this.updateBuildBadge(data?.backendBuildId || data?.buildId || "");
       this.addDiagLog("fetch-success", {
         reason,
         status: res.status,

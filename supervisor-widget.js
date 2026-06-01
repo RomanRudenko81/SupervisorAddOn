@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-v62-connected-duration-kpi-colors-2026-05-29";
+const FRONTEND_BUILD_ID = "wxcc-widget-v63-save-status-hotfix-2026-05-29";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -4074,7 +4074,7 @@ Call History</div>
       runtimeId
     });
 
-    this.loadAnalyticsMetrics("startup", runtimeId).catch(() => {});
+    this.loadAnalyticsMetrics("initial", runtimeId).catch(() => {});
     this.analyticsKpiPollHandle = this.safeSetInterval(() => {
       this.loadAnalyticsMetrics("interval", runtimeId).catch(() => {});
     }, this.analyticsKpiIntervalMs || 30000, runtimeId);
@@ -4233,12 +4233,13 @@ Call History</div>
       return;
     }
 
-    // v59+: these 3 KPI cards reflect only isolated WXCC Search task aggregation KPIs.
-    // No live reconstruction fallback here, to avoid misleading KPI values.
-    this.safeSetText("kpiLongestWaiting", "—");
-    this.safeSetText("kpiAvgWait", "—");
-    this.safeSetText("kpiAvgHandle", "—");
-    this.applyAnalyticsKpiThresholds(null);
+    // v64: show a clean initial state while the isolated KPI initial poll is still running.
+    // The first real WXCC Search KPI response will overwrite these defaults.
+    const initialMetrics = { longestWaitingSeconds: 0, avgWaitSeconds: 0, avgHandleSeconds: 0 };
+    this.safeSetText("kpiLongestWaiting", "0s");
+    this.safeSetText("kpiAvgWait", "0s");
+    this.safeSetText("kpiAvgHandle", "0s");
+    this.applyAnalyticsKpiThresholds(initialMetrics);
   }
 
   async loadWallboard(reason = "manual", runtimeId = this.runtimeId) {
@@ -4449,6 +4450,7 @@ Call History</div>
       this.$saveBtn().disabled = true;
       this.setStatus("Saving...");
 
+      const saveStart = performance.now();
       const res = await this.authorizedFetch(`/api/entrypoint/${this.ENTRY_POINT_ID}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -4456,7 +4458,7 @@ Call History</div>
       });
 
       const data = await this.readJsonResponse(res);
-      this.addDiagLog("bootstrap-response", { status: res.status, durationMs: Math.round(performance.now() - bootstrapStart), role: data?.role || "", hasToken: Boolean(data?.sessionToken), error: data?.error || "" });
+      this.addDiagLog("save-response", { status: res.status, durationMs: Math.round(performance.now() - saveStart), error: data?.error || "" });
 
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
 

@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-v63-save-status-hotfix-2026-05-29";
+const FRONTEND_BUILD_ID = "wxcc-widget-v65-kpi-initial-default-once-2026-05-29";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -77,6 +77,7 @@ class SupervisorAccessWidget extends HTMLElement {
     this.analyticsKpiRangeStorageKey = "wxccSupervisorWidgetKpiRangeV58";
     this.analyticsKpiRange = this.readAnalyticsKpiRange();
     this.analyticsKpiData = null;
+    this.analyticsKpiHasRealData = false;
     this.analyticsKpiError = "";
 
     // v40 hard lifecycle isolation: every mount gets a unique runtime.
@@ -4140,7 +4141,7 @@ Call History</div>
       try { data = await this.readJsonResponse(res); } catch (jsonErr) { data = { ok: false, error: jsonErr.message }; }
 
       if (!res.ok || data?.ok === false || !data?.metrics) {
-        this.analyticsKpiData = null;
+        if (!this.analyticsKpiHasRealData) this.analyticsKpiData = null;
         this.analyticsKpiError = data?.error || data?.notes?.[0] || `HTTP ${res.status}`;
         this.addDiagLog("analytics-kpi-unavailable", {
           reason,
@@ -4166,6 +4167,7 @@ Call History</div>
         source: data.source || "wxcc-search-task-aggregation",
         reportId: data.reportId || ""
       };
+      this.analyticsKpiHasRealData = true;
       this.analyticsKpiError = "";
       this.addDiagLog("analytics-kpi-applied", {
         reason,
@@ -4180,7 +4182,7 @@ Call History</div>
       this.applyAnalyticsKpisToUi();
     } catch (err) {
       if (!this.guardRuntime(runtimeId)) return;
-      this.analyticsKpiData = null;
+      if (!this.analyticsKpiHasRealData) this.analyticsKpiData = null;
       this.analyticsKpiError = err?.name === "AbortError" ? "Analytics request timed out" : (err?.message || String(err));
       this.addDiagLog("analytics-kpi-error-isolated", {
         reason,
@@ -4233,8 +4235,10 @@ Call History</div>
       return;
     }
 
-    // v64: show a clean initial state while the isolated KPI initial poll is still running.
-    // The first real WXCC Search KPI response will overwrite these defaults.
+    // v65: show initial 0s defaults only until the first real KPI response arrives.
+    // After real data was received once, never overwrite the visible values with defaults again.
+    if (this.analyticsKpiHasRealData) return;
+
     const initialMetrics = { longestWaitingSeconds: 0, avgWaitSeconds: 0, avgHandleSeconds: 0 };
     this.safeSetText("kpiLongestWaiting", "0s");
     this.safeSetText("kpiAvgWait", "0s");

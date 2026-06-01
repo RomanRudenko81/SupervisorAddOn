@@ -3,7 +3,10 @@
 
   class SupervisorHeaderWidget extends HTMLElement {
     static get observedAttributes() {
-      return ['agentname', 'displayname', 'agentstate', 'state', 'status', 'teamname', 'loginid', 'email', 'darkmode'];
+      return [
+        'agentname', 'displayname', 'agentstate', 'state', 'status',
+        'teamname', 'loginid', 'email', 'darkmode'
+      ];
     }
 
     constructor() {
@@ -15,7 +18,7 @@
 
     connectedCallback() {
       this.render();
-      this._timer = window.setInterval(() => this.render(), 1000);
+      this._timer = window.setInterval(() => this.render(), 750);
     }
 
     disconnectedCallback() {
@@ -27,47 +30,70 @@
       this.render();
     }
 
+    _isPlaceholder(v) {
+      const s = String(v ?? '').trim();
+      if (!s) return true;
+      return (
+        s.startsWith('$STORE.') ||
+        s.startsWith('STORE_') ||
+        s === 'undefined' ||
+        s === 'null' ||
+        s === '[object Object]'
+      );
+    }
+
     _value(...names) {
       for (const n of names) {
         const propValue = this[n];
-        if (propValue !== undefined && propValue !== null && String(propValue).trim() !== '') {
-          return String(propValue).trim();
-        }
+        if (!this._isPlaceholder(propValue)) return String(propValue).trim();
+
         const attrName = n.replace(/[A-Z]/g, m => '-' + m.toLowerCase()).toLowerCase();
         const attrValue = this.getAttribute(attrName) || this.getAttribute(n.toLowerCase());
-        if (attrValue !== undefined && attrValue !== null && String(attrValue).trim() !== '') {
-          return String(attrValue).trim();
-        }
+        if (!this._isPlaceholder(attrValue)) return String(attrValue).trim();
       }
       return '';
     }
 
     _isDark() {
       const v = this._value('darkMode');
-      return v === true || v === 'true' || v === '1' || v === 'dark';
+      return v === true || v === 'true' || v === '1' || String(v).toLowerCase() === 'dark';
     }
 
-    _stateClass(stateText) {
+    _normalizeState(raw) {
+      const s = String(raw || '').trim();
+      if (!s) return 'Unknown';
+      const l = s.toLowerCase();
+      if (l.includes('available') || l.includes('idle') || l.includes('frei')) return 'Available';
+      return s;
+    }
+
+    _isAvailable(stateText) {
       const s = String(stateText || '').toLowerCase();
-      if (s.includes('available') || s.includes('idle') || s.includes('frei')) return 'ok';
-      if (s.includes('meeting') || s.includes('wrap') || s.includes('connected') || s.includes('ring')) return 'busy';
-      return 'neutral';
+      return s.includes('available') || s.includes('idle') || s.includes('frei');
     }
 
     _escape(s) {
-      return String(s || '').replace(/[&<>'"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c]));
+      return String(s || '').replace(/[&<>'"]/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+      }[c]));
     }
 
     render() {
       const agentName = this._value('agentName', 'displayName') || 'Agent';
       const teamName = this._value('teamName') || 'Team unknown';
-      const state = this._value('agentState', 'state', 'status') || 'Status unknown';
-      const loginId = this._value('loginId') || '';
-      const email = this._value('email') || '';
-      const dark = this._isDark();
-      const stateClass = this._stateClass(state);
 
-      const key = JSON.stringify({ agentName, teamName, state, loginId, email, dark, stateClass });
+      // Wichtig: status/state zuerst, weil agentState in deinem Layout aktuell nicht sauber resolved.
+      const rawState = this._value('status', 'state', 'agentState') || 'Unknown';
+      const state = this._normalizeState(rawState);
+      const isAvailable = this._isAvailable(state);
+      const dark = this._isDark();
+
+      const bg = isAvailable ? '#00B050' : '#D60000';
+      const border = isAvailable ? '#007A34' : '#990000';
+      const shadow = isAvailable ? 'rgba(0,176,80,.42)' : 'rgba(214,0,0,.42)';
+      const dot = isAvailable ? '#B9FFD2' : '#FFD1D1';
+
+      const key = JSON.stringify({ agentName, teamName, state, dark, isAvailable });
       if (key === this._last) return;
       this._last = key;
 
@@ -76,72 +102,71 @@
           :host {
             display: inline-flex;
             align-items: center;
-            height: 32px;
-            min-width: 280px;
-            max-width: 420px;
-            margin: 0 10px 0 0;
+            height: 40px;
+            min-width: 430px;
+            max-width: 620px;
+            margin: 0 14px 0 0;
             box-sizing: border-box;
             font-family: CiscoSans, Arial, Helvetica, sans-serif;
-            color: ${dark ? '#f4f5f7' : '#1b1c1f'};
+            color: #ffffff;
           }
           .card {
             display: inline-flex;
             align-items: center;
-            gap: 8px;
-            height: 28px;
-            padding: 0 10px;
-            border: 1px solid ${dark ? 'rgba(255,255,255,.18)' : 'rgba(0,0,0,.14)'};
-            border-radius: 14px;
-            background: ${dark ? 'rgba(255,255,255,.08)' : 'rgba(255,255,255,.72)'};
-            box-shadow: 0 1px 2px rgba(0,0,0,.08);
+            gap: 12px;
+            width: 100%;
+            height: 36px;
+            padding: 0 16px;
+            border: 2px solid ${border};
+            border-radius: 18px;
+            background: ${bg};
+            box-shadow: 0 0 0 1px rgba(255,255,255,.18), 0 3px 10px ${shadow};
             white-space: nowrap;
             overflow: hidden;
           }
           .dot {
-            width: 8px;
-            height: 8px;
-            min-width: 8px;
+            width: 12px;
+            height: 12px;
+            min-width: 12px;
             border-radius: 999px;
-            background: #8a8f98;
+            background: ${dot};
+            box-shadow: 0 0 0 2px rgba(255,255,255,.45);
           }
-          .dot.ok { background: #1fa463; }
-          .dot.busy { background: #d96c00; }
-          .dot.neutral { background: #8a8f98; }
-          .main {
+          .agent {
             overflow: hidden;
             text-overflow: ellipsis;
-            font-size: 12px;
-            font-weight: 600;
-            line-height: 16px;
+            font-size: 14px;
+            font-weight: 800;
+            line-height: 18px;
+            letter-spacing: .2px;
+            text-transform: uppercase;
           }
-          .meta {
+          .team, .state {
             overflow: hidden;
             text-overflow: ellipsis;
-            font-size: 11px;
-            opacity: .78;
-            line-height: 14px;
+            font-size: 13px;
+            font-weight: 700;
+            line-height: 18px;
           }
-          .sep { opacity: .35; }
-          .text {
-            min-width: 0;
-            overflow: hidden;
+          .state {
+            margin-left: auto;
+            text-transform: uppercase;
+          }
+          .sep {
+            opacity: .75;
+            font-weight: 800;
           }
         </style>
-        <div class="card" title="${this._escape([agentName, teamName, state, loginId, email].filter(Boolean).join(' | '))}">
-          <span class="dot ${stateClass}"></span>
-          <span class="text">
-            <span class="main">${this._escape(agentName)}</span>
-            <span class="sep"> · </span>
-            <span class="meta">${this._escape(teamName)}</span>
-            <span class="sep"> · </span>
-            <span class="meta">${this._escape(state)}</span>
-          </span>
+        <div class="card" title="${this._escape([agentName, teamName, state].filter(Boolean).join(' | '))}">
+          <span class="dot"></span>
+          <span class="agent">${this._escape(agentName)}</span>
+          <span class="sep">·</span>
+          <span class="team">${this._escape(teamName)}</span>
+          <span class="state">${this._escape(state)}</span>
         </div>
       `;
     }
   }
 
-  if (!customElements.get(TAG)) {
-    customElements.define(TAG, SupervisorHeaderWidget);
-  }
+  if (!customElements.get(TAG)) customElements.define(TAG, SupervisorHeaderWidget);
 })();

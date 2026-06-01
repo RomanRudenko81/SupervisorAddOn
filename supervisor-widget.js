@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-v65-kpi-initial-default-once-2026-05-29";
+const FRONTEND_BUILD_ID = "wxcc-widget-v66-waiting-calls-hotfix-2026-06-01";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();

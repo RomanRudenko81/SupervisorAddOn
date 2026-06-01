@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-v66-waiting-calls-hotfix-2026-06-01";
+const FRONTEND_BUILD_ID = "wxcc-widget-v67-waiting-call-render-filter-fix-2026-06-01";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -1889,6 +1889,7 @@ Call History</div>
       call?.queueName ||
       call?.firstQueue ||
       call?.firstQueueName ||
+      call?.lastQueue?.name ||
       call?.lastQueue ||
       call?.destinationQueue ||
       call?.queueDisplayName ||
@@ -2063,8 +2064,9 @@ Call History</div>
     const list = Array.isArray(calls) ? calls : [];
 
     return list.filter(call => {
-      const queueName = this.getCallQueueName(call);
-      if (!queueName && call?.reconstructed === true) return true;
+      const enriched = this.enrichActiveCallDeterministically(call);
+      const queueName = this.getCallQueueName(enriched);
+      if (!queueName && enriched?.reconstructed === true) return true;
       return this.isQueueVisibleForCurrentUser(queueName);
     });
   }

@@ -1,4 +1,4 @@
-const FRONTEND_BUILD_ID = "wxcc-widget-v67-waiting-call-render-filter-fix-2026-06-01";
+const FRONTEND_BUILD_ID = "wxcc-widget-v62-connected-duration-kpi-colors-2026-05-29";
 class SupervisorAccessWidget extends HTMLElement {
   constructor() {
     super();
@@ -77,7 +77,6 @@ class SupervisorAccessWidget extends HTMLElement {
     this.analyticsKpiRangeStorageKey = "wxccSupervisorWidgetKpiRangeV58";
     this.analyticsKpiRange = this.readAnalyticsKpiRange();
     this.analyticsKpiData = null;
-    this.analyticsKpiHasRealData = false;
     this.analyticsKpiError = "";
 
     // v40 hard lifecycle isolation: every mount gets a unique runtime.
@@ -1889,7 +1888,6 @@ Call History</div>
       call?.queueName ||
       call?.firstQueue ||
       call?.firstQueueName ||
-      call?.lastQueue?.name ||
       call?.lastQueue ||
       call?.destinationQueue ||
       call?.queueDisplayName ||
@@ -2064,9 +2062,8 @@ Call History</div>
     const list = Array.isArray(calls) ? calls : [];
 
     return list.filter(call => {
-      const enriched = this.enrichActiveCallDeterministically(call);
-      const queueName = this.getCallQueueName(enriched);
-      if (!queueName && enriched?.reconstructed === true) return true;
+      const queueName = this.getCallQueueName(call);
+      if (!queueName && call?.reconstructed === true) return true;
       return this.isQueueVisibleForCurrentUser(queueName);
     });
   }
@@ -4077,7 +4074,7 @@ Call History</div>
       runtimeId
     });
 
-    this.loadAnalyticsMetrics("initial", runtimeId).catch(() => {});
+    this.loadAnalyticsMetrics("startup", runtimeId).catch(() => {});
     this.analyticsKpiPollHandle = this.safeSetInterval(() => {
       this.loadAnalyticsMetrics("interval", runtimeId).catch(() => {});
     }, this.analyticsKpiIntervalMs || 30000, runtimeId);
@@ -4143,7 +4140,7 @@ Call History</div>
       try { data = await this.readJsonResponse(res); } catch (jsonErr) { data = { ok: false, error: jsonErr.message }; }
 
       if (!res.ok || data?.ok === false || !data?.metrics) {
-        if (!this.analyticsKpiHasRealData) this.analyticsKpiData = null;
+        this.analyticsKpiData = null;
         this.analyticsKpiError = data?.error || data?.notes?.[0] || `HTTP ${res.status}`;
         this.addDiagLog("analytics-kpi-unavailable", {
           reason,
@@ -4169,7 +4166,6 @@ Call History</div>
         source: data.source || "wxcc-search-task-aggregation",
         reportId: data.reportId || ""
       };
-      this.analyticsKpiHasRealData = true;
       this.analyticsKpiError = "";
       this.addDiagLog("analytics-kpi-applied", {
         reason,
@@ -4184,7 +4180,7 @@ Call History</div>
       this.applyAnalyticsKpisToUi();
     } catch (err) {
       if (!this.guardRuntime(runtimeId)) return;
-      if (!this.analyticsKpiHasRealData) this.analyticsKpiData = null;
+      this.analyticsKpiData = null;
       this.analyticsKpiError = err?.name === "AbortError" ? "Analytics request timed out" : (err?.message || String(err));
       this.addDiagLog("analytics-kpi-error-isolated", {
         reason,
@@ -4237,15 +4233,12 @@ Call History</div>
       return;
     }
 
-    // v65: show initial 0s defaults only until the first real KPI response arrives.
-    // After real data was received once, never overwrite the visible values with defaults again.
-    if (this.analyticsKpiHasRealData) return;
-
-    const initialMetrics = { longestWaitingSeconds: 0, avgWaitSeconds: 0, avgHandleSeconds: 0 };
-    this.safeSetText("kpiLongestWaiting", "0s");
-    this.safeSetText("kpiAvgWait", "0s");
-    this.safeSetText("kpiAvgHandle", "0s");
-    this.applyAnalyticsKpiThresholds(initialMetrics);
+    // v59+: these 3 KPI cards reflect only isolated WXCC Search task aggregation KPIs.
+    // No live reconstruction fallback here, to avoid misleading KPI values.
+    this.safeSetText("kpiLongestWaiting", "—");
+    this.safeSetText("kpiAvgWait", "—");
+    this.safeSetText("kpiAvgHandle", "—");
+    this.applyAnalyticsKpiThresholds(null);
   }
 
   async loadWallboard(reason = "manual", runtimeId = this.runtimeId) {
@@ -4456,7 +4449,6 @@ Call History</div>
       this.$saveBtn().disabled = true;
       this.setStatus("Saving...");
 
-      const saveStart = performance.now();
       const res = await this.authorizedFetch(`/api/entrypoint/${this.ENTRY_POINT_ID}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -4464,7 +4456,7 @@ Call History</div>
       });
 
       const data = await this.readJsonResponse(res);
-      this.addDiagLog("save-response", { status: res.status, durationMs: Math.round(performance.now() - saveStart), error: data?.error || "" });
+      this.addDiagLog("bootstrap-response", { status: res.status, durationMs: Math.round(performance.now() - bootstrapStart), role: data?.role || "", hasToken: Boolean(data?.sessionToken), error: data?.error || "" });
 
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
 
